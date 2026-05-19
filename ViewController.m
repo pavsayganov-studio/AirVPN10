@@ -11,11 +11,11 @@
 @implementation ViewController
 
 - (void)loadView {
-    // 1. Главный фон (Матовое стекло)
+    // 1. Главный фон (Матовое стекло) - ИСПРАВЛЕННЫЕ КОНСТАНТЫ
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 360)];
-    effectView.material = NSVisualEffectViewMaterialDark;
-    effectView.blendingMode = NSVisualEffectViewBlendingModeBehindWindow;
-    effectView.state = NSVisualEffectViewStateActive;
+    effectView.material = NSVisualEffectMaterialDark;
+    effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    effectView.state = NSVisualEffectStateActive;
     
     // 2. Заголовок
     NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 310, 280, 30)];
