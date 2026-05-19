@@ -1,0 +1,37 @@
+name: Build macOS 10.13 VPN
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-13
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Go 1.20
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+    - name: Build VPN Core
+      run: |
+        git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
+        cd core-build
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+    - name: Compile App
+      run: |
+        mkdir -p MiniVPN.app/Contents/MacOS MiniVPN.app/Contents/Resources
+        cp Info.plist MiniVPN.app/Contents/Info.plist
+        cp sing-box MiniVPN.app/Contents/Resources/sing-box
+        chmod +x MiniVPN.app/Contents/Resources/sing-box
+        
+        # Компилируем под macOS 10.13
+        swiftc main.swift AppDelegate.swift -o MiniVPN.app/Contents/MacOS/MiniVPN -target x86_64-apple-macosx10.13
+        
+        zip -r MiniVPN-macOS-10.13.zip MiniVPN.app
+    - name: Release to GitHub
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v1.0.0
+        name: "MiniVPN for macOS 10.13"
+        files: MiniVPN-macOS-10.13.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
