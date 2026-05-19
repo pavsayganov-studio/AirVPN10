@@ -5,6 +5,7 @@
 @property (strong) NSTextField *statusLabel;
 @property (strong) NSButton *connectButton;
 @property (strong) NSPopUpButton *serverDropdown;
+@property (strong) NSButton *stealthCheckbox;
 @property (strong) NSString *currentPID;
 @property (strong) NSString *configPath;
 @property (strong) NSMutableDictionary *downloadedJSON;
@@ -14,15 +15,15 @@
 @implementation ViewController
 
 - (void)loadView {
-    // 1. Увеличили высоту окна, чтобы влез список
-    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 420)];
+    // 1. Увеличиваем высоту окна под чекбокс
+    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 460)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
     // 2. Заголовок
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 370, 280, 30)];
-    titleLabel.stringValue = @"AirVPN";
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 280, 30)];
+    titleLabel.stringValue = @"AirVPN Stealth";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
     titleLabel.drawsBackground = NO;
@@ -31,27 +32,35 @@
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
-    // 3. Поле ввода URL
-    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 320, 240, 24)];
+    // 3. Поле URL
+    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 360, 240, 24)];
     self.urlField.placeholderString = @"Paste Subscription URL here...";
     self.urlField.focusRingType = NSFocusRingTypeNone;
     [effectView addSubview:self.urlField];
     
     // 4. Кнопка скачивания
-    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(70, 280, 140, 30)];
+    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(70, 320, 140, 30)];
     importBtn.title = @"Fetch Servers";
     importBtn.bezelStyle = NSBezelStyleRounded;
     importBtn.target = self;
     importBtn.action = @selector(downloadConfig);
     [effectView addSubview:importBtn];
     
-    // 5. Выпадающий список серверов (Скрыт до скачивания)
-    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 230, 240, 26) pullsDown:NO];
+    // 5. Выпадающий список серверов
+    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 270, 240, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"No servers loaded"];
     [self.serverDropdown setEnabled:NO];
     [effectView addSubview:self.serverDropdown];
     
-    // 6. Статус
+    // 6. ЧЕКБОКС СТЕЛС-РЕЖИМА (Умный роутинг)
+    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 230, 240, 20)];
+    [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
+    self.stealthCheckbox.title = @"Stealth Route (Only YT/TG/AI via VPN)";
+    self.stealthCheckbox.state = NSControlStateValueOn; // Включен по умолчанию
+    self.stealthCheckbox.font = [NSFont systemFontOfSize:11];
+    [effectView addSubview:self.stealthCheckbox];
+    
+    // 7. Статус
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 280, 20)];
     self.statusLabel.stringValue = @"Ready";
     self.statusLabel.alignment = NSTextAlignmentCenter;
@@ -61,7 +70,7 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    // 7. Кнопка CONNECT
+    // 8. Кнопка CONNECT
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(80, 40, 120, 120)];
     self.connectButton.title = @"OFF";
     self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
@@ -102,16 +111,15 @@
             NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&jsonError];
             
             if (jsonError || !json[@"outbounds"]) {
-                self.statusLabel.stringValue = @"Invalid JSON format. Check URL.";
+                self.statusLabel.stringValue = @"Invalid JSON format.";
                 return;
             }
             
             self.downloadedJSON = json;
             self.proxyTags = [NSMutableArray array];
             
-            // Ищем все серверы
             NSArray *outbounds = json[@"outbounds"];
-            for (NSDictionary *out = outbounds) {
+            for (NSDictionary *out in outbounds) {
                 NSString *type = out[@"type"];
                 NSString *tag = out[@"tag"];
                 if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
@@ -127,7 +135,7 @@
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"Loaded %lu servers", (unsigned long)self.proxyTags.count];
             } else {
                 [self.serverDropdown addItemWithTitle:@"No compatible servers found"];
-                self.statusLabel.stringValue = @"No VLESS/Trojan found in JSON.";
+                self.statusLabel.stringValue = @"No VLESS/Trojan found.";
             }
         });
     }] resume];
@@ -149,12 +157,23 @@
     
     self.statusLabel.stringValue = @"Building Tunnel...";
     
-    // МАГИЯ АВТО-ПЕРЕКЛЮЧЕНИЯ И ВЫБОРА СЕРВЕРА
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
+    NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Auto (Smart Switch)"] ? @"auto-switch" : selectedTitle;
+    
     NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:self.downloadedJSON[@"outbounds"]];
     
+    // Убеждаемся, что есть outbound "direct"
+    BOOL hasDirect = NO;
+    for (NSDictionary *outbound in newOutbounds) {
+        if ([outbound[@"tag"] isEqualToString:@"direct"]) {
+            hasDirect = YES; break;
+        }
+    }
+    if (!hasDirect) {
+        [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
+    }
+    
     if ([selectedTitle isEqualToString:@"⚡️ Auto (Smart Switch)"]) {
-        // Создаем блок urltest для автоматического выбора самого быстрого сервера
         NSDictionary *autoOutbound = @{
             @"type": @"urltest",
             @"tag": @"auto-switch",
@@ -163,21 +182,50 @@
             @"interval": @"3m",
             @"tolerance": @50
         };
-        [newOutbounds insertObject:autoOutbound atIndex:0]; // Ставим его главным
-    } else {
-        // Если выбран конкретный сервер, ищем его и ставим первым
-        for (int i = 0; i < newOutbounds.count; i++) {
-            if ([newOutbounds[i][@"tag"] isEqualToString:selectedTitle]) {
-                NSDictionary *selectedOutbound = newOutbounds[i];
-                [newOutbounds removeObjectAtIndex:i];
-                [newOutbounds insertObject:selectedOutbound atIndex:0];
-                break;
-            }
-        }
+        [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
     
-    // Сохраняем итоговый конфиг
+    // --- МАГИЯ МАРШРУТИЗАЦИИ (ROUTING) ---
+    NSMutableDictionary *route = [self.downloadedJSON[@"route"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableArray *rules = [route[@"rules"] mutableCopy] ?: [NSMutableArray array];
+    
+    if (self.stealthCheckbox.state == NSControlStateValueOn) {
+        // РЕЖИМ СТЕЛС: Только заблокированные сайты через VPN
+        NSArray *blockedDomains = @[
+            // Мессенджеры
+            @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
+            @"whatsapp.com", @"whatsapp.net",
+            // Видео
+            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
+            // Нейросети
+            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
+            @"anthropic.com", @"claude.ai",
+            @"gemini.google.com", @"bard.google.com", @"ai.google.dev",
+            // Соцсети (Опционально, базовые)
+            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com"
+        ];
+        
+        NSDictionary *stealthRule = @{
+            @"domain_suffix": blockedDomains,
+            @"outbound": activeProxyTag
+        };
+        
+        // Вставляем правило на 0 позицию (высший приоритет)
+        [rules insertObject:stealthRule atIndex:0];
+        
+        // Всё остальное летит в DIRECT (мимо VPN)
+        route[@"final"] = @"direct";
+    } else {
+        // РЕЖИМ ГЛОБАЛЬНЫЙ: Всё через VPN
+        route[@"final"] = activeProxyTag;
+    }
+    
+    route[@"rules"] = rules;
+    route[@"auto_detect_interface"] = @YES;
+    self.downloadedJSON[@"route"] = route;
+    // -------------------------------------
+    
     NSData *finalData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
     
@@ -195,7 +243,7 @@
         self.currentPID = output.stringValue;
         [self updateUIConnected:YES];
     } else {
-        self.statusLabel.stringValue = @"Failed to start Core";
+        self.statusLabel.stringValue = @"Auth Failed or Core Error";
     }
 }
 
@@ -210,13 +258,14 @@
 
 - (void)updateUIConnected:(BOOL)connected {
     if (connected) {
-        self.statusLabel.stringValue = @"Connected";
+        self.statusLabel.stringValue = self.stealthCheckbox.state == NSControlStateValueOn ? @"Connected (Stealth Mode)" : @"Connected (Global)";
         self.statusLabel.textColor = [NSColor greenColor];
         self.connectButton.title = @"ON";
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor colorWithRed:0 green:1 blue:0 alpha:0.1].CGColor;
         [self.serverDropdown setEnabled:NO];
         [self.urlField setEnabled:NO];
+        [self.stealthCheckbox setEnabled:NO];
     } else {
         self.statusLabel.stringValue = @"Ready";
         self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
@@ -225,6 +274,7 @@
         self.connectButton.layer.backgroundColor = [NSColor clearColor].CGColor;
         [self.serverDropdown setEnabled:YES];
         [self.urlField setEnabled:YES];
+        [self.stealthCheckbox setEnabled:YES];
     }
 }
 @end
