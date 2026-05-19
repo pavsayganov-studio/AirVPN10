@@ -6,7 +6,7 @@ int main(int argc, const char * argv[]) {
         NSApplication *app = [NSApplication sharedApplication];
         AppDelegate *delegate = [[AppDelegate alloc] init];
         app.delegate = delegate;
-        [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        [app setActivationPolicy:NSApplicationActivationPolicyAccessory]; // Прячет из Dock
         [app run];
     }
     return 0;

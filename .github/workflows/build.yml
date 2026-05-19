@@ -1,4 +1,4 @@
-name: Build macOS 10.13 VPN
+name: Build macOS 10.13 GUI VPN
 on: [push, workflow_dispatch]
 permissions:
   contents: write
@@ -18,20 +18,20 @@ jobs:
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App (Objective-C)
       run: |
-        mkdir -p MiniVPN.app/Contents/MacOS MiniVPN.app/Contents/Resources
-        cp Info.plist MiniVPN.app/Contents/Info.plist
-        cp sing-box MiniVPN.app/Contents/Resources/sing-box
-        chmod +x MiniVPN.app/Contents/Resources/sing-box
+        mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
+        cp Info.plist AirVPN.app/Contents/Info.plist
+        cp sing-box AirVPN.app/Contents/Resources/sing-box
+        chmod +x AirVPN.app/Contents/Resources/sing-box
         
-        # Компилируем C-код!
-        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m -o MiniVPN.app/Contents/MacOS/MiniVPN -target x86_64-apple-macosx10.13
+        # Компилируем все файлы Objective-C
+        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m -o AirVPN.app/Contents/MacOS/AirVPN -target x86_64-apple-macosx10.13
         
-        zip -r MiniVPN-macOS-10.13.zip MiniVPN.app
+        zip -r AirVPN-macOS-10.13.zip AirVPN.app
     - name: Release to GitHub
       uses: softprops/action-gh-release@v1
       with:
         tag_name: latest
-        name: "MiniVPN for macOS 10.13"
-        files: MiniVPN-macOS-10.13.zip
+        name: "AirVPN with GUI for macOS 10.13"
+        files: AirVPN-macOS-10.13.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
