@@ -15,13 +15,11 @@
 @implementation ViewController
 
 - (void)loadView {
-    // 1. Увеличиваем высоту окна под чекбокс
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 460)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    // 2. Заголовок
     NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 280, 30)];
     titleLabel.stringValue = @"AirVPN Stealth";
     titleLabel.alignment = NSTextAlignmentCenter;
@@ -32,13 +30,11 @@
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
-    // 3. Поле URL
     self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 360, 240, 24)];
     self.urlField.placeholderString = @"Paste Subscription URL here...";
     self.urlField.focusRingType = NSFocusRingTypeNone;
     [effectView addSubview:self.urlField];
     
-    // 4. Кнопка скачивания
     NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(70, 320, 140, 30)];
     importBtn.title = @"Fetch Servers";
     importBtn.bezelStyle = NSBezelStyleRounded;
@@ -46,21 +42,18 @@
     importBtn.action = @selector(downloadConfig);
     [effectView addSubview:importBtn];
     
-    // 5. Выпадающий список серверов
     self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 270, 240, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"No servers loaded"];
     [self.serverDropdown setEnabled:NO];
     [effectView addSubview:self.serverDropdown];
     
-    // 6. ЧЕКБОКС СТЕЛС-РЕЖИМА (Умный роутинг)
     self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 230, 240, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
     self.stealthCheckbox.title = @"Stealth Route (Only YT/TG/AI via VPN)";
-    self.stealthCheckbox.state = NSControlStateValueOn; // Включен по умолчанию
+    self.stealthCheckbox.state = NSControlStateValueOn;
     self.stealthCheckbox.font = [NSFont systemFontOfSize:11];
     [effectView addSubview:self.stealthCheckbox];
     
-    // 7. Статус
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 280, 20)];
     self.statusLabel.stringValue = @"Ready";
     self.statusLabel.alignment = NSTextAlignmentCenter;
@@ -70,7 +63,6 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    // 8. Кнопка CONNECT
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(80, 40, 120, 120)];
     self.connectButton.title = @"OFF";
     self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
@@ -135,7 +127,7 @@
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"Loaded %lu servers", (unsigned long)self.proxyTags.count];
             } else {
                 [self.serverDropdown addItemWithTitle:@"No compatible servers found"];
-                self.statusLabel.stringValue = @"No VLESS/Trojan found.";
+                self.statusLabel.stringValue = @"No proxies found.";
             }
         });
     }] resume];
@@ -160,18 +152,25 @@
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Auto (Smart Switch)"] ? @"auto-switch" : selectedTitle;
     
-    NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:self.downloadedJSON[@"outbounds"]];
+    // 1. [CRITICAL FIX] Внедряем TUN интерфейс для перехвата трафика macOS
+    NSDictionary *tunInbound = @{
+        @"type": @"tun",
+        @"tag": @"tun-in",
+        @"interface_name": @"utun9",
+        @"inet4_address": @"172.19.0.1/30",
+        @"auto_route": @YES,
+        @"strict_route": @YES,
+        @"stack": @"system"
+    };
+    self.downloadedJSON[@"inbounds"] = @[tunInbound];
     
-    // Убеждаемся, что есть outbound "direct"
+    // 2. Настраиваем Outbounds (Серверы)
+    NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:self.downloadedJSON[@"outbounds"]];
     BOOL hasDirect = NO;
     for (NSDictionary *outbound in newOutbounds) {
-        if ([outbound[@"tag"] isEqualToString:@"direct"]) {
-            hasDirect = YES; break;
-        }
+        if ([outbound[@"tag"] isEqualToString:@"direct"]) { hasDirect = YES; break; }
     }
-    if (!hasDirect) {
-        [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
-    }
+    if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
     
     if ([selectedTitle isEqualToString:@"⚡️ Auto (Smart Switch)"]) {
         NSDictionary *autoOutbound = @{
@@ -186,52 +185,40 @@
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
     
-    // --- МАГИЯ МАРШРУТИЗАЦИИ (ROUTING) ---
-    NSMutableDictionary *route = [self.downloadedJSON[@"route"] mutableCopy] ?: [NSMutableDictionary dictionary];
-    NSMutableArray *rules = [route[@"rules"] mutableCopy] ?: [NSMutableArray array];
+    // 3. Умная маршрутизация (Stealth Mode)
+    NSMutableDictionary *route = [NSMutableDictionary dictionary];
+    if (self.downloadedJSON[@"route"]) {
+        route = [self.downloadedJSON[@"route"] mutableCopy];
+    }
+    NSMutableArray *rules = [NSMutableArray array];
+    if (route[@"rules"]) {
+        rules = [route[@"rules"] mutableCopy];
+    }
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        // РЕЖИМ СТЕЛС: Только заблокированные сайты через VPN
         NSArray *blockedDomains = @[
-            // Мессенджеры
-            @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
-            @"whatsapp.com", @"whatsapp.net",
-            // Видео
+            @"telegram.org", @"t.me", @"tdesktop.com", @"whatsapp.com", @"whatsapp.net",
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
-            // Нейросети
-            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
-            @"anthropic.com", @"claude.ai",
-            @"gemini.google.com", @"bard.google.com", @"ai.google.dev",
-            // Соцсети (Опционально, базовые)
-            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com"
+            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai",
+            @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com"
         ];
-        
-        NSDictionary *stealthRule = @{
-            @"domain_suffix": blockedDomains,
-            @"outbound": activeProxyTag
-        };
-        
-        // Вставляем правило на 0 позицию (высший приоритет)
+        NSDictionary *stealthRule = @{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag };
         [rules insertObject:stealthRule atIndex:0];
-        
-        // Всё остальное летит в DIRECT (мимо VPN)
-        route[@"final"] = @"direct";
+        route[@"final"] = @"direct"; // Остальное мимо VPN
     } else {
-        // РЕЖИМ ГЛОБАЛЬНЫЙ: Всё через VPN
-        route[@"final"] = activeProxyTag;
+        route[@"final"] = activeProxyTag; // Всё через VPN
     }
     
     route[@"rules"] = rules;
     route[@"auto_detect_interface"] = @YES;
     self.downloadedJSON[@"route"] = route;
-    // -------------------------------------
     
+    // Сохранение и запуск
     NSData *finalData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *logPath = [[self.configPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"vpn.log"];
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    
     NSString *shellCommand = [NSString stringWithFormat:@"nohup '%@' run -c '%@' > '%@' 2>&1 & echo $!", binaryPath, self.configPath, logPath];
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
