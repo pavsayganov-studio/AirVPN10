@@ -10,19 +10,18 @@
 @property (strong) NSString *logPath;
 @property (strong) NSMutableDictionary *downloadedJSON;
 @property (strong) NSMutableArray *proxyTags;
+@property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL isConnected;
 @end
 
 @implementation ViewController
 
 - (void)loadView {
-    // Симметричный, выверенный интерфейс 320x480
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    // 1. Заголовок
     NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 320, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
@@ -33,12 +32,10 @@
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
-    // 2. Поле ввода URL подписки
     self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 350, 280, 24)];
     self.urlField.placeholderString = @"Вставьте vless:// или подписку...";
     [effectView addSubview:self.urlField];
     
-    // 3. Кнопка загрузки серверов
     NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(80, 310, 160, 30)];
     importBtn.title = @"Загрузить серверы";
     importBtn.bezelStyle = NSBezelStyleRounded;
@@ -46,7 +43,6 @@
     importBtn.action = @selector(downloadConfig);
     [effectView addSubview:importBtn];
     
-    // 4. Список серверов
     self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 280, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"Серверы не загружены"];
     [self.serverDropdown setEnabled:NO];
@@ -54,7 +50,6 @@
     self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
     
-    // 5. Переключатель режима
     self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 220, 280, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
     self.stealthCheckbox.title = @"Умный режим (Только заблокированные)";
@@ -63,8 +58,7 @@
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
     
-    // 6. Статус бар
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 320, 20)];
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 195, 320, 20)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.bezeled = NO;
@@ -73,13 +67,13 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    // 7. Кнопка ВКЛ/ВЫКЛ (Идеальный круг 120x120 по центру)
-    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 70, 120, 120)];
+    // Кнопка ВКЛ/ВЫКЛ (Сбалансированное положение по высоте)
+    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(105, 75, 110, 110)];
     self.connectButton.title = @"ВЫКЛ";
-    self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
+    self.connectButton.font = [NSFont systemFontOfSize:22 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
     self.connectButton.wantsLayer = YES;
-    self.connectButton.layer.cornerRadius = 60; // Ровно половина ширины для круга
+    self.connectButton.layer.cornerRadius = 55;
     self.connectButton.layer.borderWidth = 1.5;
     self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
     self.connectButton.layer.backgroundColor = [NSColor clearColor].CGColor;
@@ -87,7 +81,7 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
     
-    // 8. Кнопки управления в самом низу (Симметрично и красиво)
+    // Системные кнопки ровно внизу экрана
     NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 20, 80, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
@@ -112,7 +106,7 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
     
-    // Автозагрузка подписки
+    // Оффлайн-кэш
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
         self.urlField.stringValue = savedURL;
@@ -128,9 +122,7 @@
 }
 
 - (void)quitApp {
-    if ([self stopVPN]) {
-        [NSApp terminate:nil];
-    }
+    if ([self stopVPN]) { [NSApp terminate:nil]; }
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
@@ -200,27 +192,17 @@
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
     self.downloadedJSON = json;
     self.proxyTags = [NSMutableArray array];
+    self.proxyOutbounds = [NSMutableArray array];
+    
     NSArray *outbounds = json[@"outbounds"];
     
+    // Ищем серверы внутри JSON
     for (NSDictionary *out in outbounds) {
         NSString *type = out[@"type"];
-        if ([type isEqualToString:@"selector"] || [type isEqualToString:@"urltest"]) {
-            NSArray *subOutbounds = out[@"outbounds"];
-            for (NSString *tag in subOutbounds) {
-                if (![tag isEqualToString:@"direct"] && ![tag isEqualToString:@"block"] && ![tag isEqualToString:@"dns-out"]) {
-                    [self.proxyTags addObject:tag];
-                }
-            }
-            break;
-        }
-    }
-    
-    if (self.proxyTags.count == 0) {
-        for (NSDictionary *out in outbounds) {
-            NSString *tag = out[@"tag"];
-            if (tag && ![tag isEqualToString:@"direct"] && ![tag isEqualToString:@"dns-out"]) {
-                [self.proxyTags addObject:tag];
-            }
+        NSString *tag = out[@"tag"];
+        if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
+            [self.proxyTags addObject:tag];
+            [self.proxyOutbounds addObject:out];
         }
     }
     
@@ -284,53 +266,66 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
-    NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
-    
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
-    NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:activeConfig[@"outbounds"]];
+    // --- [CTO GOLDEN SKELETON GENERATION]: СОЗДАЕМ ИДЕАЛЬНЫЙ КОНФИГ С НУЛЯ ---
+    NSMutableDictionary *goldConfig = [@{
+        @"log": @{
+            @"level": @"info"
+        },
+        @"dns": @{
+            @"servers": @[
+                @{@"tag": @"dns-direct", @"address": @"8.8.8.8", @"detour": @"direct"}
+            ]
+        },
+        @"inbounds": @[
+            @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
+            @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
+        ],
+        @"outbounds": [NSMutableArray array]
+    } mutableCopy];
     
-    for (NSInteger i = 0; i < newOutbounds.count; i++) {
-        NSMutableDictionary *out = [newOutbounds[i] mutableCopy];
-        if ([out[@"type"] isEqualToString:@"selector"]) {
-            out[@"selected"] = activeProxyTag;
-            newOutbounds[i] = out;
-        }
-    }
+    NSMutableArray *outbounds = goldConfig[@"outbounds"];
     
-    BOOL hasDirect = NO, hasDnsOut = NO;
-    for (NSDictionary *outbound in newOutbounds) { 
-        if ([outbound[@"tag"] isEqualToString:@"direct"]) hasDirect = YES; 
-        if ([outbound[@"tag"] isEqualToString:@"dns-out"]) hasDnsOut = YES; 
-    }
-    if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
-    if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
-    
-    if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{@"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50};
-        [newOutbounds insertObject:autoOutbound atIndex:0];
-    }
-    activeConfig[@"outbounds"] = newOutbounds;
-    
-    // ПРАВИЛЬНЫЙ СИНТАКСИС КОЛЛЕКЦИЙ OBJECTIVE-C
-    activeConfig[@"inbounds"] = @[ 
-        @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
-        @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
-    ];
-    
-    activeConfig[@"dns"] = @{
-        @"servers": @[ 
-            @{@"tag": @"dns-direct", @"address": @"8.8.8.8", @"detour": @"direct"}
-        ]
+    // 1. Добавляем Авто-Балансировщик
+    NSDictionary *autoOutbound = @{
+        @"type": @"urltest",
+        @"tag": @"auto-switch",
+        @"outbounds": self.proxyTags,
+        @"url": @"http://cp.cloudflare.com/generate_204",
+        @"interval": @"3m",
+        @"tolerance": @50
     };
+    [outbounds addObject:autoOutbound];
     
-    NSMutableDictionary *route = [NSMutableDictionary dictionary];
+    // 2. Добавляем все серверы пользователя
+    [outbounds addObjectsFromArray:self.proxyOutbounds];
+    
+    // 3. Добавляем системные выходы
+    [outbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
+    [outbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}];
+    
+    // 4. Строим идеальную маршрутизацию
     NSMutableArray *rules = [NSMutableArray array];
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
+    // [LOOP PREVENTION]: Запросы к IP самого активного сервера пускаем мимо туннеля!
+    NSString *activeServerAddress = @"";
+    for (NSDictionary *out in self.proxyOutbounds) {
+        if ([out[@"tag"] isEqualToString:activeProxyTag]) {
+            activeServerAddress = out[@"server"];
+            break;
+        }
+    }
+    if (activeServerAddress.length > 0) {
+        [rules addObject:@{ @"domain": @[activeServerAddress], @"outbound": @"direct" }];
+    }
+    
+    NSMutableDictionary *route = [NSMutableDictionary dictionary];
+    
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
+        // Умный режим Стелс для России 2026
         NSArray *blockedDomains = @[ 
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com", 
             @"whatsapp.com", @"whatsapp.net", @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
@@ -358,9 +353,11 @@
     
     route[@"rules"] = rules;
     route[@"auto_detect_interface"] = @YES;
-    activeConfig[@"route"] = route;
+    goldConfig[@"route"] = route;
     
-    NSData *finalData = [NSJSONSerialization dataWithJSONObject:activeConfig options:0 error:nil];
+    // ----------------------------------------------------------------------
+    
+    NSData *finalData = [NSJSONSerialization dataWithJSONObject:goldConfig options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];

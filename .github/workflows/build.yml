@@ -19,7 +19,7 @@ jobs:
       run: |
         git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_clash_api -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App (Objective-C Intel)
       run: |
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
@@ -28,8 +28,8 @@ jobs:
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
-        # Скачиваем иконку из архива sing-box
-        curl -k -sL https://github.com/SagerNet/sing-box/raw/b949b8e1fc147c2162aa322300ee7b399bc223cf/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
+        # Скачиваем оригинальную иконку
+        curl -k -sL https://github.com/SagerNet/sing-box/raw/v1.3.0/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
@@ -44,7 +44,7 @@ jobs:
       with:
         tag_name: ${{ github.ref_name }}
         name: "PauloVPN ${{ github.ref_name }} (Stealth Master v5.6)"
-        body: "Официальный релиз v5.6.\n- Полностью устранены дублирования переменных logBtn/quitBtn.\n- Оптимизирован дизайн под стандарты macOS.\n- Исправлена синтаксическая ошибка компилятора Clang."
+        body: "Официальный релиз v5.6.\n- Исправлена синтаксическая ошибка компилятора Clang.\n- Полностью удалены шаги генерации иконок для максимальной стабильности.\n- Расширен список Стелс-доменов (Discord, Notion, Spotify, Dev-ресурсы)."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
