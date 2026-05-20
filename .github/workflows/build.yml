@@ -19,7 +19,7 @@ jobs:
       run: |
         git clone -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality,with_multiplex -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App
       run: |
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
@@ -36,8 +36,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Golden Master)"
-        body: "Официальный релиз v8.0.\n- Возвращены подробные логи (уровень 'info').\n- Решена проблема DNS-петли в Глобальном режиме.\n- Полное отсутствие нагрузки на CPU."
+        name: "PauloVPN ${{ github.ref_name }} (K.I.S.S Manual Mode)"
+        body: "Официальный релиз v9.0.\n- Полностью удален модуль auto-switch (urltest). Выбор сервера происходит исключительно вручную.\n- Полностью удален модуль dns из конфигурации ядра.\n- Потребление CPU снижено практически до нуля.\n- Полный сброс адресации прокси при выключении."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
