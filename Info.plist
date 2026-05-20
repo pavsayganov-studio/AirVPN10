@@ -3,13 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>MiniVPN</string>
+    <string>AirVPN</string>
     <key>CFBundleIdentifier</key>
-    <string>com.samurai.minivpn</string>
+    <string>com.samurai.airvpn</string>
     <key>CFBundleName</key>
-    <string>MiniVPN</string>
+    <string>AirVPN</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.13.0</string>
     <key>LSUIElement</key>

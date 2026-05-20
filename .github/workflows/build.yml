@@ -11,27 +11,35 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
-    - name: Build VPN Core
+    - name: Build VPN Core (Intel)
       run: |
         git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
-    - name: Compile App (Objective-C)
+    - name: Compile App (Objective-C Intel)
       run: |
+        # Создаем правильную структуру macOS Bundle
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
+        echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
-        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m -o AirVPN.app/Contents/MacOS/AirVPN -target x86_64-apple-macosx10.13
+        # ЖЕСТКАЯ КОМПИЛЯЦИЯ ПОД INTEL x86_64 И MACOS 10.13
+        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
+          -arch x86_64 -mmacosx-version-min=10.13 \
+          -o AirVPN.app/Contents/MacOS/AirVPN
+          
+        # Локальная подпись (Ad-Hoc), чтобы macOS 10.13 не считала файл поврежденным
+        codesign --force --deep -s - AirVPN.app
         
-        zip -r AirVPN-macOS-10.13-v1.3.zip AirVPN.app
-    - name: Release version 1.3
+        zip -r AirVPN-macOS-10.13-v1.4.zip AirVPN.app
+    - name: Release version 1.4
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: v1.3
-        name: "AirVPN v1.3 (Stealth Edition)"
-        body: "Официальный релиз v1.3.\n- Добавлен Stealth Mode (умный обход ТСПУ 2026).\n- Автоматический выбор серверов.\n- Глубокая интеграция TUN-ядра."
-        files: AirVPN-macOS-10.13-v1.3.zip
+        tag_name: v1.4
+        name: "AirVPN v1.4 (Intel Fix)"
+        body: "Официальный релиз v1.4.\n- Исправлена проблема 'перечеркнутого круга' на старых Mac.\n- Принудительная сборка под архитектуру Intel (x86_64).\n- Добавлена Ad-Hoc подпись бандла."
+        files: AirVPN-macOS-10.13-v1.4.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
