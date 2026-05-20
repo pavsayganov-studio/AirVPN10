@@ -15,7 +15,7 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
-    - name: Build VPN Core (Intel)
+    - name: Build VPN Core (Intel + uTLS)
       run: |
         git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
@@ -27,7 +27,7 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         
-        # Скачиваем системную иконку VPN из GitHub
+        # Скачиваем официальную иконку
         curl -sL https://github.com/SagerNet/sing-box/raw/main/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns || true
         
         chmod +x AirVPN.app/Contents/Resources/sing-box
@@ -37,13 +37,14 @@ jobs:
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v2.4.zip AirVPN.app
+        # Имя файла теперь динамическое (v3.1 и т.д.)
+        zip -r "PauloVPN-macOS-10.13-${{ github.ref_name }}.zip" AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Zero Dependency Routing)"
-        body: "Официальный релиз v2.4.\n- Полностью удалена зависимость от geosite.db (ядро стартует мгновенно).\n- Авто-выбор серверов переведен на проверку по IP (не зависит от DNS).\n- Расширен список Стелс-доменов (Discord, Rutracker)."
+        name: "PauloVPN ${{ github.ref_name }} (System Proxy + Zombie Killer)"
+        body: "Официальный релиз.\n- ИСПРАВЛЕНА ошибка 'address already in use'.\n- Ядро корректно убивается от имени Root.\n- Исправлены имена zip-архивов."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

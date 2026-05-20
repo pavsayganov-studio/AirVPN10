@@ -103,7 +103,6 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
     
-    // Перехват выхода из приложения (обязательно отключаем системный прокси)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 }
 
@@ -128,7 +127,6 @@
     if (self.isConnected) { [self startVPN]; }
 }
 
-// ... Парсер VLESS остается без изменений ...
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
@@ -221,7 +219,6 @@
 - (void)toggleConnection { if (self.isConnected) { [self stopVPN]; } else { [self startVPN]; } }
 
 - (NSString *)getActiveNetworkInterface {
-    // Получаем текущий активный Wi-Fi или Ethernet интерфейс
     NSTask *task = [[NSTask alloc] init];
     [task setLaunchPath:@"/usr/sbin/networksetup"];
     [task setArguments:@[@"-listnetworkserviceorder"]];
@@ -231,7 +228,6 @@
     NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
     NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     
-    // Ищем Wi-Fi (или Ethernet)
     if ([output containsString:@"Wi-Fi"]) return @"Wi-Fi";
     if ([output containsString:@"Ethernet"]) return @"Ethernet";
     return @"Wi-Fi";
@@ -240,11 +236,6 @@
 - (void)startVPN {
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
-    
-    NSTask *killTask = [[NSTask alloc] init];
-    [killTask setLaunchPath:@"/usr/bin/killall"];
-    [killTask setArguments:@[@"-9", @"sing-box"]];
-    @try { [killTask launch]; [killTask waitUntilExit]; } @catch (NSException *e) {}
     
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
@@ -264,29 +255,17 @@
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
     
-    // [CRITICAL ARCHITECTURE CHANGE]: УБИРАЕМ TUN. ДОБАВЛЯЕМ SOCKS И HTTP INBOUND
     self.downloadedJSON[@"inbounds"] = @[ 
-        @{
-            @"type": @"socks",
-            @"tag": @"socks-in",
-            @"listen": @"127.0.0.1",
-            @"listen_port": @10808
-        },
-        @{
-            @"type": @"http",
-            @"tag": @"http-in",
-            @"listen": @"127.0.0.1",
-            @"listen_port": @10809
-        }
+        @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
+        @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
     ];
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
     NSMutableArray *rules = [NSMutableArray array];
-    
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com" ];
+        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com", @"rutracker.org", @"discord.com", @"twimg.com" ];
         [rules addObject:@{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag }];
         route[@"final"] = @"direct"; 
     } else { 
@@ -300,14 +279,15 @@
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    
-    // Скрипт поднимает Ядро, затем прописывает Системные Прокси в macOS
     NSString *interface = [self getActiveNetworkInterface];
+    
+    // [CRITICAL FIX]: Убиваем зомби от имени ROOT, чтобы освободить порты 10808 и 10809
     NSString *shellCommand = [NSString stringWithFormat:
-        @"/bin/bash -c 'nohup \\\"%@\\\" run -c \\\"%@\\\" > \\\"%@\\\" 2>&1 & "
-        @"networksetup -setwebproxy \\\"%@\\\" 127.0.0.1 10809 && "
-        @"networksetup -setsecurewebproxy \\\"%@\\\" 127.0.0.1 10809 && "
-        @"networksetup -setsocksfirewallproxy \\\"%@\\\" 127.0.0.1 10808'", 
+        @"killall -9 sing-box 2>/dev/null ; "
+        @"nohup '%@' run -c '%@' > '%@' 2>&1 & "
+        @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808", 
         binaryPath, self.configPath, self.logPath, interface, interface, interface];
         
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
@@ -320,17 +300,18 @@
         [self updateUIConnected:YES]; 
     } else { 
         self.statusLabel.stringValue = @"Отменено / Ошибка"; 
-        [self stopVPN]; // Откат прокси если юзер нажал Cancel
+        [self stopVPN]; 
     }
 }
 
 - (void)stopVPN {
     NSString *interface = [self getActiveNetworkInterface];
+    // Также жестко убиваем от рута при выключении
     NSString *shellCommand = [NSString stringWithFormat:
-        @"/bin/bash -c 'killall -9 sing-box ; "
-        @"networksetup -setwebproxystate \\\"%@\\\" off ; "
-        @"networksetup -setsecurewebproxystate \\\"%@\\\" off ; "
-        @"networksetup -setsocksfirewallproxystate \\\"%@\\\" off'", interface, interface, interface];
+        @"killall -9 sing-box 2>/dev/null ; "
+        @"networksetup -setwebproxystate '%@' off ; "
+        @"networksetup -setsecurewebproxystate '%@' off ; "
+        @"networksetup -setsocksfirewallproxystate '%@' off", interface, interface, interface];
         
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
