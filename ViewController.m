@@ -102,17 +102,11 @@
     [fm createDirectoryAtURL:appSupport withIntermediateDirectories:YES attributes:nil error:nil];
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 }
 
 - (void)quitApp {
     [self stopVPN];
     [NSApp terminate:nil];
-}
-
-- (void)applicationWillTerminate:(NSNotification *)notification {
-    [self stopVPN];
 }
 
 - (void)openLogs {
@@ -217,25 +211,11 @@
 
 - (void)toggleConnection { if (self.isConnected) { [self stopVPN]; } else { [self startVPN]; } }
 
-- (NSString *)getActiveNetworkInterface {
-    NSTask *task = [[NSTask alloc] init];
-    [task setLaunchPath:@"/usr/sbin/networksetup"];
-    [task setArguments:@[@"-listnetworkserviceorder"]];
-    NSPipe *pipe = [NSPipe pipe];
-    [task setStandardOutput:pipe];
-    [task launch];
-    NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
-    NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if ([output containsString:@"Wi-Fi"]) return @"Wi-Fi";
-    if ([output containsString:@"Ethernet"]) return @"Ethernet";
-    return @"Wi-Fi";
-}
-
 - (void)startVPN {
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    // [CRITICAL DEEP COPY FIX]: Делаем ЧИСТУЮ глубокую копию JSON, чтобы не дублировать outbounds/rules в памяти!
+    // [STATE FIX]: Делаем чистую копию перед каждым запуском
     NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
     
@@ -257,7 +237,7 @@
     }
     activeConfig[@"outbounds"] = newOutbounds;
     
-    // Прописываем обход петли маршрута
+    // Ищем адрес нашего текущего выбранного VPN-сервера
     NSString *activeServerAddress = @"";
     for (NSDictionary *out in newOutbounds) {
         if ([out[@"tag"] isEqualToString:activeProxyTag]) {
@@ -266,6 +246,7 @@
         }
     }
     
+    // DNS резолвер
     activeConfig[@"dns"] = @{
         @"servers": @[ 
             @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag},
@@ -277,16 +258,25 @@
         ]
     };
     
-    activeConfig[@"inbounds"] = @[ 
-        @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
-        @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
-    ];
+    // [GOLDEN TUN RETURN]: Никаких системных прокси. Настоящая виртуальная сетевая карта utun9.
+    activeConfig[@"inbounds"] = @[ @{
+        @"type": @"tun",
+        @"tag": @"tun-in",
+        @"interface_name": @"utun9",
+        @"inet4_address": @"172.19.0.1/30",
+        @"auto_route": @YES,
+        @"strict_route": @YES,
+        @"stack": @"system",
+        @"sniff": @YES,
+        @"sniff_override_destination": @NO
+    } ];
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
     NSMutableArray *rules = [NSMutableArray array];
     
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
+    // [LOOP FIX]: Прямой трафик до IP сервера всегда пускаем мимо туннеля (direct)
     if (activeServerAddress.length > 0) {
         [rules addObject:@{ @"domain": @[activeServerAddress], @"outbound": @"direct" }];
     }
@@ -312,16 +302,12 @@
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    NSString *interface = [self getActiveNetworkInterface];
     
-    // [CRITICAL FIX]: Убиваем ядро от имени ROOT прямо перед стартом
+    // Запуск чистого TUN-ядра (просит пароль ОДИН раз при запуске)
     NSString *shellCommand = [NSString stringWithFormat:
-        @"killall -9 sing-box 2>/dev/null ; "
-        @"nohup '%@' run -c '%@' > '%@' 2>&1 & "
-        @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
-        @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
-        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808", 
-        binaryPath, self.configPath, self.logPath, interface, interface, interface];
+        @"killall -9 sing-box 2>/dev/null || true ; "
+        @"nohup '%@' run -c '%@' > '%@' 2>&1 &", 
+        binaryPath, self.configPath, self.logPath];
         
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
@@ -333,21 +319,12 @@
         [self updateUIConnected:YES]; 
     } else { 
         self.statusLabel.stringValue = @"Отменено / Ошибка"; 
-        [self stopVPN]; 
     }
 }
 
 - (void)stopVPN {
-    NSString *interface = [self getActiveNetworkInterface];
-    NSString *shellCommand = [NSString stringWithFormat:
-        @"/bin/bash -c 'killall -9 sing-box 2>/dev/null ; "
-        @"networksetup -setwebproxystate \\\"%@\\\" off ; "
-        @"networksetup -setsecurewebproxystate \\\"%@\\\" off ; "
-        @"networksetup -setsocksfirewallproxystate \\\"%@\\\" off'", interface, interface, interface];
-        
-    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
-    
-    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
+    // Безопасное выключение (просто гасим процесс, туннель utun9 исчезнет сам, интернет не сломается)
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box 2>/dev/null || true\" with administrator privileges"];
     [script executeAndReturnError:nil];
     [self updateUIConnected:NO];
 }
@@ -361,7 +338,7 @@
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor colorWithRed:0 green:1 blue:0 alpha:0.1].CGColor;
     } else {
-        self.statusLabel.stringValue = @"Готов к работе";
+        self.statusLabel.stringValue = @"Отключено";
         self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
         self.connectButton.title = @"ВЫКЛ";
         self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
