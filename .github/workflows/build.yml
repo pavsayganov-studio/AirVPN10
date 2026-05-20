@@ -27,13 +27,8 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         
-        # [ICON FIX] Восстанавливаем генерацию красивой иконки через вшитый Python скрипт (без brew, без шрифтов!)
-        python3 -c "
-import base64
-icns_data = b'aWNucwAAAEgAAAAQY2xpYwAAABwAAAAAAQABAAAAAgADAAAABAAFAAAABgAHAAAACAAJAAAA'
-with open('AirVPN.app/Contents/Resources/AppIcon.icns', 'wb') as f:
-    f.write(base64.b64decode(icns_data))
-"
+        # Безопасное создание пустой иконки-заглушки (чтобы macOS не ругалась на отсутствие AppIcon.icns)
+        touch AirVPN.app/Contents/Resources/AppIcon.icns
         
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
@@ -42,13 +37,13 @@ with open('AirVPN.app/Contents/Resources/AppIcon.icns', 'wb') as f:
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v2.1.zip AirVPN.app
+        zip -r PauloVPN-macOS-10.13-v2.2.zip AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Engine Fix)"
-        body: "Официальный релиз v2.1.\n- Исправлено падение ядра 'unknown transport type'.\n- Убран двойной запрос пароля.\n- Добавлена стабильная легкая иконка."
+        name: "PauloVPN ${{ github.ref_name }} (Stable Engine)"
+        body: "Официальный релиз v2.2.\n- Исправлена YAML синтаксическая ошибка при сборке.\n- Запуск ядра без двойного запроса пароля.\n- Включена кнопка логов для дебага."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
