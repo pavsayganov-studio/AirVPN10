@@ -15,7 +15,31 @@
 
 @implementation ViewController
 
+// ПРОГРАММНАЯ ГЕНЕРАЦИЯ КРАСИВОЙ ИКОНКИ
+- (NSImage *)generateAppIcon {
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(256, 256)];
+    [image lockFocus];
+    
+    // Темно-серый закругленный квадрат
+    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(0, 0, 256, 256) xRadius:60 yRadius:60];
+    [[NSColor colorWithWhite:0.2 alpha:1.0] setFill];
+    [path fill];
+    
+    // Буква "P"
+    NSString *text = @"P";
+    NSFont *font = [NSFont boldSystemFontOfSize:180];
+    NSDictionary *attrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor whiteColor]};
+    NSSize textSize = [text sizeWithAttributes:attrs];
+    [text drawAtPoint:NSMakePoint((256 - textSize.width)/2, (256 - textSize.height)/2 - 10) withAttributes:attrs];
+    
+    [image unlockFocus];
+    return image;
+}
+
 - (void)loadView {
+    // Устанавливаем иконку приложения
+    [NSApp setApplicationIconImage:[self generateAppIcon]];
+    
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
@@ -134,6 +158,7 @@
     NSMutableDictionary *outbound = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
+    
     for (NSURLQueryItem *item in comp.queryItems) {
         if ([item.name isEqualToString:@"security"]) {
             if ([item.value isEqualToString:@"tls"] || [item.value isEqualToString:@"reality"]) tls[@"enabled"] = @YES;
@@ -143,6 +168,10 @@
         if ([item.name isEqualToString:@"pbk"]) tls[@"reality"][@"public_key"] = item.value;
         if ([item.name isEqualToString:@"sid"]) tls[@"reality"][@"short_id"] = item.value;
         if ([item.name isEqualToString:@"fp"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": item.value};
+        
+        // [FIX REALITY] Поддержка xtls-rprx-vision
+        if ([item.name isEqualToString:@"flow"] && item.value.length > 0) outbound[@"flow"] = item.value;
+        
         if ([item.name isEqualToString:@"type"] && item.value.length > 0) {
             if (![item.value isEqualToString:@"tcp"]) transport[@"type"] = item.value;
         }
@@ -227,7 +256,6 @@
     [task launch];
     NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
     NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    
     if ([output containsString:@"Wi-Fi"]) return @"Wi-Fi";
     if ([output containsString:@"Ethernet"]) return @"Ethernet";
     return @"Wi-Fi";
@@ -236,6 +264,11 @@
 - (void)startVPN {
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
+    
+    NSTask *killTask = [[NSTask alloc] init];
+    [killTask setLaunchPath:@"/usr/bin/killall"];
+    [killTask setArguments:@[@"-9", @"sing-box"]];
+    @try { [killTask launch]; [killTask waitUntilExit]; } @catch (NSException *e) {}
     
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
@@ -249,8 +282,9 @@
     if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
     if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
     
+    // [FIX URLTEST] Используем надежный хост для проверки
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://1.1.1.1/", @"interval": @"3m", @"tolerance": @50 };
+        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50 };
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
@@ -281,7 +315,6 @@
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     NSString *interface = [self getActiveNetworkInterface];
     
-    // [CRITICAL FIX]: Убиваем зомби от имени ROOT, чтобы освободить порты 10808 и 10809
     NSString *shellCommand = [NSString stringWithFormat:
         @"killall -9 sing-box 2>/dev/null ; "
         @"nohup '%@' run -c '%@' > '%@' 2>&1 & "
@@ -306,12 +339,11 @@
 
 - (void)stopVPN {
     NSString *interface = [self getActiveNetworkInterface];
-    // Также жестко убиваем от рута при выключении
     NSString *shellCommand = [NSString stringWithFormat:
-        @"killall -9 sing-box 2>/dev/null ; "
-        @"networksetup -setwebproxystate '%@' off ; "
-        @"networksetup -setsecurewebproxystate '%@' off ; "
-        @"networksetup -setsocksfirewallproxystate '%@' off", interface, interface, interface];
+        @"/bin/bash -c 'killall -9 sing-box 2>/dev/null ; "
+        @"networksetup -setwebproxystate \\\"%@\\\" off ; "
+        @"networksetup -setsecurewebproxystate \\\"%@\\\" off ; "
+        @"networksetup -setsocksfirewallproxystate \\\"%@\\\" off'", interface, interface, interface];
         
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     

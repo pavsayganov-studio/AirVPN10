@@ -21,13 +21,14 @@
     [NSApp setMainMenu:mainMenu];
 
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.title = @"🛡️";
+    // Ставим букву P в верхнее меню Mac
+    self.statusItem.button.title = @"🅟 PauloVPN";
+    self.statusItem.button.font = [NSFont boldSystemFontOfSize:13];
     self.statusItem.button.action = @selector(togglePopover:);
     self.statusItem.button.target = self;
     
     self.popover = [[NSPopover alloc] init];
     self.popover.contentViewController = [[ViewController alloc] init];
-    // [КРИТИЧНЫЙ ФИКС] Окно больше не исчезает само по себе (ApplicationDefined)
     self.popover.behavior = NSPopoverBehaviorApplicationDefined;
     self.popover.appearance = [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
 }
