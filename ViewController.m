@@ -12,7 +12,7 @@
 @property (strong) NSMutableArray *proxyTags;
 @property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL isConnected;
-@property (strong) NSTask *singBoxTask; // Прямой контроль над процессом!
+@property (strong) NSTask *singBoxTask;
 @end
 
 @implementation ViewController
@@ -53,14 +53,14 @@
     
     self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 220, 280, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
-    self.stealthCheckbox.title = @"Умный режим (Stealth Routing)";
+    self.stealthCheckbox.title = @"Умный режим (Только заблокированные)";
     self.stealthCheckbox.state = NSControlStateValueOn;
     self.stealthCheckbox.target = self;
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
     
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 195, 320, 20)];
-    self.statusLabel.stringValue = @"Инициализация...";
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 185, 320, 20)];
+    self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.bezeled = NO;
     self.statusLabel.drawsBackground = NO;
@@ -105,9 +105,6 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
     
-    // [CRITICAL HEALING]: При старте ВСЕГДА сбрасываем прокси в системе (защита от крашей)
-    [self emergencyProxyReset];
-    
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
         self.urlField.stringValue = savedURL;
@@ -119,13 +116,11 @@
         }
     }
     
-    self.statusLabel.stringValue = @"Готов к работе";
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 }
 
 - (void)emergencyProxyReset {
     NSString *interface = [self getActiveNetworkInterface];
-    // Чистая команда без sudo, если мы просим пользователя ввести пароль, либо используем AppleScript
     NSString *shellCommand = [NSString stringWithFormat:
         @"networksetup -setwebproxystate '%@' off ; "
         @"networksetup -setsecurewebproxystate '%@' off ; "
@@ -148,14 +143,13 @@
 }
 
 - (void)serverChanged {
-    if (self.isConnected) { [self startCoreOnly]; } // Без пароля!
+    if (self.isConnected) { [self startCoreOnly]; }
 }
 
 - (void)stealthChanged {
-    if (self.isConnected) { [self startCoreOnly]; } // Без пароля!
+    if (self.isConnected) { [self startCoreOnly]; }
 }
 
-// [EXPERT FIX]: Безопасный парсер с проверками
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
@@ -188,7 +182,6 @@
         if ([item.name isEqualToString:@"serviceName"] && item.value.length > 0) transport[@"service_name"] = item.value;
         if ([item.name isEqualToString:@"host"] && item.value.length > 0) transport[@"headers"] = @{@"Host": item.value};
     }
-    // Форсируем utls
     if (tls[@"enabled"]) { tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"}; }
     if (tls.count > 0) outbound[@"tls"] = tls;
     if (transport.count > 0) outbound[@"transport"] = transport;
@@ -283,7 +276,7 @@
     return @"Wi-Fi";
 }
 
-// Запускает только ядро (используется при смене серверов, НЕ требует пароля)
+// [EXPERT SOLUTION]: ГЕНЕРАЦИЯ БЕЗ ПЕТЕЛЬ
 - (void)startCoreOnly {
     if (self.singBoxTask && [self.singBoxTask isRunning]) {
         [self.singBoxTask terminate];
@@ -294,8 +287,8 @@
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
     NSMutableDictionary *goldConfig = [@{
-        @"log": @{@"level": @"info"},
-        @"inbounds": @[ 
+        @"log": @{@"level": @"warn"}, // [FIX]: warn, экономим I/O диска!
+        @"inbounds": @[
             @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
         ],
@@ -304,84 +297,108 @@
     
     NSMutableArray *outbounds = goldConfig[@"outbounds"];
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        // [EXPERT FIX]: HTTPS проверка
-        [outbounds addObject:@{@"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"https://www.gstatic.com/generate_204", @"interval": @"3m", @"tolerance": @50}];
+        [outbounds addObject:@{
+            @"type": @"urltest",
+            @"tag": @"auto-switch",
+            @"outbounds": self.proxyTags,
+            @"url": @"http://cp.cloudflare.com/generate_204", // [FIX]: HTTP, не HTTPS (работает мгновенно)
+            @"interval": @"3m",
+            @"tolerance": @50
+        }];
     }
+    
     [outbounds addObjectsFromArray:self.proxyOutbounds];
     [outbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
     [outbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}];
     
     NSString *activeServerAddress = @"";
     for (NSDictionary *out in self.proxyOutbounds) {
-        if ([out[@"tag"] isEqualToString:activeProxyTag]) { activeServerAddress = out[@"server"]; break; }
+        if ([out[@"tag"] isEqualToString:activeProxyTag]) {
+            activeServerAddress = out[@"server"];
+            break;
+        }
     }
     
-    // [EXPERT FIX]: Split DNS (Безопасный резолвинг)
+    // [EXPERT FIX]: UDP DNS через direct. Никакого DoH. Никакой зависимости от туннеля!
     goldConfig[@"dns"] = @{
-        @"servers": @[ 
-            @{@"tag": @"remote-dns", @"address": @"https://1.1.1.1/dns-query", @"detour": activeProxyTag},
+        @"servers": @[
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"},
             @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
         ],
-        @"rules": @[ 
-            @{@"outbound": @[@"any"], @"server": @"remote-dns"},
-            @{@"domain_suffix": @[@".ru", @".su", @".рф", @".yandex.ru", @".vk.com", @".ya.ru"], @"server": @"local-dns"}
+        @"rules": @[
+            @{@"domain_suffix": @[@"gsupport.support"], @"server": @"local-dns"},
+            @{@"domain_suffix": @[@".ru", @".su", @".рф", @"yandex.ru", @"vk.com", @"ya.ru", @"mail.ru", @"ok.ru", @"sber.ru"], @"server": @"local-dns"}
         ]
     };
     
     NSMutableArray *rules = [NSMutableArray array];
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
-    if (activeServerAddress.length > 0) { [rules addObject:@{ @"domain": @[activeServerAddress], @"outbound": @"direct" }]; }
+    
+    if (activeServerAddress.length > 0) {
+        [rules addObject:@{@"domain": @[activeServerAddress], @"outbound": @"direct"}];
+    }
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
+    route[@"auto_detect_interface"] = @YES;
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        // РАСШИРЕННЫЙ СПИСОК 2026
-        NSArray *blockedDomains = @[ 
-            @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com", 
-            @"whatsapp.com", @"whatsapp.net", @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
-            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"spotify.com", @"scdn.co",
+        NSArray *blockedDomains = @[
+            @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
+            @"whatsapp.com", @"whatsapp.net",
+            @"discord.com", @"discordapp.com", @"discord.gg",
+            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
-            @"anthropic.com", @"claude.ai", 
-            @"gemini.google.com", @"bard.google.com", @"ai.google.dev", @"googleusercontent.com",
-            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com", @"twimg.com",
-            @"proton.me", @"protonmail.com", @"medium.com", @"canva.com", @"notion.so", @"notion.site",
-            @"github.com", @"githubusercontent.com", @"linkedin.com", @"bbc.co.uk", @"dw.com", @"meduza.io", @"svoboda.org",
-            @"rutracker.org", @"rutracker.cc", @"rutracker.net"
+            @"anthropic.com", @"claude.ai", @"gemini.google.com", @"bard.google.com", @"ai.google.dev",
+            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
+            @"twitter.com", @"x.com", @"twimg.com",
+            @"github.com", @"githubusercontent.com",
+            @"medium.com", @"meduza.io", @"svoboda.org",
+            @"rutracker.org", @"rutracker.cc", @"spotify.com", @"scdn.co"
         ];
-        NSArray *telegramIPs = @[ @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", @"91.108.36.0/23", @"91.108.38.0/23", @"91.108.56.0/22", @"91.108.56.0/23", @"91.108.56.0/24", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22" ];
-        [rules addObject:@{ @"domain_suffix": blockedDomains, @"ip_cidr": telegramIPs, @"outbound": activeProxyTag }];
+        
+        NSArray *telegramIPs = @[
+            @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22",
+            @"91.108.16.0/22", @"91.108.20.0/22", @"91.108.36.0/23",
+            @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22",
+            @"149.154.172.0/22", @"185.76.8.0/22"
+        ];
+        
+        // [EXPERT FIX]: Отдельные правила для доменов и IP (для корректной отработки в v1.8)
+        [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeProxyTag}];
+        [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeProxyTag}];
         route[@"final"] = @"direct"; 
     } else { 
         route[@"final"] = activeProxyTag; 
     }
     
     route[@"rules"] = rules;
-    route[@"auto_detect_interface"] = @YES;
     goldConfig[@"route"] = route;
     
-    NSData *finalData = [NSJSONSerialization dataWithJSONObject:goldConfig options:0 error:nil];
+    NSError *jsonError = nil;
+    NSData *finalData = [NSJSONSerialization dataWithJSONObject:goldConfig options:0 error:&jsonError];
+    if (jsonError || !finalData) {
+        self.statusLabel.stringValue = @"Ошибка генерации конфига!";
+        return;
+    }
     [finalData writeToFile:self.configPath atomically:YES];
     
-    // [EXPERT FIX]: Запускаем ядро локально через NSTask. Никаких sudo.
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     self.singBoxTask = [[NSTask alloc] init];
     [self.singBoxTask setLaunchPath:binaryPath];
     [self.singBoxTask setArguments:@[@"run", @"-c", self.configPath]];
     
-    // Перенаправляем логи
     [[NSFileManager defaultManager] createFileAtPath:self.logPath contents:nil attributes:nil];
-    NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
-    [self.singBoxTask setStandardOutput:fileHandle];
-    [self.singBoxTask setStandardError:fileHandle];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
+    [self.singBoxTask setStandardOutput:fh];
+    [self.singBoxTask setStandardError:fh];
     
-    // [AUTO-HEALING]: Если ядро упадет, выключаем UI
     __weak typeof(self) weakSelf = self;
     self.singBoxTask.terminationHandler = ^(NSTask *task) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (weakSelf.isConnected) {
                 weakSelf.statusLabel.stringValue = @"Сбой ядра! Перезапустите.";
                 weakSelf.statusLabel.textColor = [NSColor redColor];
-                [weakSelf forceProxyOff]; // Спасаем интернет
+                [weakSelf forceProxyOff];
                 [weakSelf updateUIConnected:NO];
             }
         });
@@ -396,7 +413,6 @@
     
     [self startCoreOnly];
     
-    // Включаем системные прокси (Это единственное место, где нужен пароль!)
     NSString *interface = [self getActiveNetworkInterface];
     NSString *shellCommand = [NSString stringWithFormat:
         @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
@@ -437,6 +453,7 @@
         @"networksetup -setwebproxystate '%@' off ; "
         @"networksetup -setsecurewebproxystate '%@' off ; "
         @"networksetup -setsocksfirewallproxystate '%@' off", interface, interface, interface];
+        
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
     NSDictionary *errorInfo = nil;
