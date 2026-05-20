@@ -26,16 +26,15 @@ jobs:
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
-        
-        # Забираем иконку ClashX
-        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
-        
         chmod +x AirVPN.app/Contents/Resources/sing-box
-        
+
+        curl -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns \
+          -o AirVPN.app/Contents/Resources/AppIcon.icns || true
+
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o AirVPN.app/Contents/MacOS/AirVPN
-          
+
         codesign --force --deep -s - AirVPN.app
         zip -r "PauloVPN-macOS-10.13-${{ github.ref_name }}.zip" AirVPN.app
     - name: Release version
@@ -43,7 +42,7 @@ jobs:
       with:
         tag_name: ${{ github.ref_name }}
         name: "PauloVPN ${{ github.ref_name }} (Expert Edition)"
-        body: "Официальный релиз v8.0.\n- Полностью устранена петля DNS (100% стабильность, без перегрева CPU).\n- Оптимизированы правила Стелс-режима (IP и Domain правила разделены).\n- Снижена нагрузка I/O на диски старых маков (warn level).\n- Ускоренный urltest по HTTP (0.01 сек)."
+        body: "Релиз v8.1.\n- Иконка приложения подхватывается корректно (CFBundleIconFile в Info.plist).\n- Скачивание иконки нефатально для сборки (|| true).\n- Убран небезопасный флаг -k у curl."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
