@@ -18,28 +18,24 @@ jobs:
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App (Objective-C Intel)
       run: |
-        # Создаем правильную структуру macOS Bundle
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
-        # ЖЕСТКАЯ КОМПИЛЯЦИЯ ПОД INTEL x86_64 И MACOS 10.13
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o AirVPN.app/Contents/MacOS/AirVPN
           
-        # Локальная подпись (Ad-Hoc), чтобы macOS 10.13 не считала файл поврежденным
         codesign --force --deep -s - AirVPN.app
-        
-        zip -r AirVPN-macOS-10.13-v1.4.zip AirVPN.app
-    - name: Release version 1.4
+        zip -r PauloVPN-macOS-10.13-v1.5.zip AirVPN.app
+    - name: Release version 1.5
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: v1.4
-        name: "AirVPN v1.4 (Intel Fix)"
-        body: "Официальный релиз v1.4.\n- Исправлена проблема 'перечеркнутого круга' на старых Mac.\n- Принудительная сборка под архитектуру Intel (x86_64).\n- Добавлена Ad-Hoc подпись бандла."
-        files: AirVPN-macOS-10.13-v1.4.zip
+        tag_name: v1.5
+        name: "PauloVPN v1.5 (Russian + VLESS Parser)"
+        body: "Официальный релиз v1.5.\n- Встроенный парсер ссылок VLESS и Base64 подписок.\n- Исправлена работа Cmd+C / Cmd+V.\n- Полный перевод на русский язык (PauloVPN)."
+        files: PauloVPN-macOS-10.13-v1.5.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

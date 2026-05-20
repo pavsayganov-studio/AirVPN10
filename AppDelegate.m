@@ -9,13 +9,23 @@
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    // 1. Создаем иконку
+    // Включаем поддержку горячих клавиш (Cmd+C, Cmd+V) для скрытого приложения
+    NSMenu *mainMenu = [[NSMenu alloc] init];
+    NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Правка"];
+    [editMenu addItemWithTitle:@"Копировать" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Вставить" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:@"Выбрать всё" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [editMenu addItemWithTitle:@"Вырезать" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenuItem setSubmenu:editMenu];
+    [mainMenu addItem:editMenuItem];
+    [NSApp setMainMenu:mainMenu];
+
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     self.statusItem.button.title = @"🛡️";
     self.statusItem.button.action = @selector(togglePopover:);
     self.statusItem.button.target = self;
     
-    // 2. Создаем всплывающее окно
     self.popover = [[NSPopover alloc] init];
     self.popover.contentViewController = [[ViewController alloc] init];
     self.popover.behavior = NSPopoverBehaviorTransient;
