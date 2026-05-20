@@ -21,7 +21,6 @@
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    // Кнопка Выйти (Работает 100%)
     NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(230, 440, 60, 25)];
     quitBtn.title = @"Выйти";
     quitBtn.bezelStyle = NSBezelStyleRounded;
@@ -29,7 +28,6 @@
     quitBtn.action = @selector(quitApp);
     [effectView addSubview:quitBtn];
     
-    // Кнопка Логи (Для дебага)
     NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 60, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
@@ -61,7 +59,6 @@
     self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 260, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"Серверы не загружены"];
     [self.serverDropdown setEnabled:NO];
-    // Позволяет менять сервер на лету!
     self.serverDropdown.target = self;
     self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
@@ -113,19 +110,18 @@
 }
 
 - (void)openLogs {
-    // Открывает лог-файл в стандартном приложении "Консоль" macOS
     [[NSWorkspace sharedWorkspace] openFile:self.logPath withApplication:@"Console"];
 }
 
 - (void)serverChanged {
-    if (self.isConnected) { [self startVPN]; } // Мягкий рестарт ядра
+    if (self.isConnected) { [self startVPN]; }
 }
 
 - (void)stealthChanged {
-    if (self.isConnected) { [self startVPN]; } // Мягкий рестарт ядра
+    if (self.isConnected) { [self startVPN]; }
 }
 
-// УЛЬТИМАТИВНЫЙ ПАРСЕР С ОБХОДОМ ТСПУ (DPI)
+// [CRITICAL FIX]: ЗАЩИТА ОТ ПУСТЫХ ПАРАМЕТРОВ ТРАНСПОРТА
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
@@ -133,6 +129,7 @@
     NSMutableDictionary *outbound = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
+    
     for (NSURLQueryItem *item in comp.queryItems) {
         if ([item.name isEqualToString:@"security"]) {
             if ([item.value isEqualToString:@"tls"] || [item.value isEqualToString:@"reality"]) tls[@"enabled"] = @YES;
@@ -141,14 +138,21 @@
         if ([item.name isEqualToString:@"sni"]) tls[@"server_name"] = item.value;
         if ([item.name isEqualToString:@"pbk"]) tls[@"reality"][@"public_key"] = item.value;
         if ([item.name isEqualToString:@"sid"]) tls[@"reality"][@"short_id"] = item.value;
-        if ([item.name isEqualToString:@"type"] && [item.value isEqualToString:@"ws"]) transport[@"type"] = @"ws";
-        if ([item.name isEqualToString:@"type"] && [item.value isEqualToString:@"grpc"]) transport[@"type"] = @"grpc";
-        if ([item.name isEqualToString:@"path"]) transport[@"path"] = item.value;
-        if ([item.name isEqualToString:@"serviceName"]) transport[@"service_name"] = item.value;
-        if ([item.name isEqualToString:@"host"]) transport[@"headers"] = @{@"Host": item.value};
+        if ([item.name isEqualToString:@"fp"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": item.value};
+        
+        // Исправление бага "unknown transport type"
+        if ([item.name isEqualToString:@"type"] && item.value.length > 0) {
+            if ([item.value isEqualToString:@"tcp"]) {
+                // Если tcp, блок transport не нужен (по умолчанию)
+            } else {
+                transport[@"type"] = item.value;
+            }
+        }
+        if ([item.name isEqualToString:@"path"] && item.value.length > 0) transport[@"path"] = item.value;
+        if ([item.name isEqualToString:@"serviceName"] && item.value.length > 0) transport[@"service_name"] = item.value;
+        if ([item.name isEqualToString:@"host"] && item.value.length > 0) transport[@"headers"] = @{@"Host": item.value};
     }
     
-    // [Y-COMBINATOR FIX]: Жестко форсируем UTLS (Хром) для всех VLESS, иначе ТСПУ заблокирует!
     if (tls[@"enabled"]) {
         tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
     }
@@ -178,7 +182,7 @@
         return;
     }
     NSMutableDictionary *skeleton = [@{
-        @"log": @{@"level": @"debug"}, // DEBUG для отлова ошибок!
+        @"log": @{@"level": @"info"}, // Убираем debug, чтобы не засорять лог
         @"outbounds": parsedOutbounds,
     } mutableCopy];
     [self handleParsedJSON:skeleton];
@@ -230,8 +234,11 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    // ВСЕГДА убиваем старое ядро перед запуском нового (важно для смены серверов на лету)
-    [[[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box\" with administrator privileges"] executeAndReturnError:nil];
+    // [UX FIX] Убиваем старый процесс без sudo, если он есть, чтобы не просить пароль дважды
+    NSTask *killTask = [[NSTask alloc] init];
+    [killTask setLaunchPath:@"/usr/bin/killall"];
+    [killTask setArguments:@[@"-9", @"sing-box"]];
+    @try { [killTask launch]; [killTask waitUntilExit]; } @catch (NSException *e) {}
     
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
@@ -251,7 +258,6 @@
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
     
-    // ЖЕСТКИЙ DNS РЕЗОЛВЕР ДЛЯ РОССИИ
     self.downloadedJSON[@"dns"] = @{
         @"servers": @[ 
             @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag},
@@ -266,7 +272,7 @@
     self.downloadedJSON[@"inbounds"] = @[ @{
         @"type": @"tun", @"tag": @"tun-in", @"interface_name": @"utun9", @"inet4_address": @"172.19.0.1/30",
         @"auto_route": @YES, @"strict_route": @YES, @"stack": @"system",
-        @"sniff": @YES, @"sniff_override_destination": @YES // КРИТИЧНО ДЛЯ ПЕРЕХВАТА YOUTUBE
+        @"sniff": @YES, @"sniff_override_destination": @YES
     } ];
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
@@ -289,7 +295,6 @@
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    // НАДЕЖНЫЙ ЗАПУСК В ФОНЕ ЧЕРЕЗ BASH
     NSString *shellCommand = [NSString stringWithFormat:@"/bin/bash -c 'nohup \\\"%@\\\" run -c \\\"%@\\\" > \\\"%@\\\" 2>&1 &'", binaryPath, self.configPath, self.logPath];
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
@@ -300,7 +305,7 @@
     if (!errorInfo) { 
         [self updateUIConnected:YES]; 
     } else { 
-        self.statusLabel.stringValue = @"Ошибка прав доступа"; 
+        self.statusLabel.stringValue = @"Отменено / Ошибка прав"; 
     }
 }
 
@@ -318,9 +323,8 @@
         self.connectButton.title = @"ВКЛ";
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor colorWithRed:0 green:1 blue:0 alpha:0.1].CGColor;
-        // Дропдаун ОСТАЕТСЯ АКТИВНЫМ для смены на лету!
     } else {
-        self.statusLabel.stringValue = @"Отключено";
+        self.statusLabel.stringValue = @"Готов к работе";
         self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
         self.connectButton.title = @"ВЫКЛ";
         self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;

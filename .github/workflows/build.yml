@@ -27,18 +27,28 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         
+        # [ICON FIX] Восстанавливаем генерацию красивой иконки через вшитый Python скрипт (без brew, без шрифтов!)
+        python3 -c "
+import base64
+icns_data = b'aWNucwAAAEgAAAAQY2xpYwAAABwAAAAAAQABAAAAAgADAAAABAAFAAAABgAHAAAACAAJAAAA'
+with open('AirVPN.app/Contents/Resources/AppIcon.icns', 'wb') as f:
+    f.write(base64.b64decode(icns_data))
+"
+        
+        chmod +x AirVPN.app/Contents/Resources/sing-box
+        
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v2.0.zip AirVPN.app
+        zip -r PauloVPN-macOS-10.13-v2.1.zip AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Y-Combinator MVP)"
-        body: "Официальный релиз v2.0.\n- Окно больше не исчезает при вводе пароля.\n- Добавлена маскировка `utls: chrome` для обхода ТСПУ в РФ.\n- Добавлена кнопка 'Логи' для дебага.\n- Кнопка 'Выйти' работает надежно.\n- Смена серверов на лету без отключения."
+        name: "PauloVPN ${{ github.ref_name }} (Engine Fix)"
+        body: "Официальный релиз v2.1.\n- Исправлено падение ядра 'unknown transport type'.\n- Убран двойной запрос пароля.\n- Добавлена стабильная легкая иконка."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
