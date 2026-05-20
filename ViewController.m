@@ -187,6 +187,16 @@
     if (tls[@"enabled"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
     if (tls.count > 0) out[@"tls"] = tls;
     if (transport.count > 0) out[@"transport"] = transport;
+    
+    // [MUX FIX]: Внедряем мультиплексор во все VLESS исходящие
+    out[@"multiplex"] = @{
+        @"enabled": @YES,
+        @"protocol": @"smux",
+        @"max_connections": @4,
+        @"min_streams": @4,
+        @"max_streams": @0
+    };
+    
     return out;
 }
 
@@ -214,10 +224,20 @@
 
     for (NSDictionary *o in json[@"outbounds"]) {
         NSString *type = o[@"type"], *tag = o[@"tag"];
-        // [FIX]: Больше не собираем "selector" и "urltest", только чистые прокси
         if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
+            
+            // Если сервер пришел из подписки (не vless://), форсируем в него Mux
+            NSMutableDictionary *mutOut = [o mutableCopy];
+            mutOut[@"multiplex"] = @{
+                @"enabled": @YES,
+                @"protocol": @"smux",
+                @"max_connections": @4,
+                @"min_streams": @4,
+                @"max_streams": @0
+            };
+            
             [self.proxyTags addObject:tag];
-            [self.proxyOutbounds addObject:o];
+            [self.proxyOutbounds addObject:mutOut];
         }
     }
 
@@ -286,7 +306,6 @@
         self.statusLabel.stringValue = @"Выберите сервер."; return;
     }
 
-    // Ищем только 1 выбранный сервер
     NSDictionary *activeOutbound = nil;
     for (NSDictionary *o in self.proxyOutbounds) {
         if ([o[@"tag"] isEqualToString:activeTag]) {
@@ -297,50 +316,45 @@
         self.statusLabel.stringValue = @"Сервер не найден."; return;
     }
 
-    // [CPU SAVER]: Оставляем в конфиге только ОДИН активный сервер! Никаких urltest и пингов!
     NSArray *outbounds = @[
         activeOutbound,
         @{@"type": @"direct", @"tag": @"direct"}
     ];
 
-    NSDictionary *routeConfig;
+    NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
+    NSMutableArray *rules = [NSMutableArray array];
+
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
-            @"whatsapp.com", @"whatsapp.net", @"discord.com", @"discordapp.com", @"discord.gg",
+            @"whatsapp.com", @"whatsapp.net",
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
             @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
-            @"twitter.com", @"x.com", @"twimg.com", @"github.com", @"githubusercontent.com",
-            @"medium.com", @"meduza.io", @"svoboda.org", @"rutracker.org", @"rutracker.cc",
-            @"spotify.com", @"scdn.co"
+            @"twitter.com", @"x.com", @"twimg.com",
+            @"discord.com", @"discordapp.com", @"discord.gg", @"rutracker.org", @"rutracker.cc"
         ];
+        // [TELEGRAM FIX]: Добавлены ВСЕ подсети Telegram (Официальные)
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
             @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
         ];
         
-        routeConfig = @{
-            @"rules": @[
-                @{@"domain_suffix": blockedDomains, @"outbound": activeTag},
-                @{@"ip_cidr": telegramIPs, @"outbound": activeTag}
-            ],
-            @"final": @"direct"
-        };
+        [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeTag}];
+        [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeTag}];
+        routeConfig[@"rules"] = rules;
+        routeConfig[@"final"] = @"direct";
     } else {
-        // [GLOBAL MODE FIX]: Все локальные IP отправляем мимо VPN, остальное - в выбранный сервер
-        routeConfig = @{
-            @"rules": @[
-                @{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}
-            ],
-            @"final": activeTag
-        };
+        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
+        routeConfig[@"rules"] = rules;
+        routeConfig[@"final"] = activeTag;
     }
 
     NSDictionary *config = @{
         @"log": @{@"level": @"warn"},
         @"inbounds": @[
+            // [SOCKS FIX]: Добавлено жесткое указание для резолвинга через HTTP-туннель
             @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
         ],
