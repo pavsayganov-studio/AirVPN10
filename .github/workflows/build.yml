@@ -28,10 +28,8 @@ jobs:
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
-        # Скачиваем оригинальную иконку
-        curl -k -sL https://github.com/SagerNet/sing-box/raw/v1.3.0/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
-        
-        chmod +x AirVPN.app/Contents/Resources/sing-box
+        # [ICON RECOVERY] Скачиваем оригинальную иконку ClashX (100% живая ссылка на .icns)
+        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
           -arch x86_64 -mmacosx-version-min=10.13 \
@@ -43,8 +41,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Stealth Master v5.6)"
-        body: "Официальный релиз v5.6.\n- Исправлена синтаксическая ошибка компилятора Clang.\n- Полностью удалены шаги генерации иконок для максимальной стабильности.\n- Расширен список Стелс-доменов (Discord, Notion, Spotify, Dev-ресурсы)."
+        name: "PauloVPN ${{ github.ref_name }} (Stealth Master v5.7)"
+        body: "Официальный релиз v5.7.\n- Полностью сохранены оригинальные DNS/маршруты провайдера в Умном режиме (Успех 4.0).\n- Устранены петли маршрутизации в Глобальном режиме.\n- Исправлено наложение текста на кнопку ВКЛ.\n- Добавлена шикарная иконка ClashX."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
