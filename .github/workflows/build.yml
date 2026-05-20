@@ -19,7 +19,6 @@ jobs:
       run: |
         git clone -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        # Добавлен тег with_multiplex для устранения TCP таймаутов!
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality,with_multiplex -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App
       run: |
@@ -37,8 +36,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Multiplex Fix)"
-        body: "Официальный релиз v6.2.\n- Интегрирована технология Multiplex (Mux). Теперь все TCP-запросы упаковываются в один канал. Устранены ошибки `i/o timeout` при перегрузке серверов множеством параллельных соединений (особенно Telegram).\n- Жестко прописаны IP-диапазоны Telegram для маршрутизации."
+        name: "PauloVPN ${{ github.ref_name }} (IPv4-Only Stability Master)"
+        body: "Официальный релиз v7.0.\n- Полностью принудительно отключен IPv6 в ядре (решена проблема `no route to host`).\n- DNS-запросы переведены на чистый IPv4 UDP-протокол к 8.8.8.8."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

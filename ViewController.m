@@ -59,6 +59,7 @@
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
 
+    // Твоя подсказка для Telegram
     NSTextField *telegramHint = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 183, 280, 14)];
     telegramHint.stringValue = @"Telegram: Settings → Proxy → SOCKS5 127.0.0.1:10808";
     telegramHint.alignment = NSTextAlignmentCenter;
@@ -122,7 +123,7 @@
         if ([fm fileExistsAtPath:subPath]) {
             NSData *subData = [NSData dataWithContentsOfFile:subPath];
             NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:subData options:NSJSONReadingMutableContainers error:nil];
-            if (json) [self handleParsedJSON:json];
+            if (json) { [self handleParsedJSON:json]; }
         }
     }
 
@@ -187,16 +188,6 @@
     if (tls[@"enabled"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
     if (tls.count > 0) out[@"tls"] = tls;
     if (transport.count > 0) out[@"transport"] = transport;
-    
-    // [MUX FIX]: Внедряем мультиплексор во все VLESS исходящие
-    out[@"multiplex"] = @{
-        @"enabled": @YES,
-        @"protocol": @"smux",
-        @"max_connections": @4,
-        @"min_streams": @4,
-        @"max_streams": @0
-    };
-    
     return out;
 }
 
@@ -221,28 +212,16 @@
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
     self.proxyTags = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
-
     for (NSDictionary *o in json[@"outbounds"]) {
         NSString *type = o[@"type"], *tag = o[@"tag"];
         if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
-            
-            // Если сервер пришел из подписки (не vless://), форсируем в него Mux
-            NSMutableDictionary *mutOut = [o mutableCopy];
-            mutOut[@"multiplex"] = @{
-                @"enabled": @YES,
-                @"protocol": @"smux",
-                @"max_connections": @4,
-                @"min_streams": @4,
-                @"max_streams": @0
-            };
-            
             [self.proxyTags addObject:tag];
-            [self.proxyOutbounds addObject:mutOut];
+            [self.proxyOutbounds addObject:o];
         }
     }
-
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
+        [self.serverDropdown addItemWithTitle:@"⚡️ Авто (Умный выбор)"];
         [self.serverDropdown addItemsWithTitles:self.proxyTags];
         [self.serverDropdown setEnabled:YES];
         self.statusLabel.stringValue = [NSString stringWithFormat:@"Загружено %lu серверов", (unsigned long)self.proxyTags.count];
@@ -256,9 +235,7 @@
     if (urlString.length == 0) return;
     [[NSUserDefaults standardUserDefaults] setObject:urlString forKey:@"SubscriptionURL"];
     [[NSUserDefaults standardUserDefaults] synchronize];
-
     if ([urlString hasPrefix:@"vless://"]) { [self processRawText:urlString]; return; }
-
     self.statusLabel.stringValue = @"Загрузка...";
     [[[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:urlString] completionHandler:^(NSData *data, NSURLResponse *r, NSError *err) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -278,9 +255,7 @@
     }] resume];
 }
 
-- (void)toggleConnection {
-    if (self.isConnected) [self stopVPN]; else [self startVPN];
-}
+- (void)toggleConnection { if (self.isConnected) [self stopVPN]; else [self startVPN]; }
 
 - (NSString *)getActiveNetworkInterface {
     NSTask *t = [[NSTask alloc] init];
@@ -301,64 +276,76 @@
         [self.singBoxTask waitUntilExit];
     }
 
-    NSString *activeTag = self.serverDropdown.titleOfSelectedItem ?: @"";
-    if (activeTag.length == 0) {
-        self.statusLabel.stringValue = @"Выберите сервер."; return;
-    }
+    NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem ?: @"";
+    BOOL isAuto = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"];
+    NSString *activeProxyTag = isAuto ? @"auto-switch" : selectedTitle;
 
-    NSDictionary *activeOutbound = nil;
-    for (NSDictionary *o in self.proxyOutbounds) {
-        if ([o[@"tag"] isEqualToString:activeTag]) {
-            activeOutbound = o; break;
-        }
+    NSMutableArray *outbounds = [NSMutableArray array];
+    if (isAuto) {
+        [outbounds addObject:@{
+            @"type": @"urltest",
+            @"tag": @"auto-switch",
+            @"outbounds": self.proxyTags,
+            @"url": @"http://cp.cloudflare.com/generate_204",
+            @"interval": @"30s",
+            @"tolerance": @50
+        }];
     }
-    if (!activeOutbound) {
-        self.statusLabel.stringValue = @"Сервер не найден."; return;
-    }
+    [outbounds addObjectsFromArray:self.proxyOutbounds];
+    [outbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
+    [outbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}];
 
-    NSArray *outbounds = @[
-        activeOutbound,
-        @{@"type": @"direct", @"tag": @"direct"}
-    ];
+    // [CTO IPV4-ONLY DNS]: Жестко отключаем IPv6 на уровне ядра!
+    // Направляем запросы через UDP 8.8.8.8 напрямую мимо VPN без петель.
+    NSDictionary *dnsConfig = @{
+        @"servers": @[
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"}
+        ],
+        @"strategy": @"ipv4_only" // КРИТИЧЕСКИЙ ФИКС: только IPv4!
+    };
+
+    NSMutableArray *rules = [NSMutableArray array];
+    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
 
     NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
-    NSMutableArray *rules = [NSMutableArray array];
+    routeConfig[@"auto_detect_interface"] = @YES;
 
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
             @"whatsapp.com", @"whatsapp.net",
+            @"discord.com", @"discordapp.com", @"discord.gg",
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
             @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
-            @"twitter.com", @"x.com", @"twimg.com",
-            @"discord.com", @"discordapp.com", @"discord.gg", @"rutracker.org", @"rutracker.cc"
+            @"twitter.com", @"x.com", @"twimg.com", @"github.com", @"githubusercontent.com",
+            @"medium.com", @"meduza.io", @"svoboda.org", @"rutracker.org", @"rutracker.cc",
+            @"spotify.com", @"scdn.co"
         ];
-        // [TELEGRAM FIX]: Добавлены ВСЕ подсети Telegram (Официальные)
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
             @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
         ];
         
-        [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeTag}];
-        [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeTag}];
+        [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeProxyTag}];
+        [rules addObject:@{@"ip_cidr": telegramIPs,          @"outbound": activeProxyTag}];
         routeConfig[@"rules"] = rules;
         routeConfig[@"final"] = @"direct";
     } else {
         [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
         routeConfig[@"rules"] = rules;
-        routeConfig[@"final"] = activeTag;
+        routeConfig[@"final"] = activeProxyTag;
     }
 
     NSDictionary *config = @{
         @"log": @{@"level": @"warn"},
         @"inbounds": @[
-            // [SOCKS FIX]: Добавлено жесткое указание для резолвинга через HTTP-туннель
             @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
         ],
         @"outbounds": outbounds,
+        @"dns": dnsConfig,
         @"route": routeConfig
     };
 
