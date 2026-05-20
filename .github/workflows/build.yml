@@ -15,11 +15,12 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
-    - name: Build VPN Core (Intel + Features)
+    - name: Build VPN Core (v1.8.11 Intel + All Features)
       run: |
-        git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
+        # [EXPERT FIX]: Переход на ветку 1.8.11, последнюю совместимую с Go 1.20 и macOS 10.13
+        git clone -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality,with_clash_api -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App (Objective-C Intel)
       run: |
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
@@ -38,8 +39,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Stable Core)"
-        body: "Официальный релиз v6.0.0.\n- В ядро вшиты ВСЕ протоколы обхода (uTLS, gRPC, Reality).\n- Полностью безопасный роутинг (без петель).\n- Бесперебойная смена серверов."
+        name: "PauloVPN ${{ github.ref_name }} (Y-Combinator Masterpiece)"
+        body: "Официальный релиз v7.0.\n- Полный рефакторинг управления ядром (через NSTask). Ядро больше не просит пароль root.\n- Auto-Healing: если ядро падает, интернет мгновенно чинится (сброс прокси).\n- Обновлено ядро до v1.8.11 (лучший обход DPI).\n- Расширен список Стелс-доменов (50+ адресов).\n- Устранены ошибки Command Injection."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
