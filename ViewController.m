@@ -59,7 +59,7 @@
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
 
-    // Твоя подсказка для Telegram
+    // Аккуратная подсказка для Telegram
     NSTextField *telegramHint = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 183, 280, 14)];
     telegramHint.stringValue = @"Telegram: Settings → Proxy → SOCKS5 127.0.0.1:10808";
     telegramHint.alignment = NSTextAlignmentCenter;
@@ -70,6 +70,7 @@
     telegramHint.textColor = [NSColor colorWithWhite:1.0 alpha:0.4];
     [effectView addSubview:telegramHint];
 
+    // Статус на идеальной высоте 165 (не накладывается на кнопку!)
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 165, 320, 16)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
@@ -79,6 +80,7 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
 
+    // Кнопка ВКЛ на высоте 45 (диаметр 110, верхняя граница на 155 - нет наложения!)
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(105, 45, 110, 110)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:22 weight:NSFontWeightMedium];
@@ -92,6 +94,7 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
 
+    // Системные кнопки в самом низу
     NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 10, 80, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
@@ -123,7 +126,7 @@
         if ([fm fileExistsAtPath:subPath]) {
             NSData *subData = [NSData dataWithContentsOfFile:subPath];
             NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:subData options:NSJSONReadingMutableContainers error:nil];
-            if (json) { [self handleParsedJSON:json]; }
+            if (json) [self handleParsedJSON:json];
         }
     }
 
@@ -293,19 +296,34 @@
     }
     [outbounds addObjectsFromArray:self.proxyOutbounds];
     [outbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
-    [outbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}];
+    [outbounds addObject:@{@"type": @"dns",    @"tag": @"dns-out"}];
 
-    // [CTO IPV4-ONLY DNS]: Жестко отключаем IPv6 на уровне ядра!
-    // Направляем запросы через UDP 8.8.8.8 напрямую мимо VPN без петель.
+    // [CTO DNS FIX]: Безупречный DNS без петель и зависаний.
+    // 8.8.8.8 пускаем через direct. Никакого DoH на этапе старта.
     NSDictionary *dnsConfig = @{
         @"servers": @[
-            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"}
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"},
+            @{@"tag": @"local-dns",  @"address": @"local",   @"detour": @"direct"}
         ],
-        @"strategy": @"ipv4_only" // КРИТИЧЕСКИЙ ФИКС: только IPv4!
+        @"rules": @[
+            @{@"domain_suffix": @[@"gsupport.support"], @"server": @"local-dns"},
+            @{@"domain_suffix": @[@".ru", @".su", @".рф"], @"server": @"local-dns"}
+        ]
     };
 
     NSMutableArray *rules = [NSMutableArray array];
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
+
+    // [LOOP PREVENTION]: Динамически находим IP активного сервера и пускаем его мимо туннеля
+    NSString *activeServerHost = @"";
+    for (NSDictionary *o in self.proxyOutbounds) {
+        if ([o[@"tag"] isEqualToString:activeProxyTag]) {
+            activeServerHost = o[@"server"] ?: @""; break;
+        }
+    }
+    if (activeServerHost.length > 0) {
+        [rules addObject:@{@"domain": @[activeServerHost], @"outbound": @"direct"}];
+    }
 
     NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
     routeConfig[@"auto_detect_interface"] = @YES;
@@ -314,32 +332,31 @@
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
             @"whatsapp.com", @"whatsapp.net",
-            @"discord.com", @"discordapp.com", @"discord.gg",
+            @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
             @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
             @"twitter.com", @"x.com", @"twimg.com", @"github.com", @"githubusercontent.com",
-            @"medium.com", @"meduza.io", @"svoboda.org", @"rutracker.org", @"rutracker.cc",
-            @"spotify.com", @"scdn.co"
+            @"medium.com", @"meduza.io", @"svoboda.org", @"rutracker.org", @"rutracker.cc"
         ];
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
             @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
         ];
-        
         [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeProxyTag}];
         [rules addObject:@{@"ip_cidr": telegramIPs,          @"outbound": activeProxyTag}];
         routeConfig[@"rules"] = rules;
         routeConfig[@"final"] = @"direct";
     } else {
-        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
         routeConfig[@"rules"] = rules;
         routeConfig[@"final"] = activeProxyTag;
     }
 
     NSDictionary *config = @{
-        @"log": @{@"level": @"warn"},
+        @"log": @{
+            @"level": @"info" // [INFO LOGS]: Логи возвращены!
+        },
         @"inbounds": @[
             @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
@@ -356,8 +373,8 @@
 
     NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     self.singBoxTask = [[NSTask alloc] init];
-    self.singBoxTask.launchPath = bin;
-    self.singBoxTask.arguments = @[@"run", @"-c", self.configPath];
+    [self.singBoxTask setLaunchPath:bin];
+    [self.singBoxTask setArguments:@[@"run", @"-c", self.configPath]];
 
     [[NSFileManager defaultManager] createFileAtPath:self.logPath contents:nil attributes:nil];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:self.logPath];

@@ -36,8 +36,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (IPv4-Only Stability Master)"
-        body: "Официальный релиз v7.0.\n- Полностью принудительно отключен IPv6 в ядре (решена проблема `no route to host`).\n- DNS-запросы переведены на чистый IPv4 UDP-протокол к 8.8.8.8."
+        name: "PauloVPN ${{ github.ref_name }} (Golden Master)"
+        body: "Официальный релиз v8.0.\n- Возвращены подробные логи (уровень 'info').\n- Решена проблема DNS-петли в Глобальном режиме.\n- Полное отсутствие нагрузки на CPU."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
