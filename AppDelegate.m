@@ -9,7 +9,6 @@
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    // Включаем поддержку горячих клавиш (Cmd+C, Cmd+V) для скрытого приложения
     NSMenu *mainMenu = [[NSMenu alloc] init];
     NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Правка"];
@@ -28,7 +27,8 @@
     
     self.popover = [[NSPopover alloc] init];
     self.popover.contentViewController = [[ViewController alloc] init];
-    self.popover.behavior = NSPopoverBehaviorTransient;
+    // [КРИТИЧНЫЙ ФИКС] Окно больше не исчезает само по себе (ApplicationDefined)
+    self.popover.behavior = NSPopoverBehaviorApplicationDefined;
     self.popover.appearance = [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
 }
 

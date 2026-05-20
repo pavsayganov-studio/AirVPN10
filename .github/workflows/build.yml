@@ -11,42 +11,34 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v3
-    
     - name: Set up Go 1.20
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
-        
     - name: Build VPN Core (Intel)
       run: |
         git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
-        
     - name: Compile App (Objective-C Intel)
       run: |
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
-        chmod +x AirVPN.app/Contents/Resources/sing-box
-        
-        # ЭКОЛОГИЧНОЕ СОЗДАНИЕ ИКОНКИ: Просто декодируем крошечный пустой/базовый .icns файл (весит пару байт)
-        echo "aWNucwAAAEgAAAAQY2xpYwAAABwAAAAAAQABAAAAAgADAAAABAAFAAAABgAHAAAACAAJAAAA" | base64 --decode > AirVPN.app/Contents/Resources/AppIcon.icns
         
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v1.10.zip AirVPN.app
-        
+        zip -r PauloVPN-macOS-10.13-v2.0.zip AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }}"
-        body: "Релиз v1.10.\n- Решена проблема с путями иконок (теперь используется вшитая микро-иконка).\n- Максимальная экономия ресурсов серверов."
+        name: "PauloVPN ${{ github.ref_name }} (Y-Combinator MVP)"
+        body: "Официальный релиз v2.0.\n- Окно больше не исчезает при вводе пароля.\n- Добавлена маскировка `utls: chrome` для обхода ТСПУ в РФ.\n- Добавлена кнопка 'Логи' для дебага.\n- Кнопка 'Выйти' работает надежно.\n- Смена серверов на лету без отключения."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

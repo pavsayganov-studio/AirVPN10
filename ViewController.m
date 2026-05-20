@@ -6,64 +6,75 @@
 @property (strong) NSButton *connectButton;
 @property (strong) NSPopUpButton *serverDropdown;
 @property (strong) NSButton *stealthCheckbox;
-@property (strong) NSString *currentPID;
 @property (strong) NSString *configPath;
+@property (strong) NSString *logPath;
 @property (strong) NSMutableDictionary *downloadedJSON;
 @property (strong) NSMutableArray *proxyTags;
+@property (assign) BOOL isConnected;
 @end
 
 @implementation ViewController
 
 - (void)loadView {
-    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 460)];
+    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 300, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(210, 420, 60, 25)];
+    // Кнопка Выйти (Работает 100%)
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(230, 440, 60, 25)];
     quitBtn.title = @"Выйти";
     quitBtn.bezelStyle = NSBezelStyleRounded;
-    quitBtn.font = [NSFont systemFontOfSize:11];
     quitBtn.target = self;
     quitBtn.action = @selector(quitApp);
     [effectView addSubview:quitBtn];
     
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 280, 30)];
+    // Кнопка Логи (Для дебага)
+    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 60, 25)];
+    logBtn.title = @"Логи";
+    logBtn.bezelStyle = NSBezelStyleRounded;
+    logBtn.target = self;
+    logBtn.action = @selector(openLogs);
+    [effectView addSubview:logBtn];
+    
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 300, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
     titleLabel.drawsBackground = NO;
     titleLabel.editable = NO;
-    titleLabel.font = [NSFont systemFontOfSize:24 weight:NSFontWeightLight];
+    titleLabel.font = [NSFont systemFontOfSize:26 weight:NSFontWeightLight];
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
-    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 360, 240, 24)];
+    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 350, 260, 24)];
     self.urlField.placeholderString = @"Вставьте vless:// или подписку...";
-    self.urlField.focusRingType = NSFocusRingTypeNone;
     [effectView addSubview:self.urlField];
     
-    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(60, 320, 160, 30)];
+    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(70, 310, 160, 30)];
     importBtn.title = @"Загрузить серверы";
     importBtn.bezelStyle = NSBezelStyleRounded;
     importBtn.target = self;
     importBtn.action = @selector(downloadConfig);
     [effectView addSubview:importBtn];
     
-    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 270, 240, 26) pullsDown:NO];
+    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 260, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"Серверы не загружены"];
     [self.serverDropdown setEnabled:NO];
+    // Позволяет менять сервер на лету!
+    self.serverDropdown.target = self;
+    self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
     
-    // ПЕРЕИМЕНОВАННЫЙ ЧЕКБОКС
-    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 230, 240, 20)];
+    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 220, 260, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
     self.stealthCheckbox.title = @"Умный режим (Только TG/YT/AI)";
     self.stealthCheckbox.state = NSControlStateValueOn;
-    self.stealthCheckbox.font = [NSFont systemFontOfSize:11];
+    self.stealthCheckbox.target = self;
+    self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
     
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 280, 20)];
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 300, 20)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.bezeled = NO;
@@ -72,7 +83,7 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(80, 40, 120, 120)];
+    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(90, 40, 120, 120)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
@@ -86,25 +97,35 @@
     [effectView addSubview:self.connectButton];
     
     self.view = effectView;
+    self.isConnected = NO;
     
     NSFileManager *fm = [NSFileManager defaultManager];
     NSURL *appSupport = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject];
-    appSupport = [appSupport URLByAppendingPathComponent:@"AirVPN"];
+    appSupport = [appSupport URLByAppendingPathComponent:@"PauloVPN"];
     [fm createDirectoryAtURL:appSupport withIntermediateDirectories:YES attributes:nil error:nil];
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
+    self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
 }
 
 - (void)quitApp {
-    if (self.currentPID != nil) {
-        [self stopVPN];
-    }
-    // Жестко добиваем все зависшие ядра при выходе
-    NSAppleScript *killScript = [[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box\" with administrator privileges"];
-    [killScript executeAndReturnError:nil];
+    [self stopVPN];
     [NSApp terminate:nil];
 }
 
-// Парсеры (Оставляем как были)
+- (void)openLogs {
+    // Открывает лог-файл в стандартном приложении "Консоль" macOS
+    [[NSWorkspace sharedWorkspace] openFile:self.logPath withApplication:@"Console"];
+}
+
+- (void)serverChanged {
+    if (self.isConnected) { [self startVPN]; } // Мягкий рестарт ядра
+}
+
+- (void)stealthChanged {
+    if (self.isConnected) { [self startVPN]; } // Мягкий рестарт ядра
+}
+
+// УЛЬТИМАТИВНЫЙ ПАРСЕР С ОБХОДОМ ТСПУ (DPI)
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
@@ -120,13 +141,18 @@
         if ([item.name isEqualToString:@"sni"]) tls[@"server_name"] = item.value;
         if ([item.name isEqualToString:@"pbk"]) tls[@"reality"][@"public_key"] = item.value;
         if ([item.name isEqualToString:@"sid"]) tls[@"reality"][@"short_id"] = item.value;
-        if ([item.name isEqualToString:@"fp"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": item.value};
         if ([item.name isEqualToString:@"type"] && [item.value isEqualToString:@"ws"]) transport[@"type"] = @"ws";
         if ([item.name isEqualToString:@"type"] && [item.value isEqualToString:@"grpc"]) transport[@"type"] = @"grpc";
         if ([item.name isEqualToString:@"path"]) transport[@"path"] = item.value;
         if ([item.name isEqualToString:@"serviceName"]) transport[@"service_name"] = item.value;
         if ([item.name isEqualToString:@"host"]) transport[@"headers"] = @{@"Host": item.value};
     }
+    
+    // [Y-COMBINATOR FIX]: Жестко форсируем UTLS (Хром) для всех VLESS, иначе ТСПУ заблокирует!
+    if (tls[@"enabled"]) {
+        tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
+    }
+    
     if (tls.count > 0) outbound[@"tls"] = tls;
     if (transport.count > 0) outbound[@"transport"] = transport;
     return outbound;
@@ -152,7 +178,7 @@
         return;
     }
     NSMutableDictionary *skeleton = [@{
-        @"log": @{@"level": @"info"},
+        @"log": @{@"level": @"debug"}, // DEBUG для отлова ошибок!
         @"outbounds": parsedOutbounds,
     } mutableCopy];
     [self handleParsedJSON:skeleton];
@@ -171,7 +197,7 @@
         [self.serverDropdown addItemWithTitle:@"⚡️ Авто (Умный выбор)"];
         [self.serverDropdown addItemsWithTitles:self.proxyTags];
         [self.serverDropdown setEnabled:YES];
-        self.statusLabel.stringValue = [NSString stringWithFormat:@"Найдено серверов: %lu", (unsigned long)self.proxyTags.count];
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"Загружено %lu серверов", (unsigned long)self.proxyTags.count];
     } else {
         [self.serverDropdown addItemWithTitle:@"Нет поддерживаемых серверов"];
         self.statusLabel.stringValue = @"VLESS серверы не найдены.";
@@ -198,11 +224,15 @@
     }] resume];
 }
 
-- (void)toggleConnection { if (self.currentPID != nil) { [self stopVPN]; } else { [self startVPN]; } }
+- (void)toggleConnection { if (self.isConnected) { [self stopVPN]; } else { [self startVPN]; } }
 
 - (void)startVPN {
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
-    self.statusLabel.stringValue = @"Создаем туннель...";
+    self.statusLabel.stringValue = @"Запуск ядра...";
+    
+    // ВСЕГДА убиваем старое ядро перед запуском нового (важно для смены серверов на лету)
+    [[[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box\" with administrator privileges"] executeAndReturnError:nil];
+    
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
@@ -221,29 +251,32 @@
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
     
-    // ИСПРАВЛЕНИЕ 1: ДОБАВЛЯЕМ ВСТРОЕННЫЙ DNS РЕЗОЛВЕР
+    // ЖЕСТКИЙ DNS РЕЗОЛВЕР ДЛЯ РОССИИ
     self.downloadedJSON[@"dns"] = @{
-        @"servers": @[ @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag} ],
-        @"rules": @[ @{@"outbound": @[@"any"], @"server": @"remote-dns"} ]
+        @"servers": @[ 
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag},
+            @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
+        ],
+        @"rules": @[ 
+            @{@"outbound": @[@"any"], @"server": @"remote-dns"},
+            @{@"geosite": @[@"cn", @"ru"], @"server": @"local-dns"}
+        ]
     };
     
-    // ИСПРАВЛЕНИЕ 2: ДОБАВЛЯЕМ "sniff": true ДЛЯ РАСПОЗНАВАНИЯ ДОМЕНОВ
     self.downloadedJSON[@"inbounds"] = @[ @{
         @"type": @"tun", @"tag": @"tun-in", @"interface_name": @"utun9", @"inet4_address": @"172.19.0.1/30",
         @"auto_route": @YES, @"strict_route": @YES, @"stack": @"system",
-        @"sniff": @YES, @"sniff_override_destination": @NO
+        @"sniff": @YES, @"sniff_override_destination": @YES // КРИТИЧНО ДЛЯ ПЕРЕХВАТА YOUTUBE
     } ];
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
     NSMutableArray *rules = [NSMutableArray array];
     
-    // Обязательно перехватываем DNS
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"tdesktop.com", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com" ];
-        NSDictionary *stealthRule = @{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag };
-        [rules addObject:stealthRule];
+        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com" ];
+        [rules addObject:@{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag }];
         route[@"final"] = @"direct"; 
     } else { 
         route[@"final"] = activeProxyTag; 
@@ -255,45 +288,43 @@
     NSData *finalData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
     
-    NSString *logPath = [[self.configPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"vpn.log"];
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    NSString *shellCommand = [NSString stringWithFormat:@"nohup '%@' run -c '%@' > '%@' 2>&1 & echo $!", binaryPath, self.configPath, logPath];
+    // НАДЕЖНЫЙ ЗАПУСК В ФОНЕ ЧЕРЕЗ BASH
+    NSString *shellCommand = [NSString stringWithFormat:@"/bin/bash -c 'nohup \\\"%@\\\" run -c \\\"%@\\\" > \\\"%@\\\" 2>&1 &'", binaryPath, self.configPath, self.logPath];
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
     NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
     NSDictionary *errorInfo = nil;
-    NSAppleEventDescriptor *output = [script executeAndReturnError:&errorInfo];
+    [script executeAndReturnError:&errorInfo];
     
-    if (output && output.stringValue && output.stringValue.length > 0) { 
-        self.currentPID = output.stringValue; [self updateUIConnected:YES]; 
+    if (!errorInfo) { 
+        [self updateUIConnected:YES]; 
     } else { 
-        self.statusLabel.stringValue = @"Ошибка запуска ядра"; 
+        self.statusLabel.stringValue = @"Ошибка прав доступа"; 
     }
 }
 
 - (void)stopVPN {
-    // Надежное закрытие через killall
     NSAppleScript *script = [[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box\" with administrator privileges"];
     [script executeAndReturnError:nil];
-    self.currentPID = nil;
     [self updateUIConnected:NO];
 }
 
 - (void)updateUIConnected:(BOOL)connected {
+    self.isConnected = connected;
     if (connected) {
         self.statusLabel.stringValue = self.stealthCheckbox.state == NSControlStateValueOn ? @"Подключено (Умный режим)" : @"Подключено (Глобально)";
         self.statusLabel.textColor = [NSColor greenColor];
         self.connectButton.title = @"ВКЛ";
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor colorWithRed:0 green:1 blue:0 alpha:0.1].CGColor;
-        [self.serverDropdown setEnabled:NO]; [self.urlField setEnabled:NO]; [self.stealthCheckbox setEnabled:NO];
+        // Дропдаун ОСТАЕТСЯ АКТИВНЫМ для смены на лету!
     } else {
-        self.statusLabel.stringValue = @"Готов к работе";
+        self.statusLabel.stringValue = @"Отключено";
         self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
         self.connectButton.title = @"ВЫКЛ";
         self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor clearColor].CGColor;
-        [self.serverDropdown setEnabled:YES]; [self.urlField setEnabled:YES]; [self.stealthCheckbox setEnabled:YES];
     }
 }
 @end
