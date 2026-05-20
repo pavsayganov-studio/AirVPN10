@@ -11,10 +11,14 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v3
+    
     - name: Set up Go 1.20
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
+        
+    - name: Install ImageMagick for Icon Generation
+      run: brew install imagemagick
         
     - name: Generate App Icon
       run: |
@@ -55,14 +59,14 @@ jobs:
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v1.7.zip AirVPN.app
+        zip -r PauloVPN-macOS-10.13-v1.8.zip AirVPN.app
         
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Network Fix)"
-        body: "Критический релиз.\n- Исправлена маршрутизация (Умный режим теперь корректно перехватывает домены через SNI).\n- Добавлен встроенный DNS (8.8.8.8) для решения проблемы с открытием сайтов.\n- Улучшено убивание зависших процессов при выключении/выходе."
+        name: "PauloVPN ${{ github.ref_name }}"
+        body: "Релиз v1.8.\n- Исправлена сборка иконки приложения."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
