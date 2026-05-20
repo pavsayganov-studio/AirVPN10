@@ -15,31 +15,7 @@
 
 @implementation ViewController
 
-// ПРОГРАММНАЯ ГЕНЕРАЦИЯ КРАСИВОЙ ИКОНКИ
-- (NSImage *)generateAppIcon {
-    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(256, 256)];
-    [image lockFocus];
-    
-    // Темно-серый закругленный квадрат
-    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(0, 0, 256, 256) xRadius:60 yRadius:60];
-    [[NSColor colorWithWhite:0.2 alpha:1.0] setFill];
-    [path fill];
-    
-    // Буква "P"
-    NSString *text = @"P";
-    NSFont *font = [NSFont boldSystemFontOfSize:180];
-    NSDictionary *attrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor whiteColor]};
-    NSSize textSize = [text sizeWithAttributes:attrs];
-    [text drawAtPoint:NSMakePoint((256 - textSize.width)/2, (256 - textSize.height)/2 - 10) withAttributes:attrs];
-    
-    [image unlockFocus];
-    return image;
-}
-
 - (void)loadView {
-    // Устанавливаем иконку приложения
-    [NSApp setApplicationIconImage:[self generateAppIcon]];
-    
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
@@ -158,7 +134,6 @@
     NSMutableDictionary *outbound = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
-    
     for (NSURLQueryItem *item in comp.queryItems) {
         if ([item.name isEqualToString:@"security"]) {
             if ([item.value isEqualToString:@"tls"] || [item.value isEqualToString:@"reality"]) tls[@"enabled"] = @YES;
@@ -167,11 +142,6 @@
         if ([item.name isEqualToString:@"sni"]) tls[@"server_name"] = item.value;
         if ([item.name isEqualToString:@"pbk"]) tls[@"reality"][@"public_key"] = item.value;
         if ([item.name isEqualToString:@"sid"]) tls[@"reality"][@"short_id"] = item.value;
-        if ([item.name isEqualToString:@"fp"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": item.value};
-        
-        // [FIX REALITY] Поддержка xtls-rprx-vision
-        if ([item.name isEqualToString:@"flow"] && item.value.length > 0) outbound[@"flow"] = item.value;
-        
         if ([item.name isEqualToString:@"type"] && item.value.length > 0) {
             if (![item.value isEqualToString:@"tcp"]) transport[@"type"] = item.value;
         }
@@ -282,12 +252,31 @@
     if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
     if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
     
-    // [FIX URLTEST] Используем надежный хост для проверки
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50 };
+        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://1.1.1.1/", @"interval": @"3m", @"tolerance": @50 };
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
+    
+    // Ищем адрес (IP/домен) нашего текущего выбранного VPN-сервера
+    NSString *activeServerAddress = @"";
+    for (NSDictionary *out in newOutbounds) {
+        if ([out[@"tag"] isEqualToString:activeProxyTag]) {
+            activeServerAddress = out[@"server"];
+            break;
+        }
+    }
+    
+    self.downloadedJSON[@"dns"] = @{
+        @"servers": @[ 
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag},
+            @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
+        ],
+        @"rules": @[ 
+            @{@"outbound": @[@"any"], @"server": @"remote-dns"},
+            @{@"domain_suffix": @[@".ru", @".su", @".рф", @".yandex.ru", @".vk.com", @".ya.ru"], @"server": @"local-dns"}
+        ]
+    };
     
     self.downloadedJSON[@"inbounds"] = @[ 
         @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
@@ -296,11 +285,37 @@
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
     NSMutableArray *rules = [NSMutableArray array];
+    
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
+    // [КРИТИЧНЫЙ ФИКС ПЕТЛИ]: Трафик к самому VPN серверу ВСЕГДА идет напрямую в обход прокси
+    if (activeServerAddress.length > 0) {
+        [rules addObject:@{ @"domain": @[activeServerAddress], @"outbound": @"direct" }];
+    }
+    
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com", @"rutracker.org", @"discord.com", @"twimg.com" ];
-        [rules addObject:@{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag }];
+        // Умный режим: заворачиваем домены И жестко прописываем IP-диапазоны Telegram
+        NSArray *blockedDomains = @[ 
+            @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com", 
+            @"whatsapp.com", @"whatsapp.net", 
+            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", 
+            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", 
+            @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com",
+            @"rutracker.org", @"discord.com", @"twimg.com" 
+        ];
+        
+        // [FIX TELEGRAM IPs]: Заворачиваем прямые IP-адреса Дурова
+        NSArray *telegramIPs = @[
+            @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22",
+            @"91.108.36.0/23", @"91.108.38.0/23", @"91.108.56.0/22", @"91.108.56.0/23", @"91.108.56.0/24",
+            @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
+        ];
+        
+        [rules addObject:@{ 
+            @"domain_suffix": blockedDomains, 
+            @"ip_cidr": telegramIPs, 
+            @"outbound": activeProxyTag 
+        }];
         route[@"final"] = @"direct"; 
     } else { 
         route[@"final"] = activeProxyTag; 

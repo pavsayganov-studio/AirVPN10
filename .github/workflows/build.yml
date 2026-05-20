@@ -26,6 +26,10 @@ jobs:
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
+        
+        # [ICON RECOVERY] Скачиваем иконку с замороженного коммита (ссылка 100% живая)
+        curl -sL https://github.com/SagerNet/sing-box/raw/b949b8e1/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
+        
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
@@ -38,8 +42,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Y-Combinator Sniper)"
-        body: "Официальный релиз v4.0.\n- Исправлен парсинг Reality (flow xtls-rprx-vision).\n- urltest проверяет пинг через cp.cloudflare.com/generate_204 (100% стабильность).\n- Добавлена встроенная иконка в док и верхнее меню (🅟)."
+        name: "PauloVPN ${{ github.ref_name }} (Telegram & Loop Fix)"
+        body: "Официальный релиз v4.1.\n- Добавлены IP CIDR-диапазоны Telegram (мессенджер теперь работает в умном режиме).\n- Исправлена петля маршрутизации в Глобальном режиме (IP сервера пускается мимо туннеля).\n- Восстановлена скачка оригинальной иконки приложения."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
