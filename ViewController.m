@@ -20,7 +20,6 @@
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    // Кнопка ВЫЙТИ (В правом верхнем углу)
     NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(210, 420, 60, 25)];
     quitBtn.title = @"Выйти";
     quitBtn.bezelStyle = NSBezelStyleRounded;
@@ -56,9 +55,10 @@
     [self.serverDropdown setEnabled:NO];
     [effectView addSubview:self.serverDropdown];
     
+    // ПЕРЕИМЕНОВАННЫЙ ЧЕКБОКС
     self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 230, 240, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
-    self.stealthCheckbox.title = @"Умный обход (Только YT/TG/AI)";
+    self.stealthCheckbox.title = @"Умный режим (Только TG/YT/AI)";
     self.stealthCheckbox.state = NSControlStateValueOn;
     self.stealthCheckbox.font = [NSFont systemFontOfSize:11];
     [effectView addSubview:self.stealthCheckbox];
@@ -98,10 +98,13 @@
     if (self.currentPID != nil) {
         [self stopVPN];
     }
+    // Жестко добиваем все зависшие ядра при выходе
+    NSAppleScript *killScript = [[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box\" with administrator privileges"];
+    [killScript executeAndReturnError:nil];
     [NSApp terminate:nil];
 }
 
-// ... Оставляем весь остальной код парсера без изменений ...
+// Парсеры (Оставляем как были)
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
@@ -150,9 +153,7 @@
     }
     NSMutableDictionary *skeleton = [@{
         @"log": @{@"level": @"info"},
-        @"inbounds": @[ @{ @"type": @"tun", @"tag": @"tun-in", @"interface_name": @"utun9", @"inet4_address": @"172.19.0.1/30", @"auto_route": @YES, @"strict_route": @YES, @"stack": @"system" } ],
         @"outbounds": parsedOutbounds,
-        @"route": [@{@"auto_detect_interface": @YES} mutableCopy]
     } mutableCopy];
     [self handleParsedJSON:skeleton];
 }
@@ -163,7 +164,7 @@
     NSArray *outbounds = json[@"outbounds"];
     for (NSDictionary *out in outbounds) {
         NSString *tag = out[@"tag"];
-        if (tag && ![tag isEqualToString:@"direct"]) { [self.proxyTags addObject:tag]; }
+        if (tag && ![tag isEqualToString:@"direct"] && ![tag isEqualToString:@"dns-out"]) { [self.proxyTags addObject:tag]; }
     }
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
@@ -206,9 +207,13 @@
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
     NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:self.downloadedJSON[@"outbounds"]];
-    BOOL hasDirect = NO;
-    for (NSDictionary *outbound in newOutbounds) { if ([outbound[@"tag"] isEqualToString:@"direct"]) { hasDirect = YES; break; } }
+    BOOL hasDirect = NO, hasDnsOut = NO;
+    for (NSDictionary *outbound in newOutbounds) { 
+        if ([outbound[@"tag"] isEqualToString:@"direct"]) hasDirect = YES; 
+        if ([outbound[@"tag"] isEqualToString:@"dns-out"]) hasDnsOut = YES; 
+    }
     if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
+    if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
     
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
         NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/", @"interval": @"3m", @"tolerance": @50 };
@@ -216,17 +221,34 @@
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
     
+    // ИСПРАВЛЕНИЕ 1: ДОБАВЛЯЕМ ВСТРОЕННЫЙ DNS РЕЗОЛВЕР
+    self.downloadedJSON[@"dns"] = @{
+        @"servers": @[ @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag} ],
+        @"rules": @[ @{@"outbound": @[@"any"], @"server": @"remote-dns"} ]
+    };
+    
+    // ИСПРАВЛЕНИЕ 2: ДОБАВЛЯЕМ "sniff": true ДЛЯ РАСПОЗНАВАНИЯ ДОМЕНОВ
+    self.downloadedJSON[@"inbounds"] = @[ @{
+        @"type": @"tun", @"tag": @"tun-in", @"interface_name": @"utun9", @"inet4_address": @"172.19.0.1/30",
+        @"auto_route": @YES, @"strict_route": @YES, @"stack": @"system",
+        @"sniff": @YES, @"sniff_override_destination": @NO
+    } ];
+    
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
-    if (self.downloadedJSON[@"route"]) route = [self.downloadedJSON[@"route"] mutableCopy];
     NSMutableArray *rules = [NSMutableArray array];
-    if (route[@"rules"]) rules = [route[@"rules"] mutableCopy];
+    
+    // Обязательно перехватываем DNS
+    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"tdesktop.com", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com" ];
         NSDictionary *stealthRule = @{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag };
-        [rules insertObject:stealthRule atIndex:0];
+        [rules addObject:stealthRule];
         route[@"final"] = @"direct"; 
-    } else { route[@"final"] = activeProxyTag; }
+    } else { 
+        route[@"final"] = activeProxyTag; 
+    }
+    
     route[@"rules"] = rules; route[@"auto_detect_interface"] = @YES;
     self.downloadedJSON[@"route"] = route;
     
@@ -242,13 +264,16 @@
     NSDictionary *errorInfo = nil;
     NSAppleEventDescriptor *output = [script executeAndReturnError:&errorInfo];
     
-    if (output && output.stringValue && output.stringValue.length > 0) { self.currentPID = output.stringValue; [self updateUIConnected:YES]; } else { self.statusLabel.stringValue = @"Ошибка запуска ядра"; }
+    if (output && output.stringValue && output.stringValue.length > 0) { 
+        self.currentPID = output.stringValue; [self updateUIConnected:YES]; 
+    } else { 
+        self.statusLabel.stringValue = @"Ошибка запуска ядра"; 
+    }
 }
 
 - (void)stopVPN {
-    if (!self.currentPID) return;
-    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"kill -9 %@\" with administrator privileges", self.currentPID];
-    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
+    // Надежное закрытие через killall
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box\" with administrator privileges"];
     [script executeAndReturnError:nil];
     self.currentPID = nil;
     [self updateUIConnected:NO];
@@ -256,7 +281,7 @@
 
 - (void)updateUIConnected:(BOOL)connected {
     if (connected) {
-        self.statusLabel.stringValue = self.stealthCheckbox.state == NSControlStateValueOn ? @"Подключено (Стэлс режим)" : @"Подключено (Глобально)";
+        self.statusLabel.stringValue = self.stealthCheckbox.state == NSControlStateValueOn ? @"Подключено (Умный режим)" : @"Подключено (Глобально)";
         self.statusLabel.textColor = [NSColor greenColor];
         self.connectButton.title = @"ВКЛ";
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;

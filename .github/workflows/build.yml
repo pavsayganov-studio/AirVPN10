@@ -1,9 +1,9 @@
 name: Build PauloVPN
 on:
-  workflow_dispatch: # Позволяет запускать сборку кнопкой вручную
+  workflow_dispatch:
   push:
     tags:
-      - 'v*' # Запускается ТОЛЬКО когда ты создаешь тег версии (например, v1.6)
+      - 'v*'
 permissions:
   contents: write
 jobs:
@@ -18,12 +18,10 @@ jobs:
         
     - name: Generate App Icon
       run: |
-        # Используем ImageMagick для отрисовки графики иконки
         magick -size 512x512 -define gradient:angle=45 gradient:'#00f2fe'-'#4facfe' base.png
         magick base.png -gravity center -font Helvetica -pointsize 160 -fill "rgba(255,255,255,0.5)" -annotate +0+80 "VPN" -blur 0x6 blurred.png
         magick blurred.png -gravity center -font Helvetica-Bold -pointsize 300 -fill "#FF3B30" -annotate +0-40 "П" icon.png
         
-        # Конвертируем в формат Apple (.icns)
         mkdir MyIcon.iconset
         sips -z 16 16     icon.png --out MyIcon.iconset/icon_16x16.png
         sips -z 32 32     icon.png --out MyIcon.iconset/icon_16x16@2x.png
@@ -57,14 +55,14 @@ jobs:
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v1.6.zip AirVPN.app
+        zip -r PauloVPN-macOS-10.13-v1.7.zip AirVPN.app
         
-    - name: Release version 1.6
+    - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Eco & Icon)"
-        body: "Официальный релиз.\n- Добавлена кнопка Выхода (Quit).\n- Добавлена потрясающая кастомная иконка.\n- Оптимизированы GitHub Actions (экологичный режим)."
+        name: "PauloVPN ${{ github.ref_name }} (Network Fix)"
+        body: "Критический релиз.\n- Исправлена маршрутизация (Умный режим теперь корректно перехватывает домены через SNI).\n- Добавлен встроенный DNS (8.8.8.8) для решения проблемы с открытием сайтов.\n- Улучшено убивание зависших процессов при выключении/выходе."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
