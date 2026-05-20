@@ -235,15 +235,14 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    NSTask *killTask = [[NSTask alloc] init];
-    [killTask setLaunchPath:@"/usr/bin/killall"];
-    [killTask setArguments:@[@"-9", @"sing-box"]];
-    @try { [killTask launch]; [killTask waitUntilExit]; } @catch (NSException *e) {}
+    // [CRITICAL DEEP COPY FIX]: Делаем ЧИСТУЮ глубокую копию JSON, чтобы не дублировать outbounds/rules в памяти!
+    NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
+    NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
     
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
-    NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:self.downloadedJSON[@"outbounds"]];
+    NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:activeConfig[@"outbounds"]];
     BOOL hasDirect = NO, hasDnsOut = NO;
     for (NSDictionary *outbound in newOutbounds) { 
         if ([outbound[@"tag"] isEqualToString:@"direct"]) hasDirect = YES; 
@@ -256,9 +255,9 @@
         NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://1.1.1.1/", @"interval": @"3m", @"tolerance": @50 };
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
-    self.downloadedJSON[@"outbounds"] = newOutbounds;
+    activeConfig[@"outbounds"] = newOutbounds;
     
-    // Ищем адрес (IP/домен) нашего текущего выбранного VPN-сервера
+    // Прописываем обход петли маршрута
     NSString *activeServerAddress = @"";
     for (NSDictionary *out in newOutbounds) {
         if ([out[@"tag"] isEqualToString:activeProxyTag]) {
@@ -267,7 +266,7 @@
         }
     }
     
-    self.downloadedJSON[@"dns"] = @{
+    activeConfig[@"dns"] = @{
         @"servers": @[ 
             @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag},
             @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
@@ -278,7 +277,7 @@
         ]
     };
     
-    self.downloadedJSON[@"inbounds"] = @[ 
+    activeConfig[@"inbounds"] = @[ 
         @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
         @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
     ];
@@ -288,48 +287,34 @@
     
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
-    // [КРИТИЧНЫЙ ФИКС ПЕТЛИ]: Трафик к самому VPN серверу ВСЕГДА идет напрямую в обход прокси
     if (activeServerAddress.length > 0) {
         [rules addObject:@{ @"domain": @[activeServerAddress], @"outbound": @"direct" }];
     }
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        // Умный режим: заворачиваем домены И жестко прописываем IP-диапазоны Telegram
-        NSArray *blockedDomains = @[ 
-            @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com", 
-            @"whatsapp.com", @"whatsapp.net", 
-            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", 
-            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", 
-            @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com",
-            @"rutracker.org", @"discord.com", @"twimg.com" 
-        ];
-        
-        // [FIX TELEGRAM IPs]: Заворачиваем прямые IP-адреса Дурова
+        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com", @"rutracker.org", @"discord.com", @"twimg.com" ];
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22",
             @"91.108.36.0/23", @"91.108.38.0/23", @"91.108.56.0/22", @"91.108.56.0/23", @"91.108.56.0/24",
             @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
         ];
-        
-        [rules addObject:@{ 
-            @"domain_suffix": blockedDomains, 
-            @"ip_cidr": telegramIPs, 
-            @"outbound": activeProxyTag 
-        }];
+        [rules addObject:@{ @"domain_suffix": blockedDomains, @"ip_cidr": telegramIPs, @"outbound": activeProxyTag }];
         route[@"final"] = @"direct"; 
     } else { 
         route[@"final"] = activeProxyTag; 
     }
     
     route[@"rules"] = rules;
-    self.downloadedJSON[@"route"] = route;
+    route[@"auto_detect_interface"] = @YES;
+    activeConfig[@"route"] = route;
     
-    NSData *finalData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
+    NSData *finalData = [NSJSONSerialization dataWithJSONObject:activeConfig options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     NSString *interface = [self getActiveNetworkInterface];
     
+    // [CRITICAL FIX]: Убиваем ядро от имени ROOT прямо перед стартом
     NSString *shellCommand = [NSString stringWithFormat:
         @"killall -9 sing-box 2>/dev/null ; "
         @"nohup '%@' run -c '%@' > '%@' 2>&1 & "

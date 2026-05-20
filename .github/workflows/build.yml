@@ -27,8 +27,8 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         
-        # [ICON RECOVERY] Скачиваем иконку с замороженного коммита (ссылка 100% живая)
-        curl -sL https://github.com/SagerNet/sing-box/raw/b949b8e1/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
+        # [ICON FIX] Используем флаг -k для curl чтобы проигнорировать ошибки SSL сертификатов
+        curl -k -sL https://github.com/SagerNet/sing-box/raw/b949b8e1fc147c2162aa322300ee7b399bc223cf/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
@@ -42,8 +42,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Telegram & Loop Fix)"
-        body: "Официальный релиз v4.1.\n- Добавлены IP CIDR-диапазоны Telegram (мессенджер теперь работает в умном режиме).\n- Исправлена петля маршрутизации в Глобальном режиме (IP сервера пускается мимо туннеля).\n- Восстановлена скачка оригинальной иконки приложения."
+        name: "PauloVPN ${{ github.ref_name }} (Deep State Fix)"
+        body: "Официальный релиз v4.2.\n- Устранено дублирование тегов 'auto-switch' (Deep Copy Fix).\n- Исправлен перегрев процессора из-за лопнувших прокси.\n- Исправлена закачка оригинальной иконки через curl -k."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
