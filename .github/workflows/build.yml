@@ -29,25 +29,24 @@ jobs:
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
-        
-        # МАГИЯ: Берем красивую встроенную иконку Замка из самой macOS!
-        cp /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/LockIcon.icns AirVPN.app/Contents/Resources/AppIcon.icns
-        
         chmod +x AirVPN.app/Contents/Resources/sing-box
+        
+        # ЭКОЛОГИЧНОЕ СОЗДАНИЕ ИКОНКИ: Просто декодируем крошечный пустой/базовый .icns файл (весит пару байт)
+        echo "aWNucwAAAEgAAAAQY2xpYwAAABwAAAAAAQABAAAAAgADAAAABAAFAAAABgAHAAAACAAJAAAA" | base64 --decode > AirVPN.app/Contents/Resources/AppIcon.icns
         
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v1.9.zip AirVPN.app
+        zip -r PauloVPN-macOS-10.13-v1.10.zip AirVPN.app
         
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
         name: "PauloVPN ${{ github.ref_name }}"
-        body: "Релиз v1.9.\n- Полностью удален ImageMagick для ускорения сборки.\n- Использована нативная иконка macOS (Замок).\n- Повышена стабильность."
+        body: "Релиз v1.10.\n- Решена проблема с путями иконок (теперь используется вшитая микро-иконка).\n- Максимальная экономия ресурсов серверов."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
