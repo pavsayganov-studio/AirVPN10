@@ -59,17 +59,6 @@
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
 
-    // Твоя подсказка для Telegram
-    NSTextField *telegramHint = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 183, 280, 14)];
-    telegramHint.stringValue = @"Telegram: Settings → Proxy → SOCKS5 127.0.0.1:10808";
-    telegramHint.alignment = NSTextAlignmentCenter;
-    telegramHint.bezeled = NO;
-    telegramHint.drawsBackground = NO;
-    telegramHint.editable = NO;
-    telegramHint.font = [NSFont systemFontOfSize:9];
-    telegramHint.textColor = [NSColor colorWithWhite:1.0 alpha:0.4];
-    [effectView addSubview:telegramHint];
-
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 165, 320, 16)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
@@ -114,7 +103,7 @@
     appSupport = [appSupport URLByAppendingPathComponent:@"PauloVPN"];
     [fm createDirectoryAtURL:appSupport withIntermediateDirectories:YES attributes:nil error:nil];
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
-    self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
+    self.logPath    = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
 
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
@@ -123,7 +112,7 @@
         if ([fm fileExistsAtPath:subPath]) {
             NSData *subData = [NSData dataWithContentsOfFile:subPath];
             NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:subData options:NSJSONReadingMutableContainers error:nil];
-            if (json) { [self handleParsedJSON:json]; }
+            if (json) [self handleParsedJSON:json];
         }
     }
 
@@ -155,9 +144,10 @@
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
     NSString *tag = comp.fragment ? [comp.fragment stringByRemovingPercentEncoding] : comp.host;
-    NSMutableDictionary *outbound = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
+    NSMutableDictionary *out = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
+
     for (NSURLQueryItem *item in comp.queryItems) {
         if ([item.name isEqualToString:@"security"]) {
             if ([item.value isEqualToString:@"tls"] || [item.value isEqualToString:@"reality"]) tls[@"enabled"] = @YES;
@@ -175,16 +165,16 @@
             if (!tls[@"reality"]) tls[@"reality"] = [NSMutableDictionary dictionary];
             tls[@"reality"][@"short_id"] = item.value;
         }
-        if ([item.name isEqualToString:@"flow"] && item.value.length > 0) outbound[@"flow"] = item.value;
+        if ([item.name isEqualToString:@"flow"] && item.value.length > 0) out[@"flow"] = item.value;
         if ([item.name isEqualToString:@"type"] && item.value.length > 0 && ![item.value isEqualToString:@"tcp"]) transport[@"type"] = item.value;
         if ([item.name isEqualToString:@"path"] && item.value.length > 0) transport[@"path"] = item.value;
         if ([item.name isEqualToString:@"serviceName"] && item.value.length > 0) transport[@"service_name"] = item.value;
         if ([item.name isEqualToString:@"host"] && item.value.length > 0) transport[@"headers"] = @{@"Host": item.value};
     }
-    if (tls[@"enabled"]) { tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"}; }
-    if (tls.count > 0) outbound[@"tls"] = tls;
-    if (transport.count > 0) outbound[@"transport"] = transport;
-    return outbound;
+    if (tls[@"enabled"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
+    if (tls.count > 0) out[@"tls"] = tls;
+    if (transport.count > 0) out[@"transport"] = transport;
+    return out;
 }
 
 - (void)processRawText:(NSString *)text {
@@ -209,8 +199,7 @@
     self.proxyTags = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
     for (NSDictionary *o in json[@"outbounds"]) {
-        NSString *type = o[@"type"];
-        NSString *tag = o[@"tag"];
+        NSString *type = o[@"type"], *tag = o[@"tag"];
         if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
             [self.proxyTags addObject:tag];
             [self.proxyOutbounds addObject:o];
@@ -263,7 +252,7 @@
     [t launch];
     NSString *out = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
     if ([out containsString:@"Wi-Fi"]) return @"Wi-Fi";
-    if ([out containsString:@"Ethernet"]) return @"Ethernet";
+    if ([output containsString:@"Ethernet"]) return @"Ethernet";
     return @"Wi-Fi";
 }
 
@@ -272,11 +261,11 @@
         [self.singBoxTask terminate];
         [self.singBoxTask waitUntilExit];
     }
-    
-    NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
+
+    NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem ?: @"";
     BOOL isAuto = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"];
     NSString *activeProxyTag = isAuto ? @"auto-switch" : selectedTitle;
-    
+
     NSMutableArray *outbounds = [NSMutableArray array];
     if (isAuto) {
         [outbounds addObject:@{
@@ -284,68 +273,38 @@
             @"tag": @"auto-switch",
             @"outbounds": self.proxyTags,
             @"url": @"http://cp.cloudflare.com/generate_204",
-            @"interval": @"30s",
+            @"interval": @"3m",
             @"tolerance": @50
         }];
     }
     [outbounds addObjectsFromArray:self.proxyOutbounds];
     [outbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
-    [outbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}];
-    
-    // [GOLDEN SKELETON CONFIG]: Свежий DNS без петель
-    NSDictionary *dnsConfig = @{
-        @"servers": @[
-            // TCP DNS через VPN для обхода блокировок и утечек
-            @{@"tag": @"remote-dns", @"address": @"tcp://1.1.1.1", @"detour": activeProxyTag},
-            // Локальный системный DNS для .ru доменов (напрямую)
-            @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
-        ],
-        @"rules": @[
-            // Домен подписки и .ru домены резолвим через провайдера напрямую
-            @{@"domain_suffix": @[@"gsupport.support", @".ru", @".su", @".рф", @"yandex.ru", @"vk.com", @"ya.ru", @"mail.ru", @"ok.ru", @"sber.ru"], @"server": @"local-dns"},
-            // Все заблокированные домены резолвим строго внутри VPN
-            @{@"outbound": @[@"any"], @"server": @"remote-dns"}
-        ]
-    };
-    
-    NSMutableArray *rules = [NSMutableArray array];
-    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
-    
+
+    // ПРИМИТИВНАЯ МАРШРУТИЗАЦИЯ (НИКАКИХ DNS!)
     NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
-    routeConfig[@"auto_detect_interface"] = @YES;
-    
+    NSMutableArray *rules = [NSMutableArray array];
+
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
             @"whatsapp.com", @"whatsapp.net",
-            @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
-            @"spotify.com", @"scdn.co",
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
-            @"anthropic.com", @"claude.ai",
-            @"gemini.google.com", @"ai.google.dev",
-            @"instagram.com", @"cdninstagram.com",
-            @"facebook.com", @"fbcdn.net",
-            @"twitter.com", @"x.com", @"twimg.com",
-            @"github.com", @"githubusercontent.com",
-            @"medium.com", @"meduza.io", @"svoboda.org",
-            @"rutracker.org", @"rutracker.cc"
+            @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
+            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com", @"twimg.com",
+            @"discord.com", @"discordapp.com", @"discord.gg", @"rutracker.org", @"rutracker.cc"
         ];
-        NSArray *telegramIPs = @[
-            @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22",
-            @"91.108.16.0/22", @"91.108.20.0/22", @"91.108.36.0/23",
-            @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22",
-            @"149.154.172.0/22", @"185.76.8.0/22"
-        ];
+        
         [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeProxyTag}];
-        [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeProxyTag}];
         routeConfig[@"rules"] = rules;
         routeConfig[@"final"] = @"direct";
     } else {
+        // В ГЛОБАЛЬНОМ режиме ВСЁ идёт через VPN, кроме локальных адресов (для безопасности)
+        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8"], @"outbound": @"direct"}];
         routeConfig[@"rules"] = rules;
         routeConfig[@"final"] = activeProxyTag;
     }
-    
+
     NSDictionary *config = @{
         @"log": @{@"level": @"warn"},
         @"inbounds": @[
@@ -353,25 +312,24 @@
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
         ],
         @"outbounds": outbounds,
-        @"dns": dnsConfig,
         @"route": routeConfig
     };
-    
+
     NSError *je = nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:&je];
     if (je || !data) { self.statusLabel.stringValue = @"Ошибка конфига!"; return; }
     [data writeToFile:self.configPath atomically:YES];
-    
+
     NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     self.singBoxTask = [[NSTask alloc] init];
-    [self.singBoxTask setLaunchPath:bin];
-    [self.singBoxTask setArguments:@[@"run", @"-c", self.configPath]];
-    
+    self.singBoxTask.launchPath = bin;
+    self.singBoxTask.arguments = @[@"run", @"-c", self.configPath];
+
     [[NSFileManager defaultManager] createFileAtPath:self.logPath contents:nil attributes:nil];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
     self.singBoxTask.standardOutput = fh;
     self.singBoxTask.standardError = fh;
-    
+
     __weak typeof(self) ws = self;
     self.singBoxTask.terminationHandler = ^(NSTask *task) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -390,7 +348,7 @@
     if (self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск...";
     [self startCoreOnly];
-    
+
     NSString *iface = [self getActiveNetworkInterface];
     NSString *cmd = [NSString stringWithFormat:
         @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "

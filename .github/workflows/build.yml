@@ -15,34 +15,29 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
-    - name: Build VPN Core (v1.8.11 Intel + All Features)
+    - name: Build VPN Core
       run: |
         git clone -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality,with_clash_api -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
-    - name: Compile App (Objective-C Intel)
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+    - name: Compile App
       run: |
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
+        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
-        # Скачиваем иконку ClashX (100% живая ссылка на .icns)
-        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
-        
-        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
-          -arch x86_64 -mmacosx-version-min=10.13 \
-          -o AirVPN.app/Contents/MacOS/AirVPN
-          
+        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m -arch x86_64 -mmacosx-version-min=10.13 -o AirVPN.app/Contents/MacOS/AirVPN
         codesign --force --deep -s - AirVPN.app
         zip -r "PauloVPN-macOS-10.13-${{ github.ref_name }}.zip" AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Stealth Master v5.8)"
-        body: "Официальный релиз v5.8.\n- Полностью устранены петли маршрутизации в Глобальном режиме.\n- DNS в заблокированных зонах теперь безопасно резолвится через TCP VPN-канал (обход утечек).\n- Вшита иконка синего котика ClashX.\n- Полностью сохранена твоя верстка интерфейса."
+        name: "PauloVPN ${{ github.ref_name }} (K.I.S.S Edition)"
+        body: "Официальный релиз v6.0.\n- Возврат к KISS-архитектуре.\n- Полностью удален DNS-резолвинг из конфигурации ядра (используется системный DNS). Это решает все проблемы таймаутов и петель.\n- Идеальная и простая логика маршрутизации."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
