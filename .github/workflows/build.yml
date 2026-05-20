@@ -27,22 +27,22 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         chmod +x AirVPN.app/Contents/Resources/sing-box
-
-        curl -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns \
-          -o AirVPN.app/Contents/Resources/AppIcon.icns || true
-
+        
+        # Скачиваем иконку ClashX (100% живая ссылка на .icns)
+        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
+        
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o AirVPN.app/Contents/MacOS/AirVPN
-
+          
         codesign --force --deep -s - AirVPN.app
         zip -r "PauloVPN-macOS-10.13-${{ github.ref_name }}.zip" AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Expert Edition)"
-        body: "Релиз v8.1.\n- Иконка приложения подхватывается корректно (CFBundleIconFile в Info.plist).\n- Скачивание иконки нефатально для сборки (|| true).\n- Убран небезопасный флаг -k у curl."
+        name: "PauloVPN ${{ github.ref_name }} (Stealth Master v5.8)"
+        body: "Официальный релиз v5.8.\n- Полностью устранены петли маршрутизации в Глобальном режиме.\n- DNS в заблокированных зонах теперь безопасно резолвится через TCP VPN-канал (обход утечек).\n- Вшита иконка синего котика ClashX.\n- Полностью сохранена твоя верстка интерфейса."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
