@@ -15,11 +15,10 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
-    - name: Build VPN Core (Intel + uTLS)
+    - name: Build VPN Core (Intel)
       run: |
         git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        # [CRITICAL FIX] ДОБАВЛЕН ФЛАГ -tags with_utls ДЛЯ ОБХОДА ТСПУ
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App (Objective-C Intel)
       run: |
@@ -28,8 +27,8 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         
-        # Качаем 100% рабочую красивую иконку VPN из сети
-        curl -sL https://github.com/SagerNet/sing-box/raw/main/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
+        # Скачиваем системную иконку VPN из GitHub
+        curl -sL https://github.com/SagerNet/sing-box/raw/main/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns || true
         
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
@@ -38,13 +37,13 @@ jobs:
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v2.3.zip AirVPN.app
+        zip -r PauloVPN-macOS-10.13-v2.4.zip AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (uTLS Fix)"
-        body: "Официальный релиз v2.3.\n- В ядро добавлен модуль uTLS (устранена ошибка FATAL decode config).\n- Скачана настоящая .icns иконка.\n- Кнопки UI выровнены по стандартам macOS."
+        name: "PauloVPN ${{ github.ref_name }} (Zero Dependency Routing)"
+        body: "Официальный релиз v2.4.\n- Полностью удалена зависимость от geosite.db (ядро стартует мгновенно).\n- Авто-выбор серверов переведен на проверку по IP (не зависит от DNS).\n- Расширен список Стелс-доменов (Discord, Rutracker)."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

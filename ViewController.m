@@ -16,13 +16,11 @@
 @implementation ViewController
 
 - (void)loadView {
-    // Делаем окно чуть шире для аккуратности
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    // Кнопка Выйти (Аккуратно в правом верхнем углу, не вылезает)
     NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(240, 440, 70, 25)];
     quitBtn.title = @"Выйти";
     quitBtn.bezelStyle = NSBezelStyleRounded;
@@ -30,7 +28,6 @@
     quitBtn.action = @selector(quitApp);
     [effectView addSubview:quitBtn];
     
-    // Кнопка Логи (Аккуратно слева)
     NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 70, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
@@ -83,7 +80,6 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    // Кнопка центрируется по новой ширине 320 (320-120)/2 = 100
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 40, 120, 120)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
@@ -180,7 +176,7 @@
         return;
     }
     NSMutableDictionary *skeleton = [@{
-        @"log": @{@"level": @"info"},
+        @"log": @{@"level": @"info"}, // Вернул info, чтобы не спамить в лог
         @"outbounds": parsedOutbounds,
     } mutableCopy];
     [self handleParsedJSON:skeleton];
@@ -249,12 +245,14 @@
     if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
     if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
     
+    // [FIX 1] АВТО-ВЫБОР: Тестируем по IP (1.1.1.1), чтобы не зависеть от DNS
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/", @"interval": @"3m", @"tolerance": @50 };
+        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://1.1.1.1/", @"interval": @"3m", @"tolerance": @50 };
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
     
+    // [FIX 2] УДАЛЯЕМ GEOSITE. Жестко прописываем суффиксы для России
     self.downloadedJSON[@"dns"] = @{
         @"servers": @[ 
             @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag},
@@ -262,14 +260,15 @@
         ],
         @"rules": @[ 
             @{@"outbound": @[@"any"], @"server": @"remote-dns"},
-            @{@"geosite": @[@"cn", @"ru"], @"server": @"local-dns"}
+            @{@"domain_suffix": @[@".ru", @".su", @".рф", @".yandex.ru", @".vk.com", @".ya.ru"], @"server": @"local-dns"}
         ]
     };
     
+    // [FIX 3] TUN Interface
     self.downloadedJSON[@"inbounds"] = @[ @{
         @"type": @"tun", @"tag": @"tun-in", @"interface_name": @"utun9", @"inet4_address": @"172.19.0.1/30",
         @"auto_route": @YES, @"strict_route": @YES, @"stack": @"system",
-        @"sniff": @YES, @"sniff_override_destination": @YES
+        @"sniff": @YES, @"sniff_override_destination": @NO // Оставляем NO, чтобы не ломать DNS резолвинг
     } ];
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
@@ -277,8 +276,15 @@
     
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
+    // УМНЫЙ РЕЖИМ (Список заблокированных доменов)
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com" ];
+        NSArray *blockedDomains = @[ 
+            @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", 
+            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", 
+            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", 
+            @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com",
+            @"twimg.com", @"discord.com", @"discordapp.com", @"rutracker.org"
+        ];
         [rules addObject:@{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag }];
         route[@"final"] = @"direct"; 
     } else { 
