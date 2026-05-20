@@ -16,33 +16,20 @@
 @implementation ViewController
 
 - (void)loadView {
+    // Аккуратное, симметричное окно в стиле macOS High Sierra
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    // Красивые симметричные кнопки внизу в стиле High Sierra
-    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 25, 90, 25)];
-    logBtn.title = @"Логи";
-    logBtn.bezelStyle = NSBezelStyleRounded;
-    logBtn.target = self;
-    logBtn.action = @selector(openLogs);
-    [effectView addSubview:logBtn];
-    
-    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(210, 25, 90, 25)];
-    quitBtn.title = @"Выйти";
-    quitBtn.bezelStyle = NSBezelStyleRounded;
-    quitBtn.target = self;
-    quitBtn.action = @selector(quitApp);
-    [effectView addSubview:quitBtn];
-    
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 320, 30)];
+    // Заголовок PauloVPN красивым тонким шрифтом
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 320, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
     titleLabel.drawsBackground = NO;
     titleLabel.editable = NO;
-    titleLabel.font = [NSFont systemFontOfSize:26 weight:NSFontWeightLight];
+    titleLabel.font = [NSFont (name):@"HelveticaNeue-Light" size:26] ?? [NSFont systemFontOfSize:26];
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
@@ -81,18 +68,34 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 75, 120, 120)];
+    // Кнопка ВКЛ/ВЫКЛ (Сбалансированное расположение)
+    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(110, 70, 100, 100)];
     self.connectButton.title = @"ВЫКЛ";
-    self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
+    self.connectButton.font = [NSFont systemFontOfSize:20 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
     self.connectButton.wantsLayer = YES;
-    self.connectButton.layer.cornerRadius = 60;
-    self.connectButton.layer.borderWidth = 2.0;
+    self.connectButton.layer.cornerRadius = 50;
+    self.connectButton.layer.borderWidth = 1.5;
     self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
     self.connectButton.layer.backgroundColor = [NSColor clearColor].CGColor;
     self.connectButton.target = self;
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
+    
+    // Кнопки управления в самом низу (Симметрично и аккуратно)
+    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 20, 80, 25)];
+    logBtn.title = @"Логи";
+    logBtn.bezelStyle = NSBezelStyleRounded;
+    logBtn.target = self;
+    logBtn.action = @selector(openLogs);
+    [effectView addSubview:logBtn];
+    
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(220, 20, 80, 25)];
+    quitBtn.title = @"Выйти";
+    quitBtn.bezelStyle = NSBezelStyleRounded;
+    quitBtn.target = self;
+    quitBtn.action = @selector(quitApp);
+    [effectView addSubview:quitBtn];
     
     self.view = effectView;
     self.isConnected = NO;
@@ -120,7 +123,6 @@
 }
 
 - (void)quitApp {
-    // Если юзер отменил ввод пароля при выключении, мы НЕ закрываем приложение, чтобы сохранить интернет рабочим!
     if ([self stopVPN]) {
         [NSApp terminate:nil];
     }
@@ -195,7 +197,6 @@
     self.proxyTags = [NSMutableArray array];
     NSArray *outbounds = json[@"outbounds"];
     
-    // [Y-C SMART SELECTOR DETECTOR]: Ищем встроенный селектор Hiddify
     for (NSDictionary *out in outbounds) {
         NSString *type = out[@"type"];
         if ([type isEqualToString:@"selector"] || [type isEqualToString:@"urltest"]) {
@@ -209,7 +210,6 @@
         }
     }
     
-    // Если селектора нет, собираем теги вручную
     if (self.proxyTags.count == 0) {
         for (NSDictionary *out in outbounds) {
             NSString *tag = out[@"tag"];
@@ -279,7 +279,6 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    // Клонируем конфиг (Deep Copy)
     NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
     
@@ -288,7 +287,6 @@
     
     NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:activeConfig[@"outbounds"]];
     
-    // [TUNNEL SELECTOR MODIFICATION]: Мягко переключаем внутренний селектор Hiddify!
     for (NSInteger i = 0; i < newOutbounds.count; i++) {
         NSMutableDictionary *out = [newOutbounds[i] mutableCopy];
         if ([out[@"type"] isEqualToString:@"selector"]) {
@@ -305,21 +303,66 @@
     if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
     if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
     
-    // Если выбран авто-выбор, добавляем его в начало
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50 };
+        NSDictionary *autoOutbound = @{@"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50};
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     activeConfig[@"outbounds"] = newOutbounds;
     
-    // [SOCKS5 + HTTP INBOUNDS]
+    // [SYNTAX FIX]: ИСПРАВЛЕН СИНТАКСИС КОЛЛЕКЦИЙ OBJECTIVE-C (Добавлены знаки @ перед всеми ключами!)
     activeConfig[@"inbounds"] = @[ 
-        @{"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
-        @{"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
+        @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
+        @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
     ];
     
-    // СОХРАНЯЕМ ОРИГИНАЛЬНЫЙ DNS И ROUTE ОТ HIDDIFY! Мы больше не перезаписываем их.
-    // Это решает проблему DNS таймаутов навсегда.
+    // Безопасный DNS без петель
+    activeConfig[@"dns"] = @{
+        @"servers": @[ 
+            @{@"tag": @"dns-direct", @"address": @"8.8.8.8", @"detour": @"direct"}
+        ]
+    };
+    
+    NSMutableDictionary *route = [NSMutableDictionary dictionary];
+    NSMutableArray *rules = [NSMutableArray array];
+    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
+    
+    if (self.stealthCheckbox.state == NSControlStateValueOn) {
+        // УЛЬТИМАТИВНЫЙ РУССКИЙ СТЕЛС-СПИСОК 2026 С REDDIT
+        NSArray *blockedDomains = @[ 
+            // Telegram
+            @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com", 
+            // Мессенджеры & Войс
+            @"whatsapp.com", @"whatsapp.net", @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
+            // Стриминг & Видео
+            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"spotify.com", @"scdn.co",
+            // Искусственный Интеллект (AI)
+            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
+            @"anthropic.com", @"claude.ai", 
+            @"gemini.google.com", @"bard.google.com", @"ai.google.dev", @"googleusercontent.com",
+            // Социальные сети
+            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com", @"twimg.com",
+            // Полезное & Медиум & GitHub
+            @"proton.me", @"protonmail.com", @"medium.com", @"canva.com", @"notion.so", @"notion.site",
+            @"github.com", @"githubusercontent.com",
+            // Блокировки Рунета
+            @"rutracker.org", @"rutracker.cc", @"rutracker.net"
+        ];
+        
+        NSArray *telegramIPs = @[
+            @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22",
+            @"91.108.36.0/23", @"91.108.38.0/23", @"91.108.56.0/22", @"91.108.56.0/23", @"91.108.56.0/24",
+            @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
+        ];
+        
+        [rules addObject:@{ @"domain_suffix": blockedDomains, @"ip_cidr": telegramIPs, @"outbound": activeProxyTag }];
+        route[@"final"] = @"direct"; 
+    } else { 
+        route[@"final"] = activeProxyTag; 
+    }
+    
+    route[@"rules"] = rules;
+    route[@"auto_detect_interface"] = @YES;
+    activeConfig[@"route"] = route;
     
     NSData *finalData = [NSJSONSerialization dataWithJSONObject:activeConfig options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
@@ -327,7 +370,6 @@
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     NSString *interface = [self getActiveNetworkInterface];
     
-    // Запуск под рутом (Один пароль)
     NSString *shellCommand = [NSString stringWithFormat:
         @"killall -9 sing-box 2>/dev/null || true ; "
         @"nohup '%@' run -c '%@' > '%@' 2>&1 & "
@@ -336,7 +378,7 @@
         @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808", 
         binaryPath, self.configPath, self.logPath, interface, interface, interface];
         
-    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"\(shellCommand)\" with administrator privileges"];
+    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
     NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
     NSDictionary *errorInfo = nil;
