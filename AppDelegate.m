@@ -21,9 +21,7 @@
     [NSApp setMainMenu:mainMenu];
 
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    // Ставим букву P в верхнее меню Mac
-    self.statusItem.button.title = @"🅟 PauloVPN";
-    self.statusItem.button.font = [NSFont boldSystemFontOfSize:13];
+    self.statusItem.button.title = @"🛡️ PauloVPN";
     self.statusItem.button.action = @selector(togglePopover:);
     self.statusItem.button.target = self;
     

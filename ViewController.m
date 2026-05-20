@@ -10,7 +10,6 @@
 @property (strong) NSString *logPath;
 @property (strong) NSMutableDictionary *downloadedJSON;
 @property (strong) NSMutableArray *proxyTags;
-@property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL isConnected;
 @end
 
@@ -46,20 +45,16 @@
     self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 280, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"Серверы не загружены"];
     [self.serverDropdown setEnabled:NO];
-    self.serverDropdown.target = self;
-    self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
     
-    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 225, 280, 20)];
+    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 220, 280, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
     self.stealthCheckbox.title = @"Умный режим (Только заблокированные)";
     self.stealthCheckbox.state = NSControlStateValueOn;
-    self.stealthCheckbox.target = self;
-    self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
     
-    // [UI FIX]: Изменены координаты, чтобы статус не наезжал на кнопку ВКЛ
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 195, 320, 20)];
+    // UI FIX: Избегаем наложения на кнопку
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 185, 320, 20)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.bezeled = NO;
@@ -68,7 +63,6 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    // Кнопка ВКЛ/ВЫКЛ (Идеальный круг 110x110)
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(105, 65, 110, 110)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:22 weight:NSFontWeightMedium];
@@ -82,7 +76,6 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
     
-    // Кнопки управления в самом низу
     NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 20, 80, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
@@ -107,7 +100,6 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
     
-    // Автозагрузка подписки
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
         self.urlField.stringValue = savedURL;
@@ -123,9 +115,8 @@
 }
 
 - (void)quitApp {
-    if ([self stopVPN]) {
-        [NSApp terminate:nil];
-    }
+    [self stopVPN];
+    [NSApp terminate:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
@@ -134,14 +125,6 @@
 
 - (void)openLogs {
     [[NSWorkspace sharedWorkspace] openFile:self.logPath withApplication:@"Console"];
-}
-
-- (void)serverChanged {
-    if (self.isConnected) { [self startVPN]; }
-}
-
-- (void)stealthChanged {
-    if (self.isConnected) { [self startVPN]; }
 }
 
 - (NSDictionary *)parseVlessLink:(NSString *)link {
@@ -159,6 +142,7 @@
         if ([item.name isEqualToString:@"sni"]) tls[@"server_name"] = item.value;
         if ([item.name isEqualToString:@"pbk"]) tls[@"reality"][@"public_key"] = item.value;
         if ([item.name isEqualToString:@"sid"]) tls[@"reality"][@"short_id"] = item.value;
+        if ([item.name isEqualToString:@"flow"] && item.value.length > 0) outbound[@"flow"] = item.value;
         if ([item.name isEqualToString:@"type"] && item.value.length > 0) {
             if (![item.value isEqualToString:@"tcp"]) transport[@"type"] = item.value;
         }
@@ -195,18 +179,13 @@
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
     self.downloadedJSON = json;
     self.proxyTags = [NSMutableArray array];
-    self.proxyOutbounds = [NSMutableArray array];
-    
     NSArray *outbounds = json[@"outbounds"];
     for (NSDictionary *out in outbounds) {
-        NSString *type = out[@"type"];
         NSString *tag = out[@"tag"];
-        if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
+        if (tag && ![tag isEqualToString:@"direct"] && ![tag isEqualToString:@"dns-out"]) {
             [self.proxyTags addObject:tag];
-            [self.proxyOutbounds addObject:out];
         }
     }
-    
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
         [self.serverDropdown addItemWithTitle:@"⚡️ Авто (Умный выбор)"];
@@ -214,18 +193,15 @@
         [self.serverDropdown setEnabled:YES];
         self.statusLabel.stringValue = [NSString stringWithFormat:@"Загружено %lu серверов", (unsigned long)self.proxyTags.count];
     } else {
-        [self.serverDropdown addItemWithTitle:@"Нет поддерживаемых серверов"];
-        self.statusLabel.stringValue = @"VLESS серверы не найдены.";
+        self.statusLabel.stringValue = @"Серверы не найдены.";
     }
 }
 
 - (void)downloadConfig {
     NSString *urlString = self.urlField.stringValue;
     if (urlString.length == 0) return;
-    
     [[NSUserDefaults standardUserDefaults] setObject:urlString forKey:@"SubscriptionURL"];
     [[NSUserDefaults standardUserDefaults] synchronize];
-    
     if ([urlString hasPrefix:@"vless://"]) { [self processRawText:urlString]; return; }
     
     self.statusLabel.stringValue = @"Загрузка...";
@@ -233,10 +209,8 @@
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error || !data) { self.statusLabel.stringValue = @"Ошибка сети!"; return; }
-            
             NSString *subPath = [[self.configPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"subscription.json"];
             [data writeToFile:subPath atomically:YES];
-            
             NSError *jsonError;
             NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&jsonError];
             if (!jsonError && json[@"outbounds"]) { [self handleParsedJSON:json]; } else {
@@ -267,84 +241,58 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    // Глубокое клонирование
-    NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
-    NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
-    
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
-    NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:activeConfig[@"outbounds"]];
-    
-    // Мягко переключаем внутренний селектор Hiddify
-    for (NSInteger i = 0; i < newOutbounds.count; i++) {
-        NSMutableDictionary *out = [newOutbounds[i] mutableCopy];
-        if ([out[@"type"] isEqualToString:@"selector"]) {
-            out[@"selected"] = activeProxyTag;
-            newOutbounds[i] = out;
-        }
-    }
-    
-    BOOL hasDirect = NO, hasDnsOut = NO;
-    for (NSDictionary *outbound in newOutbounds) { 
-        if ([outbound[@"tag"] isEqualToString:@"direct"]) hasDirect = YES; 
-        if ([outbound[@"tag"] isEqualToString:@"dns-out"]) hasDnsOut = YES; 
-    }
-    if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
-    if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
-    
-    if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{@"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50};
-        [newOutbounds insertObject:autoOutbound atIndex:0];
-    }
-    activeConfig[@"outbounds"] = newOutbounds;
-    
-    // [SOCKS5 + HTTP INBOUNDS]
-    activeConfig[@"inbounds"] = @[ 
+    // Чистая генерация конфига
+    NSMutableDictionary *config = [NSMutableDictionary dictionary];
+    config[@"log"] = @{ @"level": @"info" };
+    config[@"inbounds"] = @[ 
         @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
         @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
     ];
     
-    // Собираем все домены прокси-серверов для обхода петли в глобальном режиме
-    NSMutableArray *serverDomains = [NSMutableArray array];
-    for (NSDictionary *out in self.proxyOutbounds) {
-        NSString *srv = out[@"server"];
-        if (srv) [serverDomains addObject:srv];
+    NSMutableArray *newOutbounds = [NSMutableArray array];
+    for (NSDictionary *out in self.downloadedJSON[@"outbounds"]) {
+        if (![out[@"tag"] isEqualToString:@"direct"] && ![out[@"tag"] isEqualToString:@"dns-out"]) {
+            [newOutbounds addObject:out];
+        }
     }
     
-    // Правило обхода петли серверов
-    NSDictionary *loopBypassRule = @{
-        @"domain": serverDomains,
-        @"outbound": @"direct"
+    [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
+    [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}];
+    
+    if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
+        [newOutbounds insertObject:@{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50 } atIndex:0];
+    }
+    config[@"outbounds"] = newOutbounds;
+    
+    // DNS без петель
+    config[@"dns"] = @{
+        @"servers": @[ @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"} ]
     };
     
-    // [Y-C REVELATION]: МЫ БОЛЬШЕ НЕ ПЕРЕЗАПИСЫВАЕМ DNS И ROUTE ПРОВАЙДЕРА В SMART РЕЖИМЕ!
-    NSMutableDictionary *route = [NSMutableDictionary dictionary];
-    if (activeConfig[@"route"]) {
-        route = [activeConfig[@"route"] mutableCopy];
-    }
     NSMutableArray *rules = [NSMutableArray array];
-    if (route[@"rules"]) {
-        rules = [route[@"rules"] mutableCopy];
+    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
+    
+    NSString *activeServerAddress = @"";
+    for (NSDictionary *out in newOutbounds) {
+        if ([out[@"tag"] isEqualToString:activeProxyTag]) { activeServerAddress = out[@"server"]; break; }
+    }
+    if (activeServerAddress.length > 0) {
+        [rules addObject:@{ @"domain": @[activeServerAddress], @"outbound": @"direct" }];
     }
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        // УМНЫЙ РЕЖИМ: Используем оригинальные правила провайдера!
-        // Просто добавляем наше правило обхода петли в самый верх для безопасности
-        [rules insertObject:loopBypassRule atIndex:0];
-        route[@"rules"] = rules;
+        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"facebook.com", @"x.com", @"rutracker.org", @"discord.com" ];
+        NSArray *telegramIPs = @[ @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", @"91.108.36.0/23", @"91.108.38.0/23", @"91.108.56.0/22", @"91.108.56.0/23", @"91.108.56.0/24", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22" ];
+        [rules addObject:@{ @"domain_suffix": blockedDomains, @"ip_cidr": telegramIPs, @"outbound": activeProxyTag }];
+        config[@"route"] = @{ @"rules": rules, @"final": @"direct" };
     } else {
-        // ГЛОБАЛЬНЫЙ РЕЖИМ: Направляем всё в прокси, но обходим DNS и петлю серверов
-        NSMutableArray *globalRules = [NSMutableArray array];
-        [globalRules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
-        [globalRules addObject:loopBypassRule];
-        
-        route[@"rules"] = globalRules;
-        route[@"final"] = activeProxyTag;
+        config[@"route"] = @{ @"rules": rules, @"final": activeProxyTag };
     }
-    activeConfig[@"route"] = route;
     
-    NSData *finalData = [NSJSONSerialization dataWithJSONObject:activeConfig options:0 error:nil];
+    NSData *finalData = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
@@ -368,7 +316,6 @@
         [self updateUIConnected:YES]; 
     } else { 
         self.statusLabel.stringValue = @"Отменено / Ошибка"; 
-        [self stopVPN]; 
     }
 }
 
@@ -383,12 +330,7 @@
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
     NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
-    NSDictionary *errorInfo = nil;
-    [script executeAndReturnError:&errorInfo];
-    if (errorInfo) {
-        self.statusLabel.stringValue = @"Ошибка сброса прокси!";
-        return NO;
-    }
+    [script executeAndReturnError:nil];
     [self updateUIConnected:NO];
     return YES;
 }
