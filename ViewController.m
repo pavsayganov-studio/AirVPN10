@@ -16,42 +16,29 @@
 @implementation ViewController
 
 - (void)loadView {
+    // Симметричный, выверенный интерфейс 320x480
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(240, 440, 70, 25)];
-    quitBtn.title = @"Выйти";
-    quitBtn.bezelStyle = NSBezelStyleRounded;
-    quitBtn.target = self;
-    quitBtn.action = @selector(quitApp);
-    [effectView addSubview:quitBtn];
-    
-    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 70, 25)];
-    logBtn.title = @"Логи";
-    logBtn.bezelStyle = NSBezelStyleRounded;
-    logBtn.target = self;
-    logBtn.action = @selector(openLogs);
-    [effectView addSubview:logBtn];
-    
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 320, 30)];
+    // 1. Заголовок
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 320, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
     titleLabel.drawsBackground = NO;
     titleLabel.editable = NO;
-    
-    // [FIX]: Исправлен синтаксис шрифта и тернарного оператора под стандарты Objective-C!
     titleLabel.font = [NSFont fontWithName:@"HelveticaNeue-Light" size:26] ?: [NSFont systemFontOfSize:26];
-    
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
+    // 2. Поле ввода URL подписки
     self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 350, 280, 24)];
     self.urlField.placeholderString = @"Вставьте vless:// или подписку...";
     [effectView addSubview:self.urlField];
     
+    // 3. Кнопка загрузки серверов
     NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(80, 310, 160, 30)];
     importBtn.title = @"Загрузить серверы";
     importBtn.bezelStyle = NSBezelStyleRounded;
@@ -59,6 +46,7 @@
     importBtn.action = @selector(downloadConfig);
     [effectView addSubview:importBtn];
     
+    // 4. Список серверов
     self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 280, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"Серверы не загружены"];
     [self.serverDropdown setEnabled:NO];
@@ -66,6 +54,7 @@
     self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
     
+    // 5. Переключатель режима
     self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 220, 280, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
     self.stealthCheckbox.title = @"Умный режим (Только заблокированные)";
@@ -74,6 +63,7 @@
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
     
+    // 6. Статус бар
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 320, 20)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
@@ -83,12 +73,13 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
+    // 7. Кнопка ВКЛ/ВЫКЛ (Идеальный круг 120x120 по центру)
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 70, 120, 120)];
     self.connectButton.title = @"ВЫКЛ";
-    self.connectButton.font = [NSFont systemFontOfSize:20 weight:NSFontWeightMedium];
+    self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
     self.connectButton.wantsLayer = YES;
-    self.connectButton.layer.cornerRadius = 50;
+    self.connectButton.layer.cornerRadius = 60; // Ровно половина ширины для круга
     self.connectButton.layer.borderWidth = 1.5;
     self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
     self.connectButton.layer.backgroundColor = [NSColor clearColor].CGColor;
@@ -96,6 +87,7 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
     
+    // 8. Кнопки управления в самом низу (Симметрично и красиво)
     NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 20, 80, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
@@ -120,6 +112,7 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
     
+    // Автозагрузка подписки
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
         self.urlField.stringValue = savedURL;
@@ -321,6 +314,7 @@
     }
     activeConfig[@"outbounds"] = newOutbounds;
     
+    // ПРАВИЛЬНЫЙ СИНТАКСИС КОЛЛЕКЦИЙ OBJECTIVE-C
     activeConfig[@"inbounds"] = @[ 
         @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
         @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
