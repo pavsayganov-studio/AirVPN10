@@ -39,7 +39,7 @@ jobs:
       with:
         tag_name: ${{ github.ref_name }}
         name: "PauloVPN ${{ github.ref_name }} (Stealth Master)"
-        body: "Официальный релиз v5.4.\n- Исправлена синтаксическая ошибка компилятора Clang.\n- Полностью удалены шаги генерации иконок для максимальной стабильности.\n- Расширен список Стелс-доменов (Discord, Notion, Spotify, Dev-ресурсы)."
+        body: "Официальный релиз v5.5.\n- Исправлена синтаксическая ошибка компилятора Clang.\n- Полностью удалены шаги генерации иконок для максимальной стабильности.\n- Расширен список Стелс-доменов (Discord, Notion, Spotify, Dev-ресурсы)."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

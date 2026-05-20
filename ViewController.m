@@ -16,20 +16,35 @@
 @implementation ViewController
 
 - (void)loadView {
-    // Аккуратное, симметричное окно в стиле macOS High Sierra
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    // Заголовок PauloVPN красивым тонким шрифтом
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 320, 30)];
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(240, 440, 70, 25)];
+    quitBtn.title = @"Выйти";
+    quitBtn.bezelStyle = NSBezelStyleRounded;
+    quitBtn.target = self;
+    quitBtn.action = @selector(quitApp);
+    [effectView addSubview:quitBtn];
+    
+    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 70, 25)];
+    logBtn.title = @"Логи";
+    logBtn.bezelStyle = NSBezelStyleRounded;
+    logBtn.target = self;
+    logBtn.action = @selector(openLogs);
+    [effectView addSubview:logBtn];
+    
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 320, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
     titleLabel.drawsBackground = NO;
     titleLabel.editable = NO;
-    titleLabel.font = [NSFont (name):@"HelveticaNeue-Light" size:26] ?? [NSFont systemFontOfSize:26];
+    
+    // [FIX]: Исправлен синтаксис шрифта и тернарного оператора под стандарты Objective-C!
+    titleLabel.font = [NSFont fontWithName:@"HelveticaNeue-Light" size:26] ?: [NSFont systemFontOfSize:26];
+    
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
@@ -68,8 +83,7 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    // Кнопка ВКЛ/ВЫКЛ (Сбалансированное расположение)
-    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(110, 70, 100, 100)];
+    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 70, 120, 120)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:20 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
@@ -82,7 +96,6 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
     
-    // Кнопки управления в самом низу (Симметрично и аккуратно)
     NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 20, 80, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
@@ -107,7 +120,6 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
     
-    // Автозагрузка кэшированных настроек
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
         self.urlField.stringValue = savedURL;
@@ -309,13 +321,11 @@
     }
     activeConfig[@"outbounds"] = newOutbounds;
     
-    // [SYNTAX FIX]: ИСПРАВЛЕН СИНТАКСИС КОЛЛЕКЦИЙ OBJECTIVE-C (Добавлены знаки @ перед всеми ключами!)
     activeConfig[@"inbounds"] = @[ 
         @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
         @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
     ];
     
-    // Безопасный DNS без петель
     activeConfig[@"dns"] = @{
         @"servers": @[ 
             @{@"tag": @"dns-direct", @"address": @"8.8.8.8", @"detour": @"direct"}
@@ -327,24 +337,16 @@
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        // УЛЬТИМАТИВНЫЙ РУССКИЙ СТЕЛС-СПИСОК 2026 С REDDIT
         NSArray *blockedDomains = @[ 
-            // Telegram
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com", 
-            // Мессенджеры & Войс
             @"whatsapp.com", @"whatsapp.net", @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
-            // Стриминг & Видео
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"spotify.com", @"scdn.co",
-            // Искусственный Интеллект (AI)
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", 
             @"gemini.google.com", @"bard.google.com", @"ai.google.dev", @"googleusercontent.com",
-            // Социальные сети
             @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com", @"twimg.com",
-            // Полезное & Медиум & GitHub
             @"proton.me", @"protonmail.com", @"medium.com", @"canva.com", @"notion.so", @"notion.site",
             @"github.com", @"githubusercontent.com",
-            // Блокировки Рунета
             @"rutracker.org", @"rutracker.cc", @"rutracker.net"
         ];
         
