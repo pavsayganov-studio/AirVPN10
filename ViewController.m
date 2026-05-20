@@ -59,6 +59,16 @@
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
 
+    NSTextField *telegramHint = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 183, 280, 14)];
+    telegramHint.stringValue = @"Telegram: Settings → Proxy → SOCKS5 127.0.0.1:10808";
+    telegramHint.alignment = NSTextAlignmentCenter;
+    telegramHint.bezeled = NO;
+    telegramHint.drawsBackground = NO;
+    telegramHint.editable = NO;
+    telegramHint.font = [NSFont systemFontOfSize:9];
+    telegramHint.textColor = [NSColor colorWithWhite:1.0 alpha:0.4];
+    [effectView addSubview:telegramHint];
+
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 165, 320, 16)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
@@ -143,8 +153,10 @@
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
+
     NSString *tag = comp.fragment ? [comp.fragment stringByRemovingPercentEncoding] : comp.host;
     NSMutableDictionary *out = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
+
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
 
@@ -171,6 +183,7 @@
         if ([item.name isEqualToString:@"serviceName"] && item.value.length > 0) transport[@"service_name"] = item.value;
         if ([item.name isEqualToString:@"host"] && item.value.length > 0) transport[@"headers"] = @{@"Host": item.value};
     }
+
     if (tls[@"enabled"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
     if (tls.count > 0) out[@"tls"] = tls;
     if (transport.count > 0) out[@"transport"] = transport;
@@ -198,16 +211,18 @@
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
     self.proxyTags = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
+
     for (NSDictionary *o in json[@"outbounds"]) {
         NSString *type = o[@"type"], *tag = o[@"tag"];
+        // [FIX]: Больше не собираем "selector" и "urltest", только чистые прокси
         if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
             [self.proxyTags addObject:tag];
             [self.proxyOutbounds addObject:o];
         }
     }
+
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
-        [self.serverDropdown addItemWithTitle:@"⚡️ Авто (Умный выбор)"];
         [self.serverDropdown addItemsWithTitles:self.proxyTags];
         [self.serverDropdown setEnabled:YES];
         self.statusLabel.stringValue = [NSString stringWithFormat:@"Загружено %lu серверов", (unsigned long)self.proxyTags.count];
@@ -221,7 +236,9 @@
     if (urlString.length == 0) return;
     [[NSUserDefaults standardUserDefaults] setObject:urlString forKey:@"SubscriptionURL"];
     [[NSUserDefaults standardUserDefaults] synchronize];
+
     if ([urlString hasPrefix:@"vless://"]) { [self processRawText:urlString]; return; }
+
     self.statusLabel.stringValue = @"Загрузка...";
     [[[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:urlString] completionHandler:^(NSData *data, NSURLResponse *r, NSError *err) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -241,7 +258,9 @@
     }] resume];
 }
 
-- (void)toggleConnection { if (self.isConnected) [self stopVPN]; else [self startVPN]; }
+- (void)toggleConnection {
+    if (self.isConnected) [self stopVPN]; else [self startVPN];
+}
 
 - (NSString *)getActiveNetworkInterface {
     NSTask *t = [[NSTask alloc] init];
@@ -252,7 +271,7 @@
     [t launch];
     NSString *out = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
     if ([out containsString:@"Wi-Fi"]) return @"Wi-Fi";
-    if ([output containsString:@"Ethernet"]) return @"Ethernet";
+    if ([out containsString:@"Ethernet"]) return @"Ethernet";
     return @"Wi-Fi";
 }
 
@@ -262,47 +281,61 @@
         [self.singBoxTask waitUntilExit];
     }
 
-    NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem ?: @"";
-    BOOL isAuto = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"];
-    NSString *activeProxyTag = isAuto ? @"auto-switch" : selectedTitle;
-
-    NSMutableArray *outbounds = [NSMutableArray array];
-    if (isAuto) {
-        [outbounds addObject:@{
-            @"type": @"urltest",
-            @"tag": @"auto-switch",
-            @"outbounds": self.proxyTags,
-            @"url": @"http://cp.cloudflare.com/generate_204",
-            @"interval": @"3m",
-            @"tolerance": @50
-        }];
+    NSString *activeTag = self.serverDropdown.titleOfSelectedItem ?: @"";
+    if (activeTag.length == 0) {
+        self.statusLabel.stringValue = @"Выберите сервер."; return;
     }
-    [outbounds addObjectsFromArray:self.proxyOutbounds];
-    [outbounds addObject:@{@"type": @"direct", @"tag": @"direct"}];
 
-    // ПРИМИТИВНАЯ МАРШРУТИЗАЦИЯ (НИКАКИХ DNS!)
-    NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
-    NSMutableArray *rules = [NSMutableArray array];
+    // Ищем только 1 выбранный сервер
+    NSDictionary *activeOutbound = nil;
+    for (NSDictionary *o in self.proxyOutbounds) {
+        if ([o[@"tag"] isEqualToString:activeTag]) {
+            activeOutbound = o; break;
+        }
+    }
+    if (!activeOutbound) {
+        self.statusLabel.stringValue = @"Сервер не найден."; return;
+    }
 
+    // [CPU SAVER]: Оставляем в конфиге только ОДИН активный сервер! Никаких urltest и пингов!
+    NSArray *outbounds = @[
+        activeOutbound,
+        @{@"type": @"direct", @"tag": @"direct"}
+    ];
+
+    NSDictionary *routeConfig;
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
-            @"whatsapp.com", @"whatsapp.net",
+            @"whatsapp.com", @"whatsapp.net", @"discord.com", @"discordapp.com", @"discord.gg",
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
-            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com", @"twimg.com",
-            @"discord.com", @"discordapp.com", @"discord.gg", @"rutracker.org", @"rutracker.cc"
+            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
+            @"twitter.com", @"x.com", @"twimg.com", @"github.com", @"githubusercontent.com",
+            @"medium.com", @"meduza.io", @"svoboda.org", @"rutracker.org", @"rutracker.cc",
+            @"spotify.com", @"scdn.co"
+        ];
+        NSArray *telegramIPs = @[
+            @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
+            @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
         ];
         
-        [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeProxyTag}];
-        routeConfig[@"rules"] = rules;
-        routeConfig[@"final"] = @"direct";
+        routeConfig = @{
+            @"rules": @[
+                @{@"domain_suffix": blockedDomains, @"outbound": activeTag},
+                @{@"ip_cidr": telegramIPs, @"outbound": activeTag}
+            ],
+            @"final": @"direct"
+        };
     } else {
-        // В ГЛОБАЛЬНОМ режиме ВСЁ идёт через VPN, кроме локальных адресов (для безопасности)
-        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8"], @"outbound": @"direct"}];
-        routeConfig[@"rules"] = rules;
-        routeConfig[@"final"] = activeProxyTag;
+        // [GLOBAL MODE FIX]: Все локальные IP отправляем мимо VPN, остальное - в выбранный сервер
+        routeConfig = @{
+            @"rules": @[
+                @{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}
+            ],
+            @"final": activeTag
+        };
     }
 
     NSDictionary *config = @{
