@@ -27,7 +27,7 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         
-        # [ICON FIX] Качаем оригинальную иконку из архивной ветки sing-box (ссылка 100% рабочая)
+        # [ICON FIX]: Качаем иконку из архива sing-box
         curl -k -sL https://github.com/SagerNet/sing-box/raw/v1.3.0/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         
         chmod +x AirVPN.app/Contents/Resources/sing-box
@@ -42,8 +42,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (TUN Golden Era)"
-        body: "Официальный релиз v5.0.\n- Возвращен кристально стабильный режим TUN.\n- Исправлена мертвая петля в Глобальном режиме.\n- Полностью удалены системные прокси (интернет больше не ломается при выходе).\n- Кастомная иконка скачивается из архивов SagerNet."
+        name: "PauloVPN ${{ github.ref_name }} (Socks5 & Zombie Killer)"
+        body: "Официальный релиз v5.1.\n- Включена поддержка SOCKS5 прокси (Telegram теперь заводится автоматически!).\n- Убийство старых ядер перед запуском переведено под root (решена проблема 'address already in use').\n- Запрос пароля происходит строго один раз."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

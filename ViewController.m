@@ -102,11 +102,17 @@
     [fm createDirectoryAtURL:appSupport withIntermediateDirectories:YES attributes:nil error:nil];
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 }
 
 - (void)quitApp {
     [self stopVPN];
     [NSApp terminate:nil];
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    [self stopVPN];
 }
 
 - (void)openLogs {
@@ -211,11 +217,25 @@
 
 - (void)toggleConnection { if (self.isConnected) { [self stopVPN]; } else { [self startVPN]; } }
 
+- (NSString *)getActiveNetworkInterface {
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/usr/sbin/networksetup"];
+    [task setArguments:@[@"-listnetworkserviceorder"]];
+    NSPipe *pipe = [NSPipe pipe];
+    [task setStandardOutput:pipe];
+    [task launch];
+    NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
+    NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if ([output containsString:@"Wi-Fi"]) return @"Wi-Fi";
+    if ([output containsString:@"Ethernet"]) return @"Ethernet";
+    return @"Wi-Fi";
+}
+
 - (void)startVPN {
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    // [STATE FIX]: Делаем чистую копию перед каждым запуском
+    // Глубокое копирование
     NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
     
@@ -232,82 +252,46 @@
     if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
     
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://1.1.1.1/", @"interval": @"3m", @"tolerance": @50 };
+        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50 };
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     activeConfig[@"outbounds"] = newOutbounds;
     
-    // Ищем адрес нашего текущего выбранного VPN-сервера
-    NSString *activeServerAddress = @"";
-    for (NSDictionary *out in newOutbounds) {
-        if ([out[@"tag"] isEqualToString:activeProxyTag]) {
-            activeServerAddress = out[@"server"];
-            break;
-        }
-    }
-    
-    // DNS резолвер
-    activeConfig[@"dns"] = @{
-        @"servers": @[ 
-            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": activeProxyTag},
-            @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
-        ],
-        @"rules": @[ 
-            @{@"outbound": @[@"any"], @"server": @"remote-dns"},
-            @{@"domain_suffix": @[@".ru", @".su", @".рф", @".yandex.ru", @".vk.com", @".ya.ru"], @"server": @"local-dns"}
-        ]
-    };
-    
-    // [GOLDEN TUN RETURN]: Никаких системных прокси. Настоящая виртуальная сетевая карта utun9.
-    activeConfig[@"inbounds"] = @[ @{
-        @"type": @"tun",
-        @"tag": @"tun-in",
-        @"interface_name": @"utun9",
-        @"inet4_address": @"172.19.0.1/30",
-        @"auto_route": @YES,
-        @"strict_route": @YES,
-        @"stack": @"system",
-        @"sniff": @YES,
-        @"sniff_override_destination": @NO
-    } ];
+    // [ПОДДЕРЖКА SOCKS5 + HTTP]
+    activeConfig[@"inbounds"] = @[ 
+        @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
+        @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
+    ];
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
     NSMutableArray *rules = [NSMutableArray array];
-    
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
-    
-    // [LOOP FIX]: Прямой трафик до IP сервера всегда пускаем мимо туннеля (direct)
-    if (activeServerAddress.length > 0) {
-        [rules addObject:@{ @"domain": @[activeServerAddress], @"outbound": @"direct" }];
-    }
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com", @"rutracker.org", @"discord.com", @"twimg.com" ];
-        NSArray *telegramIPs = @[
-            @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22",
-            @"91.108.36.0/23", @"91.108.38.0/23", @"91.108.56.0/22", @"91.108.56.0/23", @"91.108.56.0/24",
-            @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
-        ];
-        [rules addObject:@{ @"domain_suffix": blockedDomains, @"ip_cidr": telegramIPs, @"outbound": activeProxyTag }];
+        [rules addObject:@{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag }];
         route[@"final"] = @"direct"; 
     } else { 
         route[@"final"] = activeProxyTag; 
     }
     
     route[@"rules"] = rules;
-    route[@"auto_detect_interface"] = @YES;
     activeConfig[@"route"] = route;
     
     NSData *finalData = [NSJSONSerialization dataWithJSONObject:activeConfig options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
     
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
+    NSString *interface = [self getActiveNetworkInterface];
     
-    // Запуск чистого TUN-ядра (просит пароль ОДИН раз при запуске)
+    // [GOLDEN SHIELD]: Убиваем ядро под рутом прямо перед биндингом портов. Один пароль!
     NSString *shellCommand = [NSString stringWithFormat:
-        @"killall -9 sing-box 2>/dev/null || true ; "
+        @"/usr/bin/killall -9 sing-box 2>/dev/null || true ; "
+        @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808 ; "
         @"nohup '%@' run -c '%@' > '%@' 2>&1 &", 
-        binaryPath, self.configPath, self.logPath];
+        interface, interface, interface, binaryPath, self.configPath, self.logPath];
         
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
@@ -319,12 +303,21 @@
         [self updateUIConnected:YES]; 
     } else { 
         self.statusLabel.stringValue = @"Отменено / Ошибка"; 
+        [self stopVPN]; 
     }
 }
 
 - (void)stopVPN {
-    // Безопасное выключение (просто гасим процесс, туннель utun9 исчезнет сам, интернет не сломается)
-    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:@"do shell script \"killall -9 sing-box 2>/dev/null || true\" with administrator privileges"];
+    NSString *interface = [self getActiveNetworkInterface];
+    NSString *shellCommand = [NSString stringWithFormat:
+        @"/bin/bash -c 'killall -9 sing-box 2>/dev/null || true ; "
+        @"networksetup -setwebproxystate \\\"%@\\\" off ; "
+        @"networksetup -setsecurewebproxystate \\\"%@\\\" off ; "
+        @"networksetup -setsocksfirewallproxystate \\\"%@\\\" off'", interface, interface, interface];
+        
+    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
+    
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
     [script executeAndReturnError:nil];
     [self updateUIConnected:NO];
 }
@@ -338,7 +331,7 @@
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor colorWithRed:0 green:1 blue:0 alpha:0.1].CGColor;
     } else {
-        self.statusLabel.stringValue = @"Отключено";
+        self.statusLabel.stringValue = @"Готов к работе";
         self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
         self.connectButton.title = @"ВЫКЛ";
         self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
