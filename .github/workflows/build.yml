@@ -27,8 +27,8 @@ jobs:
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         
-        # Скачиваем иконку из архива sing-box
-        curl -k -sL https://github.com/SagerNet/sing-box/raw/v1.3.0/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
+        # [ICON RECOVERY]: Ссылка на 100% живой коммит с иконкой
+        curl -k -sL https://github.com/SagerNet/sing-box/raw/b949b8e1fc147c2162aa322300ee7b399bc223cf/docs/assets/icon.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
@@ -42,8 +42,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Y-Combinator Masterpiece)"
-        body: "Официальный релиз v5.2.\n- Устранен критический DNS Bootstrap Loop (таймауты решены!).\n- Настройки подписок и серверов теперь автосохраняются локально.\n- Изменен UI: кнопки Выйти и Логи перемещены в нижнюю часть."
+        name: "PauloVPN ${{ github.ref_name }} (Y-C Production Ready)"
+        body: "Релиз v5.3.\n- Полностью сохранены DNS и правила маршрутизации Hiddify (проблема DNS-петли решена).\n- Серверы теперь переключаются внутри селектора на лету.\n- Сохранен оффлайн-кэш настроек.\n- Безопасный выход без поломки интернета."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -21,7 +21,22 @@
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 320, 30)];
+    // Красивые симметричные кнопки внизу в стиле High Sierra
+    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 25, 90, 25)];
+    logBtn.title = @"Логи";
+    logBtn.bezelStyle = NSBezelStyleRounded;
+    logBtn.target = self;
+    logBtn.action = @selector(openLogs);
+    [effectView addSubview:logBtn];
+    
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(210, 25, 90, 25)];
+    quitBtn.title = @"Выйти";
+    quitBtn.bezelStyle = NSBezelStyleRounded;
+    quitBtn.target = self;
+    quitBtn.action = @selector(quitApp);
+    [effectView addSubview:quitBtn];
+    
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 320, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
@@ -66,7 +81,6 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    // Кнопка ВКЛ/ВЫКЛ
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 75, 120, 120)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
@@ -80,21 +94,6 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
     
-    // СИСТЕМНЫЕ КНОПКИ ВНИЗУ (Красивый симметричный UI в стиле Apple)
-    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 25, 90, 25)];
-    logBtn.title = @"Логи";
-    logBtn.bezelStyle = NSBezelStyleRounded;
-    logBtn.target = self;
-    logBtn.action = @selector(openLogs);
-    [effectView addSubview:logBtn];
-    
-    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(210, 25, 90, 25)];
-    quitBtn.title = @"Выйти";
-    quitBtn.bezelStyle = NSBezelStyleRounded;
-    quitBtn.target = self;
-    quitBtn.action = @selector(quitApp);
-    [effectView addSubview:quitBtn];
-    
     self.view = effectView;
     self.isConnected = NO;
     
@@ -105,7 +104,7 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
     
-    // [ОФФЛАЙН КЭШ]: Загружаем сохраненную подписку при старте
+    // Автозагрузка кэшированных настроек
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
         self.urlField.stringValue = savedURL;
@@ -121,8 +120,10 @@
 }
 
 - (void)quitApp {
-    [self stopVPN];
-    [NSApp terminate:nil];
+    // Если юзер отменил ввод пароля при выключении, мы НЕ закрываем приложение, чтобы сохранить интернет рабочим!
+    if ([self stopVPN]) {
+        [NSApp terminate:nil];
+    }
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
@@ -193,10 +194,31 @@
     self.downloadedJSON = json;
     self.proxyTags = [NSMutableArray array];
     NSArray *outbounds = json[@"outbounds"];
+    
+    // [Y-C SMART SELECTOR DETECTOR]: Ищем встроенный селектор Hiddify
     for (NSDictionary *out in outbounds) {
-        NSString *tag = out[@"tag"];
-        if (tag && ![tag isEqualToString:@"direct"] && ![tag isEqualToString:@"dns-out"]) { [self.proxyTags addObject:tag]; }
+        NSString *type = out[@"type"];
+        if ([type isEqualToString:@"selector"] || [type isEqualToString:@"urltest"]) {
+            NSArray *subOutbounds = out[@"outbounds"];
+            for (NSString *tag in subOutbounds) {
+                if (![tag isEqualToString:@"direct"] && ![tag isEqualToString:@"block"] && ![tag isEqualToString:@"dns-out"]) {
+                    [self.proxyTags addObject:tag];
+                }
+            }
+            break;
+        }
     }
+    
+    // Если селектора нет, собираем теги вручную
+    if (self.proxyTags.count == 0) {
+        for (NSDictionary *out in outbounds) {
+            NSString *tag = out[@"tag"];
+            if (tag && ![tag isEqualToString:@"direct"] && ![tag isEqualToString:@"dns-out"]) {
+                [self.proxyTags addObject:tag];
+            }
+        }
+    }
+    
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
         [self.serverDropdown addItemWithTitle:@"⚡️ Авто (Умный выбор)"];
@@ -213,7 +235,6 @@
     NSString *urlString = self.urlField.stringValue;
     if (urlString.length == 0) return;
     
-    // Сохраняем ссылку в память Mac
     [[NSUserDefaults standardUserDefaults] setObject:urlString forKey:@"SubscriptionURL"];
     [[NSUserDefaults standardUserDefaults] synchronize];
     
@@ -225,7 +246,6 @@
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error || !data) { self.statusLabel.stringValue = @"Ошибка сети!"; return; }
             
-            // Кэшируем подписку на диск
             NSString *subPath = [[self.configPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"subscription.json"];
             [data writeToFile:subPath atomically:YES];
             
@@ -259,6 +279,7 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
+    // Клонируем конфиг (Deep Copy)
     NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
     
@@ -266,6 +287,16 @@
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
     NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:activeConfig[@"outbounds"]];
+    
+    // [TUNNEL SELECTOR MODIFICATION]: Мягко переключаем внутренний селектор Hiddify!
+    for (NSInteger i = 0; i < newOutbounds.count; i++) {
+        NSMutableDictionary *out = [newOutbounds[i] mutableCopy];
+        if ([out[@"type"] isEqualToString:@"selector"]) {
+            out[@"selected"] = activeProxyTag;
+            newOutbounds[i] = out;
+        }
+    }
+    
     BOOL hasDirect = NO, hasDnsOut = NO;
     for (NSDictionary *outbound in newOutbounds) { 
         if ([outbound[@"tag"] isEqualToString:@"direct"]) hasDirect = YES; 
@@ -274,38 +305,21 @@
     if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
     if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
     
+    // Если выбран авто-выбор, добавляем его в начало
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
         NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/generate_204", @"interval": @"3m", @"tolerance": @50 };
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     activeConfig[@"outbounds"] = newOutbounds;
     
+    // [SOCKS5 + HTTP INBOUNDS]
     activeConfig[@"inbounds"] = @[ 
-        @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
-        @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
+        @{"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
+        @{"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
     ];
     
-    // [FIX BOOTSTRAP DNS LOOP]: DNS запросы к самому прокси идут НАПРЯМУЮ (direct), минуя туннель
-    activeConfig[@"dns"] = @{
-        @"servers": @[ 
-            @{@"tag": @"dns-direct", @"address": @"8.8.8.8", @"detour": @"direct"}
-        ]
-    };
-    
-    NSMutableDictionary *route = [NSMutableDictionary dictionary];
-    NSMutableArray *rules = [NSMutableArray array];
-    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
-    
-    if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com", @"rutracker.org", @"discord.com", @"twimg.com" ];
-        [rules addObject:@{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag }];
-        route[@"final"] = @"direct"; 
-    } else { 
-        route[@"final"] = activeProxyTag; 
-    }
-    
-    route[@"rules"] = rules;
-    activeConfig[@"route"] = route;
+    // СОХРАНЯЕМ ОРИГИНАЛЬНЫЙ DNS И ROUTE ОТ HIDDIFY! Мы больше не перезаписываем их.
+    // Это решает проблему DNS таймаутов навсегда.
     
     NSData *finalData = [NSJSONSerialization dataWithJSONObject:activeConfig options:0 error:nil];
     [finalData writeToFile:self.configPath atomically:YES];
@@ -313,6 +327,7 @@
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     NSString *interface = [self getActiveNetworkInterface];
     
+    // Запуск под рутом (Один пароль)
     NSString *shellCommand = [NSString stringWithFormat:
         @"killall -9 sing-box 2>/dev/null || true ; "
         @"nohup '%@' run -c '%@' > '%@' 2>&1 & "
@@ -321,7 +336,7 @@
         @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808", 
         binaryPath, self.configPath, self.logPath, interface, interface, interface];
         
-    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
+    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"\(shellCommand)\" with administrator privileges"];
     
     NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
     NSDictionary *errorInfo = nil;
@@ -335,7 +350,7 @@
     }
 }
 
-- (void)stopVPN {
+- (BOOL)stopVPN {
     NSString *interface = [self getActiveNetworkInterface];
     NSString *shellCommand = [NSString stringWithFormat:
         @"/bin/bash -c 'killall -9 sing-box 2>/dev/null || true ; "
@@ -346,8 +361,14 @@
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
     NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
-    [script executeAndReturnError:nil];
+    NSDictionary *errorInfo = nil;
+    [script executeAndReturnError:&errorInfo];
+    if (errorInfo) {
+        self.statusLabel.stringValue = @"Ошибка сброса прокси!";
+        return NO;
+    }
     [self updateUIConnected:NO];
+    return YES;
 }
 
 - (void)updateUIConnected:(BOOL)connected {
