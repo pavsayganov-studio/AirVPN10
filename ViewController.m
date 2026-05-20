@@ -16,26 +16,29 @@
 @implementation ViewController
 
 - (void)loadView {
-    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 300, 480)];
+    // Делаем окно чуть шире для аккуратности
+    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 480)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(230, 440, 60, 25)];
+    // Кнопка Выйти (Аккуратно в правом верхнем углу, не вылезает)
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(240, 440, 70, 25)];
     quitBtn.title = @"Выйти";
     quitBtn.bezelStyle = NSBezelStyleRounded;
     quitBtn.target = self;
     quitBtn.action = @selector(quitApp);
     [effectView addSubview:quitBtn];
     
-    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 60, 25)];
+    // Кнопка Логи (Аккуратно слева)
+    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 70, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
     logBtn.target = self;
     logBtn.action = @selector(openLogs);
     [effectView addSubview:logBtn];
     
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 300, 30)];
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 320, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
@@ -45,33 +48,33 @@
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
     
-    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 350, 260, 24)];
+    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 350, 280, 24)];
     self.urlField.placeholderString = @"Вставьте vless:// или подписку...";
     [effectView addSubview:self.urlField];
     
-    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(70, 310, 160, 30)];
+    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(80, 310, 160, 30)];
     importBtn.title = @"Загрузить серверы";
     importBtn.bezelStyle = NSBezelStyleRounded;
     importBtn.target = self;
     importBtn.action = @selector(downloadConfig);
     [effectView addSubview:importBtn];
     
-    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 260, 26) pullsDown:NO];
+    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 280, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"Серверы не загружены"];
     [self.serverDropdown setEnabled:NO];
     self.serverDropdown.target = self;
     self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
     
-    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 220, 260, 20)];
+    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 220, 280, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
-    self.stealthCheckbox.title = @"Умный режим (Только TG/YT/AI)";
+    self.stealthCheckbox.title = @"Умный режим (Только заблокированные)";
     self.stealthCheckbox.state = NSControlStateValueOn;
     self.stealthCheckbox.target = self;
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
     
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 300, 20)];
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 180, 320, 20)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.bezeled = NO;
@@ -80,7 +83,8 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(90, 40, 120, 120)];
+    // Кнопка центрируется по новой ширине 320 (320-120)/2 = 100
+    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 40, 120, 120)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
@@ -121,7 +125,6 @@
     if (self.isConnected) { [self startVPN]; }
 }
 
-// [CRITICAL FIX]: ЗАЩИТА ОТ ПУСТЫХ ПАРАМЕТРОВ ТРАНСПОРТА
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
@@ -140,13 +143,8 @@
         if ([item.name isEqualToString:@"sid"]) tls[@"reality"][@"short_id"] = item.value;
         if ([item.name isEqualToString:@"fp"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": item.value};
         
-        // Исправление бага "unknown transport type"
         if ([item.name isEqualToString:@"type"] && item.value.length > 0) {
-            if ([item.value isEqualToString:@"tcp"]) {
-                // Если tcp, блок transport не нужен (по умолчанию)
-            } else {
-                transport[@"type"] = item.value;
-            }
+            if (![item.value isEqualToString:@"tcp"]) transport[@"type"] = item.value;
         }
         if ([item.name isEqualToString:@"path"] && item.value.length > 0) transport[@"path"] = item.value;
         if ([item.name isEqualToString:@"serviceName"] && item.value.length > 0) transport[@"service_name"] = item.value;
@@ -182,7 +180,7 @@
         return;
     }
     NSMutableDictionary *skeleton = [@{
-        @"log": @{@"level": @"info"}, // Убираем debug, чтобы не засорять лог
+        @"log": @{@"level": @"info"},
         @"outbounds": parsedOutbounds,
     } mutableCopy];
     [self handleParsedJSON:skeleton];
@@ -234,7 +232,6 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    // [UX FIX] Убиваем старый процесс без sudo, если он есть, чтобы не просить пароль дважды
     NSTask *killTask = [[NSTask alloc] init];
     [killTask setLaunchPath:@"/usr/bin/killall"];
     [killTask setArguments:@[@"-9", @"sing-box"]];
@@ -305,7 +302,7 @@
     if (!errorInfo) { 
         [self updateUIConnected:YES]; 
     } else { 
-        self.statusLabel.stringValue = @"Отменено / Ошибка прав"; 
+        self.statusLabel.stringValue = @"Отменено / Ошибка"; 
     }
 }
 
@@ -324,7 +321,7 @@
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor colorWithRed:0 green:1 blue:0 alpha:0.1].CGColor;
     } else {
-        self.statusLabel.stringValue = @"Готов к работе";
+        self.statusLabel.stringValue = @"Отключено";
         self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
         self.connectButton.title = @"ВЫКЛ";
         self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
