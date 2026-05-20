@@ -1,5 +1,9 @@
-name: Build macOS 10.13 GUI VPN
-on: [push, workflow_dispatch]
+name: Build PauloVPN
+on:
+  workflow_dispatch: # Позволяет запускать сборку кнопкой вручную
+  push:
+    tags:
+      - 'v*' # Запускается ТОЛЬКО когда ты создаешь тег версии (например, v1.6)
 permissions:
   contents: write
 jobs:
@@ -11,17 +15,41 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.20'
+        
+    - name: Generate App Icon
+      run: |
+        # Используем ImageMagick для отрисовки графики иконки
+        magick -size 512x512 -define gradient:angle=45 gradient:'#00f2fe'-'#4facfe' base.png
+        magick base.png -gravity center -font Helvetica -pointsize 160 -fill "rgba(255,255,255,0.5)" -annotate +0+80 "VPN" -blur 0x6 blurred.png
+        magick blurred.png -gravity center -font Helvetica-Bold -pointsize 300 -fill "#FF3B30" -annotate +0-40 "П" icon.png
+        
+        # Конвертируем в формат Apple (.icns)
+        mkdir MyIcon.iconset
+        sips -z 16 16     icon.png --out MyIcon.iconset/icon_16x16.png
+        sips -z 32 32     icon.png --out MyIcon.iconset/icon_16x16@2x.png
+        sips -z 32 32     icon.png --out MyIcon.iconset/icon_32x32.png
+        sips -z 64 64     icon.png --out MyIcon.iconset/icon_32x32@2x.png
+        sips -z 128 128   icon.png --out MyIcon.iconset/icon_128x128.png
+        sips -z 256 256   icon.png --out MyIcon.iconset/icon_128x128@2x.png
+        sips -z 256 256   icon.png --out MyIcon.iconset/icon_256x256.png
+        sips -z 512 512   icon.png --out MyIcon.iconset/icon_256x256@2x.png
+        sips -z 512 512   icon.png --out MyIcon.iconset/icon_512x512.png
+        sips -z 1024 1024 icon.png --out MyIcon.iconset/icon_512x512@2x.png
+        iconutil -c icns MyIcon.iconset -o AppIcon.icns
+        
     - name: Build VPN Core (Intel)
       run: |
         git clone -b v1.4.5 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+        
     - name: Compile App (Objective-C Intel)
       run: |
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
+        cp AppIcon.icns AirVPN.app/Contents/Resources/AppIcon.icns
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m \
@@ -29,13 +57,14 @@ jobs:
           -o AirVPN.app/Contents/MacOS/AirVPN
           
         codesign --force --deep -s - AirVPN.app
-        zip -r PauloVPN-macOS-10.13-v1.5.zip AirVPN.app
-    - name: Release version 1.5
+        zip -r PauloVPN-macOS-10.13-v1.6.zip AirVPN.app
+        
+    - name: Release version 1.6
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: v1.5
-        name: "PauloVPN v1.5 (Russian + VLESS Parser)"
-        body: "Официальный релиз v1.5.\n- Встроенный парсер ссылок VLESS и Base64 подписок.\n- Исправлена работа Cmd+C / Cmd+V.\n- Полный перевод на русский язык (PauloVPN)."
-        files: PauloVPN-macOS-10.13-v1.5.zip
+        tag_name: ${{ github.ref_name }}
+        name: "PauloVPN ${{ github.ref_name }} (Eco & Icon)"
+        body: "Официальный релиз.\n- Добавлена кнопка Выхода (Quit).\n- Добавлена потрясающая кастомная иконка.\n- Оптимизированы GitHub Actions (экологичный режим)."
+        files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

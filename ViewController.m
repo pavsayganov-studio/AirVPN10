@@ -20,8 +20,17 @@
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
+    // Кнопка ВЫЙТИ (В правом верхнем углу)
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(210, 420, 60, 25)];
+    quitBtn.title = @"Выйти";
+    quitBtn.bezelStyle = NSBezelStyleRounded;
+    quitBtn.font = [NSFont systemFontOfSize:11];
+    quitBtn.target = self;
+    quitBtn.action = @selector(quitApp);
+    [effectView addSubview:quitBtn];
+    
     NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 280, 30)];
-    titleLabel.stringValue = @"PauloVPN Стэлс";
+    titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
     titleLabel.drawsBackground = NO;
@@ -31,7 +40,7 @@
     [effectView addSubview:titleLabel];
     
     self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 360, 240, 24)];
-    self.urlField.placeholderString = @"Вставьте ссылку на подписку или vless://...";
+    self.urlField.placeholderString = @"Вставьте vless:// или подписку...";
     self.urlField.focusRingType = NSFocusRingTypeNone;
     [effectView addSubview:self.urlField];
     
@@ -85,24 +94,21 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
 }
 
-// ПАРСЕР VLESS ССЫЛОК
+- (void)quitApp {
+    if (self.currentPID != nil) {
+        [self stopVPN];
+    }
+    [NSApp terminate:nil];
+}
+
+// ... Оставляем весь остальной код парсера без изменений ...
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
-    
     NSString *tag = comp.fragment ? [comp.fragment stringByRemovingPercentEncoding] : comp.host;
-    NSMutableDictionary *outbound = [@{
-        @"type": @"vless",
-        @"tag": tag ?: @"vless-server",
-        @"server": comp.host ?: @"",
-        @"server_port": comp.port ?: @443,
-        @"uuid": comp.user ?: @"",
-        @"packet_encoding": @"xudp"
-    } mutableCopy];
-    
+    NSMutableDictionary *outbound = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
-    
     for (NSURLQueryItem *item in comp.queryItems) {
         if ([item.name isEqualToString:@"security"]) {
             if ([item.value isEqualToString:@"tls"] || [item.value isEqualToString:@"reality"]) tls[@"enabled"] = @YES;
@@ -112,74 +118,53 @@
         if ([item.name isEqualToString:@"pbk"]) tls[@"reality"][@"public_key"] = item.value;
         if ([item.name isEqualToString:@"sid"]) tls[@"reality"][@"short_id"] = item.value;
         if ([item.name isEqualToString:@"fp"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": item.value};
-        
         if ([item.name isEqualToString:@"type"] && [item.value isEqualToString:@"ws"]) transport[@"type"] = @"ws";
         if ([item.name isEqualToString:@"type"] && [item.value isEqualToString:@"grpc"]) transport[@"type"] = @"grpc";
         if ([item.name isEqualToString:@"path"]) transport[@"path"] = item.value;
         if ([item.name isEqualToString:@"serviceName"]) transport[@"service_name"] = item.value;
         if ([item.name isEqualToString:@"host"]) transport[@"headers"] = @{@"Host": item.value};
     }
-    
     if (tls.count > 0) outbound[@"tls"] = tls;
     if (transport.count > 0) outbound[@"transport"] = transport;
     return outbound;
 }
 
 - (void)processRawText:(NSString *)text {
-    // Декодируем Base64 если это стандартная подписка V2Ray
     NSString *cleanText = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSData *decodedData = [[NSData alloc] initWithBase64EncodedString:cleanText options:NSDataBase64DecodingIgnoreUnknownCharacters];
     if (decodedData) {
         NSString *decodedStr = [[NSString alloc] initWithData:decodedData encoding:NSUTF8StringEncoding];
         if (decodedStr) cleanText = decodedStr;
     }
-    
     NSArray *lines = [cleanText componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
     NSMutableArray *parsedOutbounds = [NSMutableArray array];
-    
     for (NSString *line in lines) {
         if ([line hasPrefix:@"vless://"]) {
             NSDictionary *outbound = [self parseVlessLink:line];
             if (outbound) [parsedOutbounds addObject:outbound];
         }
     }
-    
     if (parsedOutbounds.count == 0) {
         self.statusLabel.stringValue = @"Серверы не найдены.";
         return;
     }
-    
-    // Создаем базовый скелет sing-box
     NSMutableDictionary *skeleton = [@{
         @"log": @{@"level": @"info"},
-        @"inbounds": @[ @{
-            @"type": @"tun",
-            @"tag": @"tun-in",
-            @"interface_name": @"utun9",
-            @"inet4_address": @"172.19.0.1/30",
-            @"auto_route": @YES,
-            @"strict_route": @YES,
-            @"stack": @"system"
-        } ],
+        @"inbounds": @[ @{ @"type": @"tun", @"tag": @"tun-in", @"interface_name": @"utun9", @"inet4_address": @"172.19.0.1/30", @"auto_route": @YES, @"strict_route": @YES, @"stack": @"system" } ],
         @"outbounds": parsedOutbounds,
         @"route": [@{@"auto_detect_interface": @YES} mutableCopy]
     } mutableCopy];
-    
     [self handleParsedJSON:skeleton];
 }
 
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
     self.downloadedJSON = json;
     self.proxyTags = [NSMutableArray array];
-    
     NSArray *outbounds = json[@"outbounds"];
     for (NSDictionary *out in outbounds) {
         NSString *tag = out[@"tag"];
-        if (tag && ![tag isEqualToString:@"direct"]) {
-            [self.proxyTags addObject:tag];
-        }
+        if (tag && ![tag isEqualToString:@"direct"]) { [self.proxyTags addObject:tag]; }
     }
-    
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
         [self.serverDropdown addItemWithTitle:@"⚡️ Авто (Умный выбор)"];
@@ -195,77 +180,38 @@
 - (void)downloadConfig {
     NSString *urlString = self.urlField.stringValue;
     if (urlString.length == 0) return;
-    
-    // Если вставили сразу vless:// ссылку
-    if ([urlString hasPrefix:@"vless://"]) {
-        [self processRawText:urlString];
-        return;
-    }
+    if ([urlString hasPrefix:@"vless://"]) { [self processRawText:urlString]; return; }
     
     self.statusLabel.stringValue = @"Загрузка...";
     NSURL *url = [NSURL URLWithString:urlString];
-    
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (error || !data) {
-                self.statusLabel.stringValue = @"Ошибка сети!";
-                return;
-            }
-            
-            // Пытаемся распарсить как Hiddify JSON
+            if (error || !data) { self.statusLabel.stringValue = @"Ошибка сети!"; return; }
             NSError *jsonError;
             NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&jsonError];
-            
-            if (!jsonError && json[@"outbounds"]) {
-                [self handleParsedJSON:json];
-            } else {
-                // Если это не JSON, пробуем как текст/Base64
+            if (!jsonError && json[@"outbounds"]) { [self handleParsedJSON:json]; } else {
                 NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-                if (text) {
-                    [self processRawText:text];
-                } else {
-                    self.statusLabel.stringValue = @"Неверный формат ссылки.";
-                }
+                if (text) { [self processRawText:text]; } else { self.statusLabel.stringValue = @"Неверный формат ссылки."; }
             }
         });
     }] resume];
 }
 
-- (void)toggleConnection {
-    if (self.currentPID != nil) {
-        [self stopVPN];
-    } else {
-        [self startVPN];
-    }
-}
+- (void)toggleConnection { if (self.currentPID != nil) { [self stopVPN]; } else { [self startVPN]; } }
 
 - (void)startVPN {
-    if (!self.downloadedJSON || self.proxyTags.count == 0) {
-        self.statusLabel.stringValue = @"Сначала загрузите серверы.";
-        return;
-    }
-    
+    if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Создаем туннель...";
-    
     NSString *selectedTitle = self.serverDropdown.titleOfSelectedItem;
     NSString *activeProxyTag = [selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"] ? @"auto-switch" : selectedTitle;
     
     NSMutableArray *newOutbounds = [NSMutableArray arrayWithArray:self.downloadedJSON[@"outbounds"]];
     BOOL hasDirect = NO;
-    for (NSDictionary *outbound in newOutbounds) {
-        if ([outbound[@"tag"] isEqualToString:@"direct"]) { hasDirect = YES; break; }
-    }
+    for (NSDictionary *outbound in newOutbounds) { if ([outbound[@"tag"] isEqualToString:@"direct"]) { hasDirect = YES; break; } }
     if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
     
     if ([selectedTitle isEqualToString:@"⚡️ Авто (Умный выбор)"]) {
-        NSDictionary *autoOutbound = @{
-            @"type": @"urltest",
-            @"tag": @"auto-switch",
-            @"outbounds": self.proxyTags,
-            @"url": @"http://cp.cloudflare.com/",
-            @"interval": @"3m",
-            @"tolerance": @50
-        };
+        NSDictionary *autoOutbound = @{ @"type": @"urltest", @"tag": @"auto-switch", @"outbounds": self.proxyTags, @"url": @"http://cp.cloudflare.com/", @"interval": @"3m", @"tolerance": @50 };
         [newOutbounds insertObject:autoOutbound atIndex:0];
     }
     self.downloadedJSON[@"outbounds"] = newOutbounds;
@@ -276,21 +222,12 @@
     if (route[@"rules"]) rules = [route[@"rules"] mutableCopy];
     
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        NSArray *blockedDomains = @[
-            @"telegram.org", @"t.me", @"tdesktop.com", @"whatsapp.com", @"whatsapp.net",
-            @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
-            @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai",
-            @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com"
-        ];
+        NSArray *blockedDomains = @[ @"telegram.org", @"t.me", @"tdesktop.com", @"whatsapp.com", @"whatsapp.net", @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com", @"openai.com", @"chatgpt.com", @"oaistatic.com", @"anthropic.com", @"claude.ai", @"gemini.google.com", @"instagram.com", @"cdninstagram.com", @"facebook.com", @"x.com" ];
         NSDictionary *stealthRule = @{ @"domain_suffix": blockedDomains, @"outbound": activeProxyTag };
         [rules insertObject:stealthRule atIndex:0];
         route[@"final"] = @"direct"; 
-    } else {
-        route[@"final"] = activeProxyTag;
-    }
-    
-    route[@"rules"] = rules;
-    route[@"auto_detect_interface"] = @YES;
+    } else { route[@"final"] = activeProxyTag; }
+    route[@"rules"] = rules; route[@"auto_detect_interface"] = @YES;
     self.downloadedJSON[@"route"] = route;
     
     NSData *finalData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
@@ -305,12 +242,7 @@
     NSDictionary *errorInfo = nil;
     NSAppleEventDescriptor *output = [script executeAndReturnError:&errorInfo];
     
-    if (output && output.stringValue && output.stringValue.length > 0) {
-        self.currentPID = output.stringValue;
-        [self updateUIConnected:YES];
-    } else {
-        self.statusLabel.stringValue = @"Ошибка запуска ядра";
-    }
+    if (output && output.stringValue && output.stringValue.length > 0) { self.currentPID = output.stringValue; [self updateUIConnected:YES]; } else { self.statusLabel.stringValue = @"Ошибка запуска ядра"; }
 }
 
 - (void)stopVPN {
@@ -329,18 +261,14 @@
         self.connectButton.title = @"ВКЛ";
         self.connectButton.layer.borderColor = [NSColor greenColor].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor colorWithRed:0 green:1 blue:0 alpha:0.1].CGColor;
-        [self.serverDropdown setEnabled:NO];
-        [self.urlField setEnabled:NO];
-        [self.stealthCheckbox setEnabled:NO];
+        [self.serverDropdown setEnabled:NO]; [self.urlField setEnabled:NO]; [self.stealthCheckbox setEnabled:NO];
     } else {
         self.statusLabel.stringValue = @"Готов к работе";
         self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
         self.connectButton.title = @"ВЫКЛ";
         self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
         self.connectButton.layer.backgroundColor = [NSColor clearColor].CGColor;
-        [self.serverDropdown setEnabled:YES];
-        [self.urlField setEnabled:YES];
-        [self.stealthCheckbox setEnabled:YES];
+        [self.serverDropdown setEnabled:YES]; [self.urlField setEnabled:YES]; [self.stealthCheckbox setEnabled:YES];
     }
 }
 @end
