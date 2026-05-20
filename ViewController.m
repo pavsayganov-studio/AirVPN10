@@ -21,21 +21,7 @@
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
     
-    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(240, 440, 70, 25)];
-    quitBtn.title = @"Выйти";
-    quitBtn.bezelStyle = NSBezelStyleRounded;
-    quitBtn.target = self;
-    quitBtn.action = @selector(quitApp);
-    [effectView addSubview:quitBtn];
-    
-    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(10, 440, 70, 25)];
-    logBtn.title = @"Логи";
-    logBtn.bezelStyle = NSBezelStyleRounded;
-    logBtn.target = self;
-    logBtn.action = @selector(openLogs);
-    [effectView addSubview:logBtn];
-    
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 400, 320, 30)];
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 410, 320, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
@@ -80,7 +66,8 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
     
-    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 40, 120, 120)];
+    // Кнопка ВКЛ/ВЫКЛ
+    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 75, 120, 120)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:24 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
@@ -93,6 +80,21 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
     
+    // СИСТЕМНЫЕ КНОПКИ ВНИЗУ (Красивый симметричный UI в стиле Apple)
+    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 25, 90, 25)];
+    logBtn.title = @"Логи";
+    logBtn.bezelStyle = NSBezelStyleRounded;
+    logBtn.target = self;
+    logBtn.action = @selector(openLogs);
+    [effectView addSubview:logBtn];
+    
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(210, 25, 90, 25)];
+    quitBtn.title = @"Выйти";
+    quitBtn.bezelStyle = NSBezelStyleRounded;
+    quitBtn.target = self;
+    quitBtn.action = @selector(quitApp);
+    [effectView addSubview:quitBtn];
+    
     self.view = effectView;
     self.isConnected = NO;
     
@@ -102,6 +104,18 @@
     [fm createDirectoryAtURL:appSupport withIntermediateDirectories:YES attributes:nil error:nil];
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
+    
+    // [ОФФЛАЙН КЭШ]: Загружаем сохраненную подписку при старте
+    NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
+    if (savedURL) {
+        self.urlField.stringValue = savedURL;
+        NSString *subPath = [[self.configPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"subscription.json"];
+        if ([fm fileExistsAtPath:subPath]) {
+            NSData *subData = [NSData dataWithContentsOfFile:subPath];
+            NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:subData options:NSJSONReadingMutableContainers error:nil];
+            if (json) { [self handleParsedJSON:json]; }
+        }
+    }
     
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 }
@@ -198,6 +212,11 @@
 - (void)downloadConfig {
     NSString *urlString = self.urlField.stringValue;
     if (urlString.length == 0) return;
+    
+    // Сохраняем ссылку в память Mac
+    [[NSUserDefaults standardUserDefaults] setObject:urlString forKey:@"SubscriptionURL"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    
     if ([urlString hasPrefix:@"vless://"]) { [self processRawText:urlString]; return; }
     
     self.statusLabel.stringValue = @"Загрузка...";
@@ -205,6 +224,11 @@
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error || !data) { self.statusLabel.stringValue = @"Ошибка сети!"; return; }
+            
+            // Кэшируем подписку на диск
+            NSString *subPath = [[self.configPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"subscription.json"];
+            [data writeToFile:subPath atomically:YES];
+            
             NSError *jsonError;
             NSMutableDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&jsonError];
             if (!jsonError && json[@"outbounds"]) { [self handleParsedJSON:json]; } else {
@@ -235,7 +259,6 @@
     if (!self.downloadedJSON || self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск ядра...";
     
-    // Глубокое копирование
     NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
     NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
     
@@ -257,11 +280,17 @@
     }
     activeConfig[@"outbounds"] = newOutbounds;
     
-    // [ПОДДЕРЖКА SOCKS5 + HTTP]
     activeConfig[@"inbounds"] = @[ 
         @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
         @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
     ];
+    
+    // [FIX BOOTSTRAP DNS LOOP]: DNS запросы к самому прокси идут НАПРЯМУЮ (direct), минуя туннель
+    activeConfig[@"dns"] = @{
+        @"servers": @[ 
+            @{@"tag": @"dns-direct", @"address": @"8.8.8.8", @"detour": @"direct"}
+        ]
+    };
     
     NSMutableDictionary *route = [NSMutableDictionary dictionary];
     NSMutableArray *rules = [NSMutableArray array];
@@ -284,14 +313,13 @@
     NSString *binaryPath = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     NSString *interface = [self getActiveNetworkInterface];
     
-    // [GOLDEN SHIELD]: Убиваем ядро под рутом прямо перед биндингом портов. Один пароль!
     NSString *shellCommand = [NSString stringWithFormat:
-        @"/usr/bin/killall -9 sing-box 2>/dev/null || true ; "
+        @"killall -9 sing-box 2>/dev/null || true ; "
+        @"nohup '%@' run -c '%@' > '%@' 2>&1 & "
         @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
         @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
-        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808 ; "
-        @"nohup '%@' run -c '%@' > '%@' 2>&1 &", 
-        interface, interface, interface, binaryPath, self.configPath, self.logPath];
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808", 
+        binaryPath, self.configPath, self.logPath, interface, interface, interface];
         
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     
