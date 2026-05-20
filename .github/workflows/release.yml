@@ -1,4 +1,4 @@
-name: Build and Release PauloVPN
+name: Build and Release PauloVPN (10.13)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v9.1.2)'
+        description: 'Version tag'
         required: true
 
 jobs:
@@ -18,8 +18,10 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_14.1.app
       - name: Build app
         run: |
+          export MACOSX_DEPLOYMENT_TARGET=10.13
           xcodebuild -project PauloVPN.xcodeproj \
             -scheme PauloVPN -configuration Release \
+            -sdk macosx \
             -derivedDataPath build clean build
       - name: Create DMG
         run: |
@@ -38,10 +40,10 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: PauloVPN ${{ github.ref_name }}
           body: |
-            ## PauloVPN ${{ github.ref_name }} – стабильное обновление для macOS 10.13
-            - Автоматический failover на резервный сервер
-            - Watchdog (PVWatchdog) для sing-box
-            - Только IPv4, увеличенные таймауты
+            ## PauloVPN v9.1.2 для macOS 10.13 (High Sierra)
+            - Автоматический failover
+            - Watchdog для sing-box
+            - Только IPv4, таймауты
           files: dist/PauloVPN.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
