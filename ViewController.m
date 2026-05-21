@@ -18,7 +18,6 @@
 @implementation ViewController
 
 - (void)loadView {
-    // [UI FIX]: Уменьшенный и компактный размер окна 280x380
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 380)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
@@ -69,7 +68,6 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
 
-    // Кнопка стала чуть меньше (90x90)
     self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(95, 45, 90, 90)];
     self.connectButton.title = @"ВЫКЛ";
     self.connectButton.font = [NSFont systemFontOfSize:18 weight:NSFontWeightMedium];
@@ -148,7 +146,6 @@
 
     NSString *tag = comp.fragment ? [comp.fragment stringByRemovingPercentEncoding] : comp.host;
     NSMutableDictionary *out = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
-
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
 
@@ -179,7 +176,6 @@
     if (tls[@"enabled"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
     if (tls.count > 0) out[@"tls"] = tls;
     if (transport.count > 0) out[@"transport"] = transport;
-    // [FIX]: Мы убрали multiplex, чтобы не ломать стабильность TCP-соединений.
     return out;
 }
 
@@ -254,19 +250,6 @@
     if (self.isConnected) [self stopVPN]; else [self startVPN];
 }
 
-- (NSString *)getActiveNetworkInterface {
-    NSTask *t = [[NSTask alloc] init];
-    t.launchPath = @"/usr/sbin/networksetup";
-    t.arguments = @[@"-listnetworkserviceorder"];
-    NSPipe *p = [NSPipe pipe];
-    t.standardOutput = p;
-    [t launch];
-    NSString *out = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
-    if ([out containsString:@"Wi-Fi"]) return @"Wi-Fi";
-    if ([out containsString:@"Ethernet"]) return @"Ethernet";
-    return @"Wi-Fi";
-}
-
 - (void)startCoreOnly {
     if (self.singBoxTask && [self.singBoxTask isRunning]) {
         [self.singBoxTask terminate];
@@ -294,28 +277,46 @@
         @{@"type": @"dns", @"tag": @"dns-out"}
     ];
 
-    // [DNS FIX]: Простой DNS. Удаленные серверы резолвим через 8.8.8.8. 
+    // [CTO FIX]: TUN Interface (Чистый, как на Android)
+    // gVisor работает лучше для TCP/UDP перехвата на старых системах
+    NSArray *inbounds = @[
+        @{
+            @"type": @"tun",
+            @"tag": @"tun-in",
+            @"interface_name": @"utun9",
+            @"inet4_address": @"172.19.0.1/30",
+            @"auto_route": @YES,
+            @"strict_route": @YES,
+            @"stack": @"system", 
+            @"sniff": @YES
+        }
+    ];
+
+    // Fake-IP DNS для TUN (мгновенный резолвинг)
     NSDictionary *dnsConfig = @{
         @"servers": @[
-            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"},
+            @{@"tag": @"remote-dns", @"address": @"tls://8.8.8.8", @"detour": activeTag},
             @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
         ],
         @"rules": @[
-            @{@"domain_suffix": @[@".ru", @".su", @".рф"], @"server": @"local-dns"}
-        ]
+            @{@"outbound": @[@"any"], @"server": @"local-dns"}
+        ],
+        @"strategy": @"ipv4_only"
     };
 
     NSMutableArray *rules = [NSMutableArray array];
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
 
-    // [LOOP PREVENTION - ЯДРО]: Трафик к самому VPN-серверу идет мимо туннеля (direct)
-    NSString *activeServerHost = activeOutbound[@"server"] ?: @"";
-    if (activeServerHost.length > 0) {
-        [rules addObject:@{@"domain": @[activeServerHost], @"outbound": @"direct"}];
-    }
+    // [LOOP PREVENTION]: Процесс самого sing-box идет напрямую (bypass)
+    // Это аналог Bypass Private Route, но на уровне приложения.
+    [rules addObject:@{@"port": @[ @(443), @(80) ], @"network": @"tcp", @"outbound": @"direct", @"process_name": @[@"sing-box", @"AirVPN"]}];
+    
+    // Локальные адреса идут напрямую
+    [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
 
     NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
-    
+    routeConfig[@"auto_detect_interface"] = @YES;
+
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
@@ -324,9 +325,10 @@
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
             @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
-            @"twitter.com", @"x.com", @"twimg.com", @"discord.com", @"discordapp.com", @"discord.gg",
-            @"rutracker.org", @"rutracker.cc"
+            @"twitter.com", @"x.com", @"twimg.com",
+            @"discord.com", @"discordapp.com", @"discord.gg", @"rutracker.org", @"rutracker.cc"
         ];
+        
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
             @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
@@ -334,22 +336,18 @@
         
         [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeTag}];
         [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeTag}];
-        
         routeConfig[@"rules"] = rules;
+        // MATCH -> DIRECT (Остальное напрямую)
         routeConfig[@"final"] = @"direct";
     } else {
-        // [GLOBAL FIX]: В глобальном режиме локальные сети идут напрямую
-        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
         routeConfig[@"rules"] = rules;
+        // MATCH -> PROXY (Всё в VPN)
         routeConfig[@"final"] = activeTag;
     }
 
     NSDictionary *config = @{
-        @"log": @{@"level": @"debug"}, // [LOG FIX]: DEBUG УРОВЕНЬ, ЧТОБЫ ВИДЕТЬ ВСЕ ОШИБКИ!
-        @"inbounds": @[
-            @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
-            @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
-        ],
+        @"log": @{@"level": @"debug"},
+        @"inbounds": inbounds,
         @"outbounds": outbounds,
         @"dns": dnsConfig,
         @"route": routeConfig
@@ -361,87 +359,29 @@
     [data writeToFile:self.configPath atomically:YES];
 
     NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    self.singBoxTask = [[NSTask alloc] init];
-    self.singBoxTask.launchPath = bin;
-    self.singBoxTask.arguments = @[@"run", @"-c", self.configPath];
-
-    [[NSFileManager defaultManager] createFileAtPath:self.logPath contents:nil attributes:nil];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
-    self.singBoxTask.standardOutput = fh;
-    self.singBoxTask.standardError = fh;
-
-    __weak typeof(self) ws = self;
-    self.singBoxTask.terminationHandler = ^(NSTask *task) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (ws.isConnected) {
-                ws.statusLabel.stringValue = @"Сбой ядра! Перезапустите.";
-                ws.statusLabel.textColor = [NSColor redColor];
-                [ws forceProxyOff];
-                [ws updateUIConnected:NO];
-            }
-        });
-    };
-    [self.singBoxTask launch];
+    
+    // Запускаем через Root, так как TUN требует прав
+    NSString *shellCommand = [NSString stringWithFormat:
+        @"killall -9 sing-box 2>/dev/null || true ; "
+        @"nohup '%@' run -c '%@' > '%@' 2>&1 &", 
+        bin, self.configPath, self.logPath];
+        
+    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
+    [script executeAndReturnError:nil];
 }
 
 - (void)startVPN {
     if (self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск...";
     [self startCoreOnly];
-
-    // Ищем домен/IP сервера для обхода в настройках macOS
-    NSString *activeTag = self.serverDropdown.titleOfSelectedItem ?: @"";
-    NSString *activeServerHost = @"";
-    for (NSDictionary *o in self.proxyOutbounds) {
-        if ([o[@"tag"] isEqualToString:activeTag]) {
-            activeServerHost = o[@"server"] ?: @""; break;
-        }
-    }
-
-    NSString *iface = [self getActiveNetworkInterface];
-    
-    // [OS LOOP PREVENTION]: Указываем самой macOS НЕ ИСПОЛЬЗОВАТЬ прокси для локальной сети и для адреса VPN сервера!
-    NSString *bypassDomains = [NSString stringWithFormat:@"127.0.0.1 localhost 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12 %@", activeServerHost];
-    
-    NSString *cmd = [NSString stringWithFormat:
-        @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
-        @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
-        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808 ; "
-        @"networksetup -setproxybypassdomains '%@' %@",
-        iface, iface, iface, iface, bypassDomains];
-        
-    NSDictionary *err = nil;
-    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
-    
-    if (!err) {
-        [self updateUIConnected:YES];
-    } else {
-        self.statusLabel.stringValue = @"Отменено / Ошибка";
-        [self forceProxyOff];
-    }
-}
-
-- (void)forceProxyOff {
-    NSString *iface = [self getActiveNetworkInterface];
-    NSString *cmd = [NSString stringWithFormat:
-        @"networksetup -setwebproxystate '%@' off ; "
-        @"networksetup -setsecurewebproxystate '%@' off ; "
-        @"networksetup -setsocksfirewallproxystate '%@' off",
-        iface, iface, iface];
-    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:nil];
+    [self updateUIConnected:YES];
 }
 
 - (BOOL)stopVPN {
-    if (self.singBoxTask && [self.singBoxTask isRunning]) [self.singBoxTask terminate];
-    NSString *iface = [self getActiveNetworkInterface];
-    NSString *cmd = [NSString stringWithFormat:
-        @"networksetup -setwebproxystate '%@' off ; "
-        @"networksetup -setsecurewebproxystate '%@' off ; "
-        @"networksetup -setsocksfirewallproxystate '%@' off",
-        iface, iface, iface];
-    NSDictionary *err = nil;
-    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
-    if (err) { self.statusLabel.stringValue = @"Ошибка сброса прокси!"; return NO; }
+    NSString *scriptSource = @"do shell script \"killall -9 sing-box 2>/dev/null || true\" with administrator privileges";
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
+    [script executeAndReturnError:nil];
     [self updateUIConnected:NO];
     return YES;
 }
