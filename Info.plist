@@ -5,9 +5,13 @@
     <key>CFBundleExecutable</key>
     <string>AirVPN</string>
     <key>CFBundleIdentifier</key>
-    <string>com.samurai.airvpn</string>
+    <string>com.samurai.paulovpn</string>
     <key>CFBundleName</key>
     <string>PauloVPN</string>
+    <key>CFBundleVersion</key>
+    <string>0.6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.6</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -16,5 +20,7 @@
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>PauloVPN v0.6</string>
 </dict>
 </plist>
