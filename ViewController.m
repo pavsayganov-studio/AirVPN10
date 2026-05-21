@@ -17,7 +17,7 @@
 @implementation ViewController
 
 - (void)loadView {
-    // [UI FIX]: Еще меньше и компактнее. Однооконный минимализм. 280x350
+    // Компактный минималистичный UI (280x350)
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 350)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
@@ -97,6 +97,9 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath    = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
 
+    // [ОТКАЗОУСТОЙЧИВОСТЬ]: Сбрасываем системные прокси при старте на случай краша
+    [self forceProxyOff];
+
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
         self.urlField.stringValue = savedURL;
@@ -125,7 +128,10 @@
 }
 
 - (void)serverChanged {
-    if (self.isConnected) [self startVPN]; // Прямой рестарт
+    if (self.isConnected) {
+        [self stopVPN];
+        [self startVPN];
+    }
 }
 
 - (NSDictionary *)parseVlessLink:(NSString *)link {
@@ -183,31 +189,10 @@
         }
     }
     if (parsed.count == 0) { self.statusLabel.stringValue = @"Серверы не найдены."; return; }
-    
-    // Генерируем базовый конфиг с TUN
-    NSMutableDictionary *skeleton = [@{
-        @"log": @{@"level": @"info"},
-        @"inbounds": @[ @{
-            @"type": @"tun",
-            @"tag": @"tun-in",
-            @"interface_name": @"utun9",
-            @"inet4_address": @"172.19.0.1/30",
-            @"auto_route": @YES,
-            @"strict_route": @YES,
-            @"stack": @"mixed",
-            @"sniff": @YES
-        } ],
-        @"outbounds": parsed,
-        @"route": @{
-            @"auto_detect_interface": @YES,
-            @"final": @"vless-server"
-        }
-    } mutableCopy];
-    [self handleParsedJSON:skeleton];
+    [self handleParsedJSON:[@{@"outbounds": parsed} mutableCopy]];
 }
 
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
-    self.downloadedJSON = json;
     self.proxyTags = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
 
@@ -260,72 +245,93 @@
     if (self.isConnected) [self stopVPN]; else [self startVPN];
 }
 
+- (NSString *)getActiveNetworkInterface {
+    NSTask *t = [[NSTask alloc] init];
+    t.launchPath = @"/usr/sbin/networksetup";
+    t.arguments = @[@"-listnetworkserviceorder"];
+    NSPipe *p = [NSPipe pipe];
+    t.standardOutput = p;
+    [t launch];
+    NSString *out = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
+    if ([out containsString:@"Wi-Fi"]) return @"Wi-Fi";
+    if ([out containsString:@"Ethernet"]) return @"Ethernet";
+    return @"Wi-Fi";
+}
+
 - (void)startVPN {
     if (self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск...";
-    
-    // Если уже запущен - убиваем
+
     if (self.singBoxTask && [self.singBoxTask isRunning]) {
         [self.singBoxTask terminate];
         [self.singBoxTask waitUntilExit];
     }
 
     NSString *activeTag = self.serverDropdown.titleOfSelectedItem ?: @"";
-    if (activeTag.length == 0) {
-        self.statusLabel.stringValue = @"Выберите сервер."; return;
-    }
+    if (activeTag.length == 0) return;
 
-    // [CTO FIX]: Делаем глубокую копию конфига ПРОВАЙДЕРА!
-    NSData *tempData = [NSJSONSerialization dataWithJSONObject:self.downloadedJSON options:0 error:nil];
-    NSMutableDictionary *activeConfig = [NSJSONSerialization JSONObjectWithData:tempData options:NSJSONReadingMutableContainers error:nil];
-
-    // Оставляем только выбранный сервер + direct + dns-out
-    NSMutableArray *newOutbounds = [NSMutableArray array];
+    NSDictionary *activeOutbound = nil;
     for (NSDictionary *o in self.proxyOutbounds) {
-        if ([o[@"tag"] isEqualToString:activeTag]) {
-            [newOutbounds addObject:o]; break;
-        }
+        if ([o[@"tag"] isEqualToString:activeTag]) { activeOutbound = o; break; }
+    }
+    if (!activeOutbound) return;
+
+    NSArray *outbounds = @[
+        activeOutbound,
+        @{@"type": @"direct", @"tag": @"direct"},
+        @{@"type": @"dns", @"tag": @"dns-out"}
+    ];
+
+    // ПРОСТОЙ И НАДЕЖНЫЙ DNS (Никаких петель)
+    NSDictionary *dnsConfig = @{
+        @"servers": @[
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"},
+            @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
+        ],
+        @"rules": @[
+            @{@"domain_suffix": @[@"gsupport.support", @".ru", @".su", @".рф"], @"server": @"local-dns"}
+        ]
+    };
+
+    NSMutableArray *rules = [NSMutableArray array];
+    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
+
+    // [ОБХОД ПЕТЛИ СЕРВЕРА]: IP и домен сервера всегда идут напрямую
+    NSString *serverHost = activeOutbound[@"server"] ?: @"";
+    if (serverHost.length > 0) {
+        [rules addObject:@{@"domain": @[serverHost], @"outbound": @"direct"}];
     }
     
-    BOOL hasDirect = NO, hasDnsOut = NO;
-    for (NSDictionary *outbound in activeConfig[@"outbounds"]) { 
-        if ([outbound[@"tag"] isEqualToString:@"direct"]) { [newOutbounds addObject:outbound]; hasDirect = YES; }
-        if ([outbound[@"tag"] isEqualToString:@"dns-out"]) { [newOutbounds addObject:outbound]; hasDnsOut = YES; }
-    }
-    if (!hasDirect) { [newOutbounds addObject:@{@"type": @"direct", @"tag": @"direct"}]; }
-    if (!hasDnsOut) { [newOutbounds addObject:@{@"type": @"dns", @"tag": @"dns-out"}]; }
-    
-    activeConfig[@"outbounds"] = newOutbounds;
+    // [ОБХОД ЛОКАЛЬНОЙ СЕТИ]: Принтеры и локалка остаются рабочими
+    [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
 
-    // [CTO ARCHITECTURE]: Внедряем TUN интерфейс. 
-    // `stack: mixed` - как советовал консультант для Android, он идеален для macOS 10.13
-    activeConfig[@"inbounds"] = @[ @{
-        @"type": @"tun",
-        @"tag": @"tun-in",
-        @"interface_name": @"utun9",
-        @"inet4_address": @"172.19.0.1/30",
-        @"auto_route": @YES,
-        @"strict_route": @YES,
-        @"stack": @"mixed",
-        @"sniff": @YES
-    } ];
+    // ГЛОБАЛЬНЫЙ РЕЖИМ (Всё остальное в туннель)
+    NSDictionary *routeConfig = @{
+        @"rules": rules,
+        @"final": activeTag,
+        @"auto_detect_interface": @YES
+    };
 
-    // Мы НЕ ТРОГАЕМ блоки "dns" и "route" из подписки провайдера!
-    // Мы лишь гарантируем, что final = активный сервер (Глобальный режим)
-    NSMutableDictionary *route = [NSMutableDictionary dictionary];
-    if (activeConfig[@"route"]) route = [activeConfig[@"route"] mutableCopy];
-    route[@"final"] = activeTag; // Весь трафик идет в выбранный сервер
-    route[@"auto_detect_interface"] = @YES;
-    activeConfig[@"route"] = route;
+    // ТОЛЬКО HTTP и SOCKS5 (Никакого TUN = никаких прав Root)
+    NSDictionary *config = @{
+        @"log": @{@"level": @"info"},
+        @"inbounds": @[
+            @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
+            @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
+        ],
+        @"outbounds": outbounds,
+        @"dns": dnsConfig,
+        @"route": routeConfig
+    };
 
     NSError *je = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:activeConfig options:0 error:&je];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:&je];
     if (je || !data) { self.statusLabel.stringValue = @"Ошибка конфига!"; return; }
     [data writeToFile:self.configPath atomically:YES];
 
     NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     
-    // [PRIVILEGE SEPARATION]: Запускаем ядро ОТ ИМЕНИ ОБЫЧНОГО ЮЗЕРА через NSTask
+    // 1. ЗАПУСК ЯДРА ОТ ИМЕНИ ОБЫЧНОГО ЮЗЕРА (Прямой контроль, без sudo, без двойного пароля)
     self.singBoxTask = [[NSTask alloc] init];
     self.singBoxTask.launchPath = bin;
     self.singBoxTask.arguments = @[@"run", @"-c", self.configPath];
@@ -339,39 +345,62 @@
     self.singBoxTask.terminationHandler = ^(NSTask *task) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (ws.isConnected) {
-                ws.statusLabel.stringValue = @"Отключено";
-                ws.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
+                ws.statusLabel.stringValue = @"Сбой ядра! Перезапустите.";
+                ws.statusLabel.textColor = [NSColor redColor];
+                [ws forceProxyOff];
                 [ws updateUIConnected:NO];
             }
         });
     };
-    
     [self.singBoxTask launch];
 
-    // [ONE PASSWORD TRICK]: ОДИН раз просим пароль администратора только для того, чтобы поднять TUN интерфейс (utun9)
-    // само ядро запущено под юзером. Пароль больше не потребуется при смене серверов!
-    NSString *cmd = @"ifconfig utun9 up";
+    // 2. ПРОПИСЫВАЕМ СИСТЕМНЫЕ ПРОКСИ (Единственный раз, когда нужен пароль)
+    NSString *iface = [self getActiveNetworkInterface];
+    NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808",
+        iface, iface, iface];
     NSDictionary *err = nil;
     [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
     
     if (!err) {
         [self updateUIConnected:YES];
     } else {
-        self.statusLabel.stringValue = @"Ошибка прав!";
+        self.statusLabel.stringValue = @"Отменено / Ошибка";
+        [self forceProxyOff];
         [self stopVPN];
     }
 }
 
+- (void)forceProxyOff {
+    NSString *iface = [self getActiveNetworkInterface];
+    NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxystate '%@' off ; "
+        @"networksetup -setsecurewebproxystate '%@' off ; "
+        @"networksetup -setsocksfirewallproxystate '%@' off",
+        iface, iface, iface];
+    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:nil];
+}
+
 - (BOOL)stopVPN {
+    // Убиваем ядро как обычный юзер (Без пароля!)
     if (self.singBoxTask && [self.singBoxTask isRunning]) {
         [self.singBoxTask terminate];
         [self.singBoxTask waitUntilExit];
     }
     
-    // Опускаем интерфейс (необязательно, но полезно)
-    NSString *cmd = @"ifconfig utun9 down";
-    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:nil];
+    // Сбрасываем прокси (Пароль потребуется 1 раз)
+    NSString *iface = [self getActiveNetworkInterface];
+    NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxystate '%@' off ; "
+        @"networksetup -setsecurewebproxystate '%@' off ; "
+        @"networksetup -setsocksfirewallproxystate '%@' off",
+        iface, iface, iface];
+    NSDictionary *err = nil;
+    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
     
+    if (err) { self.statusLabel.stringValue = @"Ошибка сброса прокси!"; return NO; }
     [self updateUIConnected:NO];
     return YES;
 }
