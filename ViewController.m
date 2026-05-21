@@ -13,7 +13,7 @@
 @property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL isConnected;
 @property (strong) NSTask *singBoxTask;
-@property (strong) NSTimer *watchdogTimer; // [EXPERT FIX 3]: Watchdog
+@property (strong) NSTimer *watchdogTimer;
 @end
 
 @implementation ViewController
@@ -52,7 +52,18 @@
     self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
 
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 150, 280, 16)];
+    // Подсказка для Telegram (Важнейший UX элемент)
+    NSTextField *telegramHint = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 165, 250, 20)];
+    telegramHint.stringValue = @"Telegram: вручную SOCKS5 127.0.0.1:10808";
+    telegramHint.alignment = NSTextAlignmentCenter;
+    telegramHint.font = [NSFont systemFontOfSize:10];
+    telegramHint.textColor = [NSColor colorWithWhite:1.0 alpha:0.45];
+    telegramHint.bezeled = NO;
+    telegramHint.drawsBackground = NO;
+    telegramHint.editable = NO;
+    [effectView addSubview:telegramHint];
+
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 145, 280, 16)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.bezeled = NO;
@@ -95,6 +106,7 @@
     NSURL *appSupport = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject];
     appSupport = [appSupport URLByAppendingPathComponent:@"PauloVPN"];
     [fm createDirectoryAtURL:appSupport withIntermediateDirectories:YES attributes:nil error:nil];
+    
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath    = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
 
@@ -208,10 +220,7 @@
     self.proxyOutbounds = [NSMutableArray array];
 
     for (NSDictionary *o in json[@"outbounds"]) {
-        NSString *type = o[@"type"];
-        NSString *tag = o[@"tag"];
-        
-        // [EXPERT FIX 2]: Исключаем группы и мета-outbounds (urltest, selector)
+        NSString *type = o[@"type"], *tag = o[@"tag"];
         BOOL isRealServer = ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"]);
         BOOL isGroup = ([type isEqualToString:@"selector"] || [type isEqualToString:@"urltest"] || [type isEqualToString:@"dns"]);
         
@@ -275,7 +284,7 @@
     return @"Wi-Fi";
 }
 
-// [EXPERT FIX 3]: Мониторинг ядра (Watchdog)
+// Watchdog (Проверяет жив ли процесс)
 - (void)checkCoreAlive {
     if (!self.isConnected) return;
     
@@ -289,7 +298,6 @@
     
     NSString *out = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
     if ([out intValue] != 0) {
-        // Ядро упало
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.watchdogTimer invalidate];
             self.watchdogTimer = nil;
@@ -311,7 +319,6 @@
         [self.singBoxTask waitUntilExit];
     }
     
-    // Останавливаем старый watchdog
     [self.watchdogTimer invalidate];
     self.watchdogTimer = nil;
 
@@ -324,24 +331,26 @@
     }
     if (!activeOutbound) return;
 
+    // [EXPERT ARCHITECTURE]: Оставляем только нужный сервер + direct + dns-out
     NSArray *outbounds = @[
         activeOutbound,
-        @{@"type": @"direct", @"tag": @"direct"}
+        @{@"type": @"direct", @"tag": @"direct"},
+        @{@"type": @"dns", @"tag": @"dns-out"}
     ];
 
-    // [EXPERT FIX 1]: Правильная маршрутизация (Устранены петли Telegram)
+    // [EXPERT ROUTING]: Идеальная маршрутизация
     NSDictionary *routeConfig = @{
         @"rules": @[
+            @{@"protocol": @[@"dns"], @"outbound": @"dns-out"},
             @{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"},
-            @{@"ip_cidr": @[@"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.168.0/22", @"149.154.172.0/22", @"2001:b28:f23d::/48", @"2001:b28:f23f::/48"], @"outbound": @"direct"},
-            @{@"domain_suffix": @[@".ru", @".рф", @".su"], @"outbound": @"direct"},
-            @{@"domain_suffix": @[@".apple.com"], @"outbound": @"direct"}
+            @{@"domain_suffix": @[@".apple.com"], @"outbound": @"direct"},
+            @{@"domain_suffix": @[@".ru", @".su", @".рф"], @"outbound": @"direct"}
         ],
         @"final": activeTag
     };
 
     NSDictionary *config = @{
-        @"log": @{@"level": @"info"},
+        @"log": @{@"level": @"info"}, // Вернули инфо, чтобы не грузить I/O старого диска
         @"inbounds": @[
             @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
@@ -355,7 +364,7 @@
     if (je || !data) { self.statusLabel.stringValue = @"Ошибка конфига!"; return; }
     [data writeToFile:self.configPath atomically:YES];
 
-    // Очистка лога перед запуском
+    // Переписываем лог-файл (чтобы не пухнул)
     [@"" writeToFile:self.logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
     NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
@@ -370,8 +379,8 @@
 
     [self.singBoxTask launch];
 
+    // [EXPERT APPLE SCRIPT]: Поднятие системных прокси с одним паролем
     NSString *iface = [self getActiveNetworkInterface];
-    // [EXPERT FIX 4]: Кастомный prompt при запуске прокси
     NSString *cmd = [NSString stringWithFormat:
         @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
         @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
@@ -382,9 +391,25 @@
     [[[NSAppleScript alloc] initWithSource:scriptSource] executeAndReturnError:&err];
 
     if (!err) {
-        [self updateUIConnected:YES];
-        // Запускаем watchdog
-        self.watchdogTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 target:self selector:@selector(checkCoreAlive) userInfo:nil repeats:YES];
+        // [EXPERT FIX]: Двухэтапная проверка запуска ядра
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSTask *t = [[NSTask alloc] init];
+            t.launchPath = @"/bin/sh";
+            t.arguments = @[@"-c", @"pgrep -x sing-box"];
+            NSPipe *p = [NSPipe pipe];
+            t.standardOutput = p;
+            [t launch];
+            [t waitUntilExit];
+            
+            NSString *out = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
+            if (out.length > 0) {
+                [self updateUIConnected:YES];
+                self.watchdogTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 target:self selector:@selector(checkCoreAlive) userInfo:nil repeats:YES];
+            } else {
+                self.statusLabel.stringValue = @"Ядро не запустилось. См. логи.";
+                [self forceProxyOff];
+            }
+        });
     } else {
         self.statusLabel.stringValue = @"Отменено / Ошибка";
         [self forceProxyOff];
@@ -398,7 +423,7 @@
         @"networksetup -setsecurewebproxystate '%@' off ; "
         @"networksetup -setsocksfirewallproxystate '%@' off",
         iface, iface, iface];
-    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges with prompt \"PauloVPN: сброс системного прокси\"", cmd];
+    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges with prompt \"PauloVPN: отключение прокси\"", cmd];
     [[[NSAppleScript alloc] initWithSource:scriptSource] executeAndReturnError:nil];
 }
 
@@ -416,6 +441,7 @@
     NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges with prompt \"PauloVPN: отключение прокси\"", cmd];
     NSDictionary *err = nil;
     [[[NSAppleScript alloc] initWithSource:scriptSource] executeAndReturnError:&err];
+    
     if (err) { self.statusLabel.stringValue = @"Ошибка сброса прокси!"; return NO; }
     [self updateUIConnected:NO];
     return YES;

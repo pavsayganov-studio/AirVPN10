@@ -35,8 +35,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Core Stability)"
-        body: "Официальный релиз v0.6.\n- Полностью устранен Telegram Loop.\n- Убраны мета-группы (urltest) из списка для предотвращения таймаутов.\n- Внедрен Watchdog: приложение корректно обрабатывает падения ядра и восстанавливает интернет.\n- Пользователь понимает, зачем запрашивается пароль."
+        name: "PauloVPN ${{ github.ref_name }} (Golden Master)"
+        body: "Официальный релиз v0.7.\n- Идеальная архитектура маршрутизации (без петлей, с исключениями для Apple и RU-сегмента).\n- Встроенный Watchdog (защита от крашей).\n- Изящный минималистичный UI (280x350) с подсказкой для Telegram."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
