@@ -27,7 +27,8 @@
     
     self.popover = [[NSPopover alloc] init];
     self.popover.contentViewController = [[ViewController alloc] init];
-    self.popover.behavior = NSPopoverBehaviorApplicationDefined;
+    // [UI FIX]: Transient позволяет окну исчезать при клике мимо него (в браузер)
+    self.popover.behavior = NSPopoverBehaviorTransient;
     self.popover.appearance = [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
 }
 

@@ -8,6 +8,7 @@
 @property (strong) NSButton *stealthCheckbox;
 @property (strong) NSString *configPath;
 @property (strong) NSString *logPath;
+@property (strong) NSMutableDictionary *downloadedJSON;
 @property (strong) NSMutableArray *proxyTags;
 @property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL isConnected;
@@ -17,58 +18,49 @@
 @implementation ViewController
 
 - (void)loadView {
-    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 320, 460)];
+    // [UI FIX]: Уменьшенный и компактный размер окна 280x380
+    NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 380)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     effectView.state = NSVisualEffectStateActive;
 
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 395, 320, 30)];
+    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 340, 280, 30)];
     titleLabel.stringValue = @"PauloVPN";
     titleLabel.alignment = NSTextAlignmentCenter;
     titleLabel.bezeled = NO;
     titleLabel.drawsBackground = NO;
     titleLabel.editable = NO;
-    titleLabel.font = [NSFont fontWithName:@"HelveticaNeue-Light" size:26] ?: [NSFont systemFontOfSize:26];
+    titleLabel.font = [NSFont fontWithName:@"HelveticaNeue-Light" size:24] ?: [NSFont systemFontOfSize:24];
     titleLabel.textColor = [NSColor whiteColor];
     [effectView addSubview:titleLabel];
 
-    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 335, 280, 24)];
-    self.urlField.placeholderString = @"Вставьте vless:// или подписку...";
+    self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 290, 250, 24)];
+    self.urlField.placeholderString = @"Ссылка vless:// или подписка...";
     [effectView addSubview:self.urlField];
 
-    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(80, 295, 160, 30)];
+    NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(60, 255, 160, 30)];
     importBtn.title = @"Загрузить серверы";
     importBtn.bezelStyle = NSBezelStyleRounded;
     importBtn.target = self;
     importBtn.action = @selector(downloadConfig);
     [effectView addSubview:importBtn];
 
-    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 245, 280, 26) pullsDown:NO];
+    self.serverDropdown = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(15, 215, 250, 26) pullsDown:NO];
     [self.serverDropdown addItemWithTitle:@"Серверы не загружены"];
     [self.serverDropdown setEnabled:NO];
     self.serverDropdown.target = self;
     self.serverDropdown.action = @selector(serverChanged);
     [effectView addSubview:self.serverDropdown];
 
-    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 205, 280, 20)];
+    self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(15, 185, 250, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
-    self.stealthCheckbox.title = @"Умный режим (Stealth Bypass)";
+    self.stealthCheckbox.title = @"Умный режим (Только блок.)";
     self.stealthCheckbox.state = NSControlStateValueOn;
     self.stealthCheckbox.target = self;
     self.stealthCheckbox.action = @selector(stealthChanged);
     [effectView addSubview:self.stealthCheckbox];
 
-    NSTextField *telegramHint = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 180, 280, 14)];
-    telegramHint.stringValue = @"Telegram: Settings → Proxy → SOCKS5 127.0.0.1:10808";
-    telegramHint.alignment = NSTextAlignmentCenter;
-    telegramHint.bezeled = NO;
-    telegramHint.drawsBackground = NO;
-    telegramHint.editable = NO;
-    telegramHint.font = [NSFont systemFontOfSize:9];
-    telegramHint.textColor = [NSColor colorWithWhite:1.0 alpha:0.4];
-    [effectView addSubview:telegramHint];
-
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 155, 320, 16)];
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 150, 280, 16)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.bezeled = NO;
@@ -77,12 +69,13 @@
     self.statusLabel.textColor = [NSColor colorWithWhite:1.0 alpha:0.7];
     [effectView addSubview:self.statusLabel];
 
-    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(105, 45, 110, 110)];
+    // Кнопка стала чуть меньше (90x90)
+    self.connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(95, 45, 90, 90)];
     self.connectButton.title = @"ВЫКЛ";
-    self.connectButton.font = [NSFont systemFontOfSize:22 weight:NSFontWeightMedium];
+    self.connectButton.font = [NSFont systemFontOfSize:18 weight:NSFontWeightMedium];
     self.connectButton.bordered = NO;
     self.connectButton.wantsLayer = YES;
-    self.connectButton.layer.cornerRadius = 55;
+    self.connectButton.layer.cornerRadius = 45;
     self.connectButton.layer.borderWidth = 1.5;
     self.connectButton.layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.3].CGColor;
     self.connectButton.layer.backgroundColor = [NSColor clearColor].CGColor;
@@ -90,14 +83,14 @@
     self.connectButton.action = @selector(toggleConnection);
     [effectView addSubview:self.connectButton];
 
-    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(20, 10, 80, 25)];
+    NSButton *logBtn = [[NSButton alloc] initWithFrame:NSMakeRect(15, 10, 60, 25)];
     logBtn.title = @"Логи";
     logBtn.bezelStyle = NSBezelStyleRounded;
     logBtn.target = self;
     logBtn.action = @selector(openLogs);
     [effectView addSubview:logBtn];
 
-    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(220, 10, 80, 25)];
+    NSButton *quitBtn = [[NSButton alloc] initWithFrame:NSMakeRect(205, 10, 60, 25)];
     quitBtn.title = @"Выйти";
     quitBtn.bezelStyle = NSBezelStyleRounded;
     quitBtn.target = self;
@@ -149,7 +142,6 @@
     if (self.isConnected) [self startCoreOnly];
 }
 
-// [EXPERT PARSER]: Парсим VLESS, добавляем uTLS и Mux (для стабильности TCP)
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
@@ -187,10 +179,7 @@
     if (tls[@"enabled"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
     if (tls.count > 0) out[@"tls"] = tls;
     if (transport.count > 0) out[@"transport"] = transport;
-    
-    // Внедряем Multiplex для защиты от таймаутов (i/o timeout)
-    out[@"multiplex"] = @{ @"enabled": @YES, @"protocol": @"smux", @"max_connections": @4, @"min_streams": @4 };
-    
+    // [FIX]: Мы убрали multiplex, чтобы не ломать стабильность TCP-соединений.
     return out;
 }
 
@@ -219,13 +208,8 @@
     for (NSDictionary *o in json[@"outbounds"]) {
         NSString *type = o[@"type"], *tag = o[@"tag"];
         if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
-            
-            // Если сервер из JSON подписки, жестко добавляем Mux
-            NSMutableDictionary *mutOut = [o mutableCopy];
-            mutOut[@"multiplex"] = @{ @"enabled": @YES, @"protocol": @"smux", @"max_connections": @4, @"min_streams": @4 };
-            
             [self.proxyTags addObject:tag];
-            [self.proxyOutbounds addObject:mutOut];
+            [self.proxyOutbounds addObject:o];
         }
     }
 
@@ -310,40 +294,29 @@
         @{@"type": @"dns", @"tag": @"dns-out"}
     ];
 
-    // [CTO ARCHITECTURE]: Идеальный DNS и Маршрутизация на основе рекомендаций консультанта
+    // [DNS FIX]: Простой DNS. Удаленные серверы резолвим через 8.8.8.8. 
     NSDictionary *dnsConfig = @{
         @"servers": @[
-            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"}, // Никаких петель через VPN!
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"},
             @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
         ],
         @"rules": @[
-            @{@"domain_suffix": @[@".ru", @".su", @".рф", @"yandex.ru", @"vk.com", @"mail.ru"], @"server": @"local-dns"}
-        ],
-        @"strategy": @"ipv4_only" // Игнорируем битый IPv6
+            @{@"domain_suffix": @[@".ru", @".su", @".рф"], @"server": @"local-dns"}
+        ]
     };
 
     NSMutableArray *rules = [NSMutableArray array];
-    
-    // DNS запросы идут через dns-out
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
 
-    // Bypass Private IPs (Все локальные сети идут мимо VPN)
-    [rules addObject:@{
-        @"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"],
-        @"outbound": @"direct"
-    }];
-
-    // Защита от петли: адрес самого сервера пускаем напрямую
+    // [LOOP PREVENTION - ЯДРО]: Трафик к самому VPN-серверу идет мимо туннеля (direct)
     NSString *activeServerHost = activeOutbound[@"server"] ?: @"";
     if (activeServerHost.length > 0) {
         [rules addObject:@{@"domain": @[activeServerHost], @"outbound": @"direct"}];
     }
 
     NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
-    routeConfig[@"auto_detect_interface"] = @YES;
-
+    
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        // [RULE 1]: Заблокированные домены -> PROXY
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
             @"whatsapp.com", @"whatsapp.net",
@@ -351,11 +324,9 @@
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
             @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
-            @"twitter.com", @"x.com", @"twimg.com",
-            @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
-            @"rutracker.org", @"rutracker.cc", @"spotify.com", @"scdn.co"
+            @"twitter.com", @"x.com", @"twimg.com", @"discord.com", @"discordapp.com", @"discord.gg",
+            @"rutracker.org", @"rutracker.cc"
         ];
-        
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
             @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
@@ -364,20 +335,17 @@
         [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeTag}];
         [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeTag}];
         
-        // [RULE 2]: RU 도мены -> DIRECT
-        [rules addObject:@{@"domain_suffix": @[@".ru", @".su", @".рф"], @"outbound": @"direct"}];
-        
         routeConfig[@"rules"] = rules;
-        // [RULE LAST]: MATCH -> DIRECT
         routeConfig[@"final"] = @"direct";
     } else {
+        // [GLOBAL FIX]: В глобальном режиме локальные сети идут напрямую
+        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
         routeConfig[@"rules"] = rules;
-        // [RULE LAST]: MATCH -> PROXY (Global Mode)
         routeConfig[@"final"] = activeTag;
     }
 
     NSDictionary *config = @{
-        @"log": @{@"level": @"warn"},
+        @"log": @{@"level": @"debug"}, // [LOG FIX]: DEBUG УРОВЕНЬ, ЧТОБЫ ВИДЕТЬ ВСЕ ОШИБКИ!
         @"inbounds": @[
             @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
@@ -421,14 +389,30 @@
     self.statusLabel.stringValue = @"Запуск...";
     [self startCoreOnly];
 
+    // Ищем домен/IP сервера для обхода в настройках macOS
+    NSString *activeTag = self.serverDropdown.titleOfSelectedItem ?: @"";
+    NSString *activeServerHost = @"";
+    for (NSDictionary *o in self.proxyOutbounds) {
+        if ([o[@"tag"] isEqualToString:activeTag]) {
+            activeServerHost = o[@"server"] ?: @""; break;
+        }
+    }
+
     NSString *iface = [self getActiveNetworkInterface];
+    
+    // [OS LOOP PREVENTION]: Указываем самой macOS НЕ ИСПОЛЬЗОВАТЬ прокси для локальной сети и для адреса VPN сервера!
+    NSString *bypassDomains = [NSString stringWithFormat:@"127.0.0.1 localhost 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12 %@", activeServerHost];
+    
     NSString *cmd = [NSString stringWithFormat:
         @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
         @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
-        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808",
-        iface, iface, iface];
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808 ; "
+        @"networksetup -setproxybypassdomains '%@' %@",
+        iface, iface, iface, iface, bypassDomains];
+        
     NSDictionary *err = nil;
     [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
+    
     if (!err) {
         [self updateUIConnected:YES];
     } else {
