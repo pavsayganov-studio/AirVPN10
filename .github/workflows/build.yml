@@ -35,8 +35,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Stable System Proxy)"
-        body: "Официальный релиз v0.5.\n- Окончательный отказ от проблемного TUN интерфейса.\n- Один пароль для полного цикла (убивает старые ядра, прописывает прокси, запускает ядро).\n- Чистый Глобальный режим."
+        name: "PauloVPN ${{ github.ref_name }} (Expert Polish)"
+        body: "Официальный релиз v0.5.\n- Избавились от двойного пароля при старте и остановке.\n- Приложение корректно понимает, крашнулось ли ядро, прежде чем показывать 'Подключено'.\n- Пароль при открытии приложения убран (используется SCDynamicStoreCopyProxies).\n- Возвращен текст настройки Telegram."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
