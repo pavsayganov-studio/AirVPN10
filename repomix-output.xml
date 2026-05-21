@@ -1,3 +1,365 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    build.yml
+    release.yml
+PauloVPN/
+  PVWatchdog.h
+  PVWatchdog.m
+  sing-box-config.json
+  VPNManager+Watchdog.h
+  VPNManager+Watchdog.m
+AppDelegate.h
+AppDelegate.m
+Info.plist
+main.m
+ViewController.h
+ViewController.m
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="PauloVPN/sing-box-config.json">
+{
+  "log": { "level": "warn", "timestamp": false },
+  "dns": {
+    "servers": [{ "tag": "direct", "address": "8.8.8.8", "strategy": "ipv4_only" }],
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [
+    { "type": "socks", "listen": "127.0.0.1", "listen_port": 10808, "tag": "socks-in" },
+    { "type": "http", "listen": "127.0.0.1", "listen_port": 10809, "tag": "http-in" }
+  ],
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "type": "urltest",
+      "outbounds": ["vless-lithuania", "vless-backup"],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "5m",
+      "tolerance": 500,
+      "idle_timeout": "30m"
+    },
+    {
+      "tag": "vless-lithuania",
+      "type": "vless",
+      "server": "ВАШ_СЕРВЕР_ЛИТВА",
+      "server_port": 443,
+      "uuid": "ВАШ_UUID",
+      "tls": { "enabled": true, "server_name": "ВАШ_SNI_ЛИТВА" },
+      "transport": { "type": "ws", "path": "/" }
+    },
+    {
+      "tag": "vless-backup",
+      "type": "vless",
+      "server": "ВАШ_РЕЗЕРВНЫЙ_СЕРВЕР",
+      "server_port": 443,
+      "uuid": "ВАШ_UUID",
+      "tls": { "enabled": true, "server_name": "ВАШ_SNI_РЕЗЕРВ" },
+      "transport": { "type": "ws", "path": "/" }
+    },
+    { "tag": "direct", "type": "direct" }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "domain_strategy": "prefer_ipv4",
+    "rules": [
+      { "domain_suffix": ["telegram.org", "t.me", "tdesktop.telega.one"], "outbound": "proxy" }
+    ],
+    "default_outbound": "proxy"
+  },
+  "dialer": { "connect_timeout": "12s" }
+}
+</file>
+
+<file path="PauloVPN/VPNManager+Watchdog.h">
+#import "VPNManager.h"
+
+@interface VPNManager (Watchdog)
+- (void)startWatchdog;
+- (void)stopWatchdog;
+@end
+</file>
+
+<file path="PauloVPN/VPNManager+Watchdog.m">
+#import "VPNManager+Watchdog.h"
+#import <AppKit/AppKit.h>
+
+// Associated objects key for timer
+static const void *kWatchdogTimerKey = &kWatchdogTimerKey;
+
+@implementation VPNManager (Watchdog)
+
+- (NSTimer *)watchdogTimer {
+    return objc_getAssociatedObject(self, kWatchdogTimerKey);
+}
+
+- (void)setWatchdogTimer:(NSTimer *)timer {
+    objc_setAssociatedObject(self, kWatchdogTimerKey, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (void)startWatchdog {
+    [self stopWatchdog]; // на всякий случай
+    self.watchdogTimer = [NSTimer scheduledTimerWithTimeInterval:30.0
+                                                          target:self
+                                                        selector:@selector(checkSingBoxProcess)
+                                                        userInfo:nil
+                                                         repeats:YES];
+}
+
+- (void)stopWatchdog {
+    [self.watchdogTimer invalidate];
+    self.watchdogTimer = nil;
+}
+
+- (void)checkSingBoxProcess {
+    // Проверяем, жив ли процесс sing-box
+    // Предполагаем, что у основного класса есть свойство singBoxTask типа NSTask
+    NSTask *task = [self performSelector:@selector(singBoxTask)]; // если объявлено
+    if (task && [task isRunning]) {
+        return;
+    }
+    NSLog(@"[PauloVPN] sing-box упал, перезапускаю...");
+    // Вызываем метод запуска из основной реализации
+    if ([self respondsToSelector:@selector(startSingBox)]) {
+        [self performSelector:@selector(startSingBox)];
+    }
+}
+
+@end
+</file>
+
+<file path="AppDelegate.h">
+#import <Cocoa/Cocoa.h>
+@interface AppDelegate : NSObject <NSApplicationDelegate>
+@end
+</file>
+
+<file path="ViewController.h">
+#import <Cocoa/Cocoa.h>
+@interface ViewController : NSViewController
+@end
+</file>
+
+<file path=".github/workflows/release.yml">
+name: Build and Release PauloVPN (10.13)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag'
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_14.1.app
+      - name: Build app
+        run: |
+          export MACOSX_DEPLOYMENT_TARGET=10.13
+          xcodebuild -project PauloVPN.xcodeproj \
+            -scheme PauloVPN -configuration Release \
+            -sdk macosx \
+            -derivedDataPath build clean build
+      - name: Create DMG
+        run: |
+          mkdir -p dist
+          cp -R build/Build/Products/Release/PauloVPN.app dist/
+          hdiutil create -volname "PauloVPN" -srcfolder dist -ov -format UDZO dist/PauloVPN.dmg
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PauloVPN.dmg
+          path: dist/PauloVPN.dmg
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: PauloVPN ${{ github.ref_name }}
+          body: |
+            ## PauloVPN v9.1.2 для macOS 10.13 (High Sierra)
+            - Автоматический failover
+            - Watchdog для sing-box
+            - Только IPv4, таймауты
+          files: dist/PauloVPN.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+</file>
+
+<file path="PauloVPN/PVWatchdog.h">
+#import <Foundation/Foundation.h>
+@interface PVWatchdog : NSObject
++ (instancetype)shared;
+- (void)startMonitoring:(NSTask *)task startSelector:(SEL)selector target:(id)target;
+- (void)stopMonitoring;
+@end
+</file>
+
+<file path="PauloVPN/PVWatchdog.m">
+#import "PVWatchdog.h"
+@interface PVWatchdog ()
+@property (weak) NSTask *task;
+@property (weak) id target;
+@property (assign) SEL selector;
+@property (strong) NSTimer *timer;
+@end
+@implementation PVWatchdog
++ (instancetype)shared {
+    static PVWatchdog *instance;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ instance = [[self alloc] init]; });
+    return instance;
+}
+- (void)startMonitoring:(NSTask *)task startSelector:(SEL)selector target:(id)target {
+    self.task = task; self.selector = selector; self.target = target;
+    [self.timer invalidate];
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:30.0 target:self selector:@selector(check) userInfo:nil repeats:YES];
+}
+- (void)check {
+    if (!self.task || ![self.task isRunning]) {
+        NSLog(@"[Watchdog] Restarting sing-box...");
+        if ([self.target respondsToSelector:self.selector])
+            [self.target performSelectorOnMainThread:self.selector withObject:nil waitUntilDone:NO];
+    }
+}
+- (void)stopMonitoring { [self.timer invalidate]; self.timer = nil; }
+@end
+</file>
+
+<file path="main.m">
+#import <Cocoa/Cocoa.h>
+#import "AppDelegate.h"
+
+int main(int argc, const char * argv[]) {
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+        AppDelegate *delegate = [[AppDelegate alloc] init];
+        app.delegate = delegate;
+        [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        [app run];
+    }
+    return 0;
+}
+</file>
+
+<file path="AppDelegate.m">
+#import "AppDelegate.h"
+#import "ViewController.h"
+
+@interface AppDelegate ()
+@property (strong) NSStatusItem *statusItem;
+@property (strong) NSPopover *popover;
+@end
+
+@implementation AppDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
+    NSMenu *mainMenu = [[NSMenu alloc] init];
+    NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Правка"];
+    [editMenu addItemWithTitle:@"Копировать" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Вставить" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:@"Выбрать всё" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [editMenu addItemWithTitle:@"Вырезать" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenuItem setSubmenu:editMenu];
+    [mainMenu addItem:editMenuItem];
+    [NSApp setMainMenu:mainMenu];
+
+    self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
+    self.statusItem.button.title = @"🛡️ PauloVPN";
+    self.statusItem.button.action = @selector(togglePopover:);
+    self.statusItem.button.target = self;
+    
+    self.popover = [[NSPopover alloc] init];
+    self.popover.contentViewController = [[ViewController alloc] init];
+    self.popover.behavior = NSPopoverBehaviorApplicationDefined;
+    self.popover.appearance = [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
+}
+
+- (void)togglePopover:(id)sender {
+    if (self.popover.isShown) {
+        [self.popover performClose:sender];
+    } else {
+        [NSApp activateIgnoringOtherApps:YES];
+        [self.popover showRelativeToRect:self.statusItem.button.bounds ofView:self.statusItem.button preferredEdge:NSRectEdgeMinY];
+    }
+}
+@end
+</file>
+
+<file path="Info.plist">
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>AirVPN</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.samurai.airvpn</string>
+    <key>CFBundleName</key>
+    <string>PauloVPN</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+</dict>
+</plist>
+</file>
+
+<file path="ViewController.m">
 #import "ViewController.h"
 
 @interface ViewController ()
@@ -8,6 +370,7 @@
 @property (strong) NSButton *stealthCheckbox;
 @property (strong) NSString *configPath;
 @property (strong) NSString *logPath;
+@property (strong) NSMutableDictionary *downloadedJSON;
 @property (strong) NSMutableArray *proxyTags;
 @property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL isConnected;
@@ -52,7 +415,7 @@
 
     self.stealthCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 205, 280, 20)];
     [self.stealthCheckbox setButtonType:NSButtonTypeSwitch];
-    self.stealthCheckbox.title = @"Умный режим (Stealth Bypass)";
+    self.stealthCheckbox.title = @"Умный режим (Только заблокированные)";
     self.stealthCheckbox.state = NSControlStateValueOn;
     self.stealthCheckbox.target = self;
     self.stealthCheckbox.action = @selector(stealthChanged);
@@ -68,6 +431,7 @@
     telegramHint.textColor = [NSColor colorWithWhite:1.0 alpha:0.4];
     [effectView addSubview:telegramHint];
 
+    // Скорректированы координаты, чтобы избежать наложений
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 155, 320, 16)];
     self.statusLabel.stringValue = @"Готов к работе";
     self.statusLabel.alignment = NSTextAlignmentCenter;
@@ -149,14 +513,11 @@
     if (self.isConnected) [self startCoreOnly];
 }
 
-// [EXPERT PARSER]: Парсим VLESS, добавляем uTLS и Mux (для стабильности TCP)
 - (NSDictionary *)parseVlessLink:(NSString *)link {
     NSURLComponents *comp = [NSURLComponents componentsWithString:[link stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!comp || ![comp.scheme isEqualToString:@"vless"]) return nil;
-
     NSString *tag = comp.fragment ? [comp.fragment stringByRemovingPercentEncoding] : comp.host;
     NSMutableDictionary *out = [@{ @"type": @"vless", @"tag": tag ?: @"vless-server", @"server": comp.host ?: @"", @"server_port": comp.port ?: @443, @"uuid": comp.user ?: @"", @"packet_encoding": @"xudp" } mutableCopy];
-
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *transport = [NSMutableDictionary dictionary];
 
@@ -183,14 +544,9 @@
         if ([item.name isEqualToString:@"serviceName"] && item.value.length > 0) transport[@"service_name"] = item.value;
         if ([item.name isEqualToString:@"host"] && item.value.length > 0) transport[@"headers"] = @{@"Host": item.value};
     }
-
     if (tls[@"enabled"]) tls[@"utls"] = @{@"enabled": @YES, @"fingerprint": @"chrome"};
     if (tls.count > 0) out[@"tls"] = tls;
     if (transport.count > 0) out[@"transport"] = transport;
-    
-    // Внедряем Multiplex для защиты от таймаутов (i/o timeout)
-    out[@"multiplex"] = @{ @"enabled": @YES, @"protocol": @"smux", @"max_connections": @4, @"min_streams": @4 };
-    
     return out;
 }
 
@@ -215,22 +571,16 @@
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
     self.proxyTags = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
-
     for (NSDictionary *o in json[@"outbounds"]) {
         NSString *type = o[@"type"], *tag = o[@"tag"];
         if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
-            
-            // Если сервер из JSON подписки, жестко добавляем Mux
-            NSMutableDictionary *mutOut = [o mutableCopy];
-            mutOut[@"multiplex"] = @{ @"enabled": @YES, @"protocol": @"smux", @"max_connections": @4, @"min_streams": @4 };
-            
             [self.proxyTags addObject:tag];
-            [self.proxyOutbounds addObject:mutOut];
+            [self.proxyOutbounds addObject:o];
         }
     }
-
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
+        // Загружаем только реальные серверы
         [self.serverDropdown addItemsWithTitles:self.proxyTags];
         [self.serverDropdown setEnabled:YES];
         self.statusLabel.stringValue = [NSString stringWithFormat:@"Загружено %lu серверов", (unsigned long)self.proxyTags.count];
@@ -304,58 +654,25 @@
         self.statusLabel.stringValue = @"Сервер не найден."; return;
     }
 
+    // В списке outbounds оставляем только ОДИН выбранный сервер и direct
     NSArray *outbounds = @[
         activeOutbound,
-        @{@"type": @"direct", @"tag": @"direct"},
-        @{@"type": @"dns", @"tag": @"dns-out"}
+        @{@"type": @"direct", @"tag": @"direct"}
     ];
 
-    // [CTO ARCHITECTURE]: Идеальный DNS и Маршрутизация на основе рекомендаций консультанта
-    NSDictionary *dnsConfig = @{
-        @"servers": @[
-            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"}, // Никаких петель через VPN!
-            @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
-        ],
-        @"rules": @[
-            @{@"domain_suffix": @[@".ru", @".su", @".рф", @"yandex.ru", @"vk.com", @"mail.ru"], @"server": @"local-dns"}
-        ],
-        @"strategy": @"ipv4_only" // Игнорируем битый IPv6
-    };
-
-    NSMutableArray *rules = [NSMutableArray array];
-    
-    // DNS запросы идут через dns-out
-    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
-
-    // Bypass Private IPs (Все локальные сети идут мимо VPN)
-    [rules addObject:@{
-        @"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"],
-        @"outbound": @"direct"
-    }];
-
-    // Защита от петли: адрес самого сервера пускаем напрямую
-    NSString *activeServerHost = activeOutbound[@"server"] ?: @"";
-    if (activeServerHost.length > 0) {
-        [rules addObject:@{@"domain": @[activeServerHost], @"outbound": @"direct"}];
-    }
-
     NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
-    routeConfig[@"auto_detect_interface"] = @YES;
+    NSMutableArray *rules = [NSMutableArray array];
 
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
-        // [RULE 1]: Заблокированные домены -> PROXY
         NSArray *blockedDomains = @[
             @"telegram.org", @"t.me", @"telegram.me", @"tdesktop.com",
-            @"whatsapp.com", @"whatsapp.net",
+            @"whatsapp.com", @"whatsapp.net", @"discord.com", @"discordapp.com", @"discord.gg",
             @"youtube.com", @"youtu.be", @"ytimg.com", @"googlevideo.com", @"ggpht.com",
             @"openai.com", @"chatgpt.com", @"oaistatic.com", @"oaiusercontent.com",
             @"anthropic.com", @"claude.ai", @"gemini.google.com", @"ai.google.dev",
-            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net",
-            @"twitter.com", @"x.com", @"twimg.com",
-            @"discord.com", @"discordapp.com", @"discord.gg", @"discord.media",
-            @"rutracker.org", @"rutracker.cc", @"spotify.com", @"scdn.co"
+            @"instagram.com", @"cdninstagram.com", @"facebook.com", @"fbcdn.net", @"twitter.com", @"x.com", @"twimg.com",
+            @"discord.com", @"discordapp.com", @"discord.gg", @"rutracker.org", @"rutracker.cc"
         ];
-        
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
             @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
@@ -363,27 +680,21 @@
         
         [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeTag}];
         [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeTag}];
-        
-        // [RULE 2]: RU 도мены -> DIRECT
-        [rules addObject:@{@"domain_suffix": @[@".ru", @".su", @".рф"], @"outbound": @"direct"}];
-        
         routeConfig[@"rules"] = rules;
-        // [RULE LAST]: MATCH -> DIRECT
         routeConfig[@"final"] = @"direct";
     } else {
+        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
         routeConfig[@"rules"] = rules;
-        // [RULE LAST]: MATCH -> PROXY (Global Mode)
         routeConfig[@"final"] = activeTag;
     }
 
     NSDictionary *config = @{
-        @"log": @{@"level": @"warn"},
+        @"log": @{@"level": @"info"},
         @"inbounds": @[
             @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
         ],
         @"outbounds": outbounds,
-        @"dns": dnsConfig,
         @"route": routeConfig
     };
 
@@ -440,10 +751,13 @@
 - (void)forceProxyOff {
     NSString *iface = [self getActiveNetworkInterface];
     NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxy '%@' '' 0 && "
+        @"networksetup -setsecurewebproxy '%@' '' 0 && "
+        @"networksetup -setsocksfirewallproxy '%@' '' 0 && "
         @"networksetup -setwebproxystate '%@' off ; "
         @"networksetup -setsecurewebproxystate '%@' off ; "
         @"networksetup -setsocksfirewallproxystate '%@' off",
-        iface, iface, iface];
+        iface, iface, iface, iface, iface, iface];
     [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:nil];
 }
 
@@ -451,10 +765,13 @@
     if (self.singBoxTask && [self.singBoxTask isRunning]) [self.singBoxTask terminate];
     NSString *iface = [self getActiveNetworkInterface];
     NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxy '%@' '' 0 && "
+        @"networksetup -setsecurewebproxy '%@' '' 0 && "
+        @"networksetup -setsocksfirewallproxy '%@' '' 0 && "
         @"networksetup -setwebproxystate '%@' off ; "
         @"networksetup -setsecurewebproxystate '%@' off ; "
         @"networksetup -setsocksfirewallproxystate '%@' off",
-        iface, iface, iface];
+        iface, iface, iface, iface, iface, iface];
     NSDictionary *err = nil;
     [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
     if (err) { self.statusLabel.stringValue = @"Ошибка сброса прокси!"; return NO; }
@@ -482,3 +799,52 @@
     }
 }
 @end
+</file>
+
+<file path=".github/workflows/build.yml">
+name: Build PauloVPN
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Go 1.20
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+    - name: Build VPN Core
+      run: |
+        git clone -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
+        cd core-build
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+    - name: Compile App
+      run: |
+        mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
+        echo "APPL????" > AirVPN.app/Contents/PkgInfo
+        cp Info.plist AirVPN.app/Contents/Info.plist
+        cp sing-box AirVPN.app/Contents/Resources/sing-box
+        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
+        chmod +x AirVPN.app/Contents/Resources/sing-box
+        
+        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m -arch x86_64 -mmacosx-version-min=10.13 -o AirVPN.app/Contents/MacOS/AirVPN
+        codesign --force --deep -s - AirVPN.app
+        zip -r "PauloVPN-macOS-10.13-${{ github.ref_name }}.zip" AirVPN.app
+    - name: Release version
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: "PauloVPN ${{ github.ref_name }} (K.I.S.S Manual Mode)"
+        body: "Официальный релиз v9.0.\n- Полностью удален модуль auto-switch (urltest). Выбор сервера происходит исключительно вручную.\n- Полностью удален модуль dns из конфигурации ядра.\n- Потребление CPU снижено практически до нуля.\n- Полный сброс адресации прокси при выключении."
+        files: PauloVPN-macOS-10.13-*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+</file>
+
+</files>
