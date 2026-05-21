@@ -34,7 +34,7 @@
     [effectView addSubview:titleLabel];
 
     self.urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 290, 250, 24)];
-    self.urlField.placeholderString = @"Ссылка vless:// или подписка...";
+    self.urlField.placeholderString = @"Ссылка vless:// или подписку...";
     [effectView addSubview:self.urlField];
 
     NSButton *importBtn = [[NSButton alloc] initWithFrame:NSMakeRect(60, 255, 160, 30)];
@@ -104,6 +104,9 @@
     [fm createDirectoryAtURL:appSupport withIntermediateDirectories:YES attributes:nil error:nil];
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath    = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
+
+    // Очищаем прокси при старте на всякий случай
+    [self forceProxyOff];
 
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
     if (savedURL) {
@@ -200,7 +203,6 @@
 - (void)handleParsedJSON:(NSMutableDictionary *)json {
     self.proxyTags = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
-
     for (NSDictionary *o in json[@"outbounds"]) {
         NSString *type = o[@"type"], *tag = o[@"tag"];
         if (tag && ([type isEqualToString:@"vless"] || [type isEqualToString:@"vmess"] || [type isEqualToString:@"trojan"] || [type isEqualToString:@"shadowsocks"])) {
@@ -208,7 +210,6 @@
             [self.proxyOutbounds addObject:o];
         }
     }
-
     [self.serverDropdown removeAllItems];
     if (self.proxyTags.count > 0) {
         [self.serverDropdown addItemsWithTitles:self.proxyTags];
@@ -250,6 +251,20 @@
     if (self.isConnected) [self stopVPN]; else [self startVPN];
 }
 
+- (NSString *)getActiveNetworkInterface {
+    NSTask *t = [[NSTask alloc] init];
+    t.launchPath = @"/usr/sbin/networksetup";
+    t.arguments = @[@"-listnetworkserviceorder"];
+    NSPipe *p = [NSPipe pipe];
+    t.standardOutput = p;
+    [t launch];
+    NSString *out = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
+    if ([out containsString:@"Wi-Fi"]) return @"Wi-Fi";
+    if ([out containsString:@"Ethernet"]) return @"Ethernet";
+    return @"Wi-Fi";
+}
+
+// Запуск Ядра БЕЗ TUN и БЕЗ прав root!
 - (void)startCoreOnly {
     if (self.singBoxTask && [self.singBoxTask isRunning]) {
         [self.singBoxTask terminate];
@@ -277,45 +292,27 @@
         @{@"type": @"dns", @"tag": @"dns-out"}
     ];
 
-    // [CTO FIX]: TUN Interface (Чистый, как на Android)
-    // gVisor работает лучше для TCP/UDP перехвата на старых системах
-    NSArray *inbounds = @[
-        @{
-            @"type": @"tun",
-            @"tag": @"tun-in",
-            @"interface_name": @"utun9",
-            @"inet4_address": @"172.19.0.1/30",
-            @"auto_route": @YES,
-            @"strict_route": @YES,
-            @"stack": @"system", 
-            @"sniff": @YES
-        }
-    ];
-
-    // Fake-IP DNS для TUN (мгновенный резолвинг)
+    // [DNS FIX]: Используем системный резолвер macOS. 
     NSDictionary *dnsConfig = @{
         @"servers": @[
-            @{@"tag": @"remote-dns", @"address": @"tls://8.8.8.8", @"detour": activeTag},
+            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"},
             @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
         ],
         @"rules": @[
-            @{@"outbound": @[@"any"], @"server": @"local-dns"}
-        ],
-        @"strategy": @"ipv4_only"
+            @{@"domain_suffix": @[@"gsupport.support", @".ru", @".su", @".рф"], @"server": @"local-dns"}
+        ]
     };
 
     NSMutableArray *rules = [NSMutableArray array];
     [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
 
-    // [LOOP PREVENTION]: Процесс самого sing-box идет напрямую (bypass)
-    // Это аналог Bypass Private Route, но на уровне приложения.
-    [rules addObject:@{@"port": @[ @(443), @(80) ], @"network": @"tcp", @"outbound": @"direct", @"process_name": @[@"sing-box", @"AirVPN"]}];
-    
-    // Локальные адреса идут напрямую
-    [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
+    // [LOOP PREVENTION]: Защита от петли - адрес сервера идет напрямую!
+    NSString *activeServerHost = activeOutbound[@"server"] ?: @"";
+    if (activeServerHost.length > 0) {
+        [rules addObject:@{@"domain": @[activeServerHost], @"outbound": @"direct"}];
+    }
 
     NSMutableDictionary *routeConfig = [NSMutableDictionary dictionary];
-    routeConfig[@"auto_detect_interface"] = @YES;
 
     if (self.stealthCheckbox.state == NSControlStateValueOn) {
         NSArray *blockedDomains = @[
@@ -328,7 +325,6 @@
             @"twitter.com", @"x.com", @"twimg.com",
             @"discord.com", @"discordapp.com", @"discord.gg", @"rutracker.org", @"rutracker.cc"
         ];
-        
         NSArray *telegramIPs = @[
             @"91.108.4.0/22", @"91.108.8.0/22", @"91.108.12.0/22", @"91.108.16.0/22", @"91.108.20.0/22", 
             @"91.108.36.0/23", @"91.108.56.0/22", @"149.154.160.0/20", @"149.154.164.0/22", @"149.154.172.0/22", @"185.76.8.0/22"
@@ -336,18 +332,22 @@
         
         [rules addObject:@{@"domain_suffix": blockedDomains, @"outbound": activeTag}];
         [rules addObject:@{@"ip_cidr": telegramIPs, @"outbound": activeTag}];
+        
         routeConfig[@"rules"] = rules;
-        // MATCH -> DIRECT (Остальное напрямую)
         routeConfig[@"final"] = @"direct";
     } else {
+        [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8"], @"outbound": @"direct"}];
         routeConfig[@"rules"] = rules;
-        // MATCH -> PROXY (Всё в VPN)
         routeConfig[@"final"] = activeTag;
     }
 
     NSDictionary *config = @{
         @"log": @{@"level": @"debug"},
-        @"inbounds": inbounds,
+        @"inbounds": @[
+            // Только SOCKS и HTTP (без TUN!)
+            @{@"type": @"socks", @"tag": @"socks-in", @"listen": @"127.0.0.1", @"listen_port": @10808},
+            @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
+        ],
         @"outbounds": outbounds,
         @"dns": dnsConfig,
         @"route": routeConfig
@@ -359,29 +359,73 @@
     [data writeToFile:self.configPath atomically:YES];
 
     NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    
-    // Запускаем через Root, так как TUN требует прав
-    NSString *shellCommand = [NSString stringWithFormat:
-        @"killall -9 sing-box 2>/dev/null || true ; "
-        @"nohup '%@' run -c '%@' > '%@' 2>&1 &", 
-        bin, self.configPath, self.logPath];
-        
-    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
-    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
-    [script executeAndReturnError:nil];
+    self.singBoxTask = [[NSTask alloc] init];
+    self.singBoxTask.launchPath = bin;
+    self.singBoxTask.arguments = @[@"run", @"-c", self.configPath];
+
+    [[NSFileManager defaultManager] createFileAtPath:self.logPath contents:nil attributes:nil];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
+    self.singBoxTask.standardOutput = fh;
+    self.singBoxTask.standardError = fh;
+
+    __weak typeof(self) ws = self;
+    self.singBoxTask.terminationHandler = ^(NSTask *task) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (ws.isConnected) {
+                ws.statusLabel.stringValue = @"Сбой ядра! Перезапустите.";
+                ws.statusLabel.textColor = [NSColor redColor];
+                [ws forceProxyOff];
+                [ws updateUIConnected:NO];
+            }
+        });
+    };
+    // Запускаем от обычного юзера!
+    [self.singBoxTask launch];
 }
 
 - (void)startVPN {
     if (self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск...";
     [self startCoreOnly];
-    [self updateUIConnected:YES];
+
+    // Устанавливаем системный прокси macOS через AppleScript (один запрос пароля)
+    NSString *iface = [self getActiveNetworkInterface];
+    NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808",
+        iface, iface, iface];
+    NSDictionary *err = nil;
+    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
+    if (!err) {
+        [self updateUIConnected:YES];
+    } else {
+        self.statusLabel.stringValue = @"Отменено / Ошибка";
+        [self forceProxyOff];
+    }
+}
+
+- (void)forceProxyOff {
+    NSString *iface = [self getActiveNetworkInterface];
+    NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxystate '%@' off ; "
+        @"networksetup -setsecurewebproxystate '%@' off ; "
+        @"networksetup -setsocksfirewallproxystate '%@' off",
+        iface, iface, iface];
+    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:nil];
 }
 
 - (BOOL)stopVPN {
-    NSString *scriptSource = @"do shell script \"killall -9 sing-box 2>/dev/null || true\" with administrator privileges";
-    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:scriptSource];
-    [script executeAndReturnError:nil];
+    if (self.singBoxTask && [self.singBoxTask isRunning]) [self.singBoxTask terminate];
+    NSString *iface = [self getActiveNetworkInterface];
+    NSString *cmd = [NSString stringWithFormat:
+        @"networksetup -setwebproxystate '%@' off ; "
+        @"networksetup -setsecurewebproxystate '%@' off ; "
+        @"networksetup -setsocksfirewallproxystate '%@' off",
+        iface, iface, iface];
+    NSDictionary *err = nil;
+    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
+    if (err) { self.statusLabel.stringValue = @"Ошибка сброса прокси!"; return NO; }
     [self updateUIConnected:NO];
     return YES;
 }

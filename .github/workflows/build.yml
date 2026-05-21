@@ -26,6 +26,7 @@ jobs:
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
+        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m -arch x86_64 -mmacosx-version-min=10.13 -o AirVPN.app/Contents/MacOS/AirVPN
@@ -35,8 +36,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (TUN Master)"
-        body: "Официальный релиз v0.1.\n- Полный отказ от System Proxy (никаких настроек networksetup, интернет не ломается).\n- Внедрен TUN-режим с защитой от петель по заветам консультанта.\n- Компактный интерфейс с исчезающим окном."
+        name: "PauloVPN ${{ github.ref_name }} (The Absolute Zero)"
+        body: "Официальный релиз v1.0.\n- Возврат на стабильный System Proxy (без TUN).\n- Ядро стартует без прав root.\n- Полный обход петель маршрутизации.\n- Уменьшенный интерфейс 280x380 с авто-сворачиванием."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
