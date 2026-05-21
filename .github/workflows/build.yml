@@ -28,15 +28,17 @@ jobs:
         cp sing-box AirVPN.app/Contents/Resources/sing-box
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
-        clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m -arch x86_64 -mmacosx-version-min=10.13 -o AirVPN.app/Contents/MacOS/AirVPN
+        # [LINKER FIX]: Добавлен -framework SystemConfiguration
+        clang -fobjc-arc -framework Cocoa -framework SystemConfiguration main.m AppDelegate.m ViewController.m -arch x86_64 -mmacosx-version-min=10.13 -o AirVPN.app/Contents/MacOS/AirVPN
+        
         codesign --force --deep -s - AirVPN.app
         zip -r "PauloVPN-macOS-10.13-${{ github.ref_name }}.zip" AirVPN.app
     - name: Release version
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Expert Polish)"
-        body: "Официальный релиз v0.5.\n- Избавились от двойного пароля при старте и остановке.\n- Приложение корректно понимает, крашнулось ли ядро, прежде чем показывать 'Подключено'.\n- Пароль при открытии приложения убран (используется SCDynamicStoreCopyProxies).\n- Возвращен текст настройки Telegram."
+        name: "PauloVPN ${{ github.ref_name }} (Compiler Fix)"
+        body: "Официальный релиз v0.5.1.\n- Исправлена ошибка линковщика (добавлен SystemConfiguration.framework).\n- Устранен запрос пароля при запуске приложения."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
