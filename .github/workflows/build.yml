@@ -19,14 +19,14 @@ jobs:
       run: |
         git clone -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality,with_multiplex -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
+        # Убрали multiplex для стабильности VLESS
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App
       run: |
         mkdir -p AirVPN.app/Contents/MacOS AirVPN.app/Contents/Resources
         echo "APPL????" > AirVPN.app/Contents/PkgInfo
         cp Info.plist AirVPN.app/Contents/Info.plist
         cp sing-box AirVPN.app/Contents/Resources/sing-box
-        curl -k -sL https://github.com/yichengchen/clashX/raw/master/ClashX/ClashX.icns -o AirVPN.app/Contents/Resources/AppIcon.icns
         chmod +x AirVPN.app/Contents/Resources/sing-box
         
         clang -fobjc-arc -framework Cocoa main.m AppDelegate.m ViewController.m -arch x86_64 -mmacosx-version-min=10.13 -o AirVPN.app/Contents/MacOS/AirVPN
@@ -36,8 +36,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Y-Combinator Architecture)"
-        body: "Официальный релиз v10.0.\n- Полный рефакторинг по заветам консультанта.\n- Идеальная иерархия правил: Domain -> Proxy, RU -> Direct, Match -> Direct.\n- Убран неработающий на 10.13 TUN, используется стабильный System Proxy.\n- Внедрен обход приватных адресов (Bypass Private Route)."
+        name: "PauloVPN ${{ github.ref_name }} (OS Loop Fix & Debug Edition)"
+        body: "Официальный релиз v11.0.\n- Внедрен `networksetup -setproxybypassdomains`, который устраняет бесконечные петли и таймауты на уровне самой macOS.\n- Окно автоматически сворачивается при клике мимо него (Transient).\n- Уровень логов переключен на DEBUG для полного контроля за потоком трафика.\n- Компактный и эстетичный интерфейс (280x380)."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
