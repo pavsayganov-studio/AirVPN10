@@ -35,8 +35,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (Pure Global TUN)"
-        body: "Официальный релиз v0.3.\n- Умный режим вырезан. Работает только Глобальный режим.\n- Возвращен TUN интерфейс со стеком `mixed` (как на Android).\n- Ядро больше не перезаписывает DNS и правила провайдера.\n- Убраны SOCKS5 костыли для Telegram. Telegram работает автоматически из коробки.\n- Решена проблема двойного запроса пароля."
+        name: "PauloVPN ${{ github.ref_name }} (Global Proxy Master)"
+        body: "Официальный релиз v0.4.\n- Устранен баг двойного пароля (ядро запускается без root).\n- Архитектура переведена на 100% стабильный Системный Прокси.\n- Умный режим удален для максимальной отказоустойчивости."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
