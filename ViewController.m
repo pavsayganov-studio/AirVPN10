@@ -1,4 +1,5 @@
 #import "ViewController.h"
+#import <SystemConfiguration/SystemConfiguration.h>
 
 @interface ViewController ()
 @property (strong) NSTextField *urlField;
@@ -11,13 +12,11 @@
 @property (strong) NSMutableArray *proxyTags;
 @property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL isConnected;
-@property (strong) NSTask *singBoxTask;
 @end
 
 @implementation ViewController
 
 - (void)loadView {
-    // Компактный минималистичный UI (280x350)
     NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 280, 350)];
     effectView.material = NSVisualEffectMaterialDark;
     effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
@@ -97,7 +96,7 @@
     self.configPath = [[appSupport URLByAppendingPathComponent:@"config.json"] path];
     self.logPath    = [[appSupport URLByAppendingPathComponent:@"vpn.log"] path];
 
-    // [ОТКАЗОУСТОЙЧИВОСТЬ]: Сбрасываем системные прокси при старте на случай краша
+    // Сброс прокси при старте (если остались от прошлого краша)
     [self forceProxyOff];
 
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:@"SubscriptionURL"];
@@ -262,11 +261,6 @@
     if (self.proxyTags.count == 0) { self.statusLabel.stringValue = @"Сначала загрузите серверы."; return; }
     self.statusLabel.stringValue = @"Запуск...";
 
-    if (self.singBoxTask && [self.singBoxTask isRunning]) {
-        [self.singBoxTask terminate];
-        [self.singBoxTask waitUntilExit];
-    }
-
     NSString *activeTag = self.serverDropdown.titleOfSelectedItem ?: @"";
     if (activeTag.length == 0) return;
 
@@ -276,43 +270,12 @@
     }
     if (!activeOutbound) return;
 
+    // [CTO ARCHITECTURE]: Только SOCKS и HTTP Прокси. Никакого TUN.
     NSArray *outbounds = @[
         activeOutbound,
-        @{@"type": @"direct", @"tag": @"direct"},
-        @{@"type": @"dns", @"tag": @"dns-out"}
+        @{@"type": @"direct", @"tag": @"direct"}
     ];
 
-    // ПРОСТОЙ И НАДЕЖНЫЙ DNS (Никаких петель)
-    NSDictionary *dnsConfig = @{
-        @"servers": @[
-            @{@"tag": @"remote-dns", @"address": @"8.8.8.8", @"detour": @"direct"},
-            @{@"tag": @"local-dns", @"address": @"local", @"detour": @"direct"}
-        ],
-        @"rules": @[
-            @{@"domain_suffix": @[@"gsupport.support", @".ru", @".su", @".рф"], @"server": @"local-dns"}
-        ]
-    };
-
-    NSMutableArray *rules = [NSMutableArray array];
-    [rules addObject:@{@"protocol": @[@"dns"], @"outbound": @"dns-out"}];
-
-    // [ОБХОД ПЕТЛИ СЕРВЕРА]: IP и домен сервера всегда идут напрямую
-    NSString *serverHost = activeOutbound[@"server"] ?: @"";
-    if (serverHost.length > 0) {
-        [rules addObject:@{@"domain": @[serverHost], @"outbound": @"direct"}];
-    }
-    
-    // [ОБХОД ЛОКАЛЬНОЙ СЕТИ]: Принтеры и локалка остаются рабочими
-    [rules addObject:@{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}];
-
-    // ГЛОБАЛЬНЫЙ РЕЖИМ (Всё остальное в туннель)
-    NSDictionary *routeConfig = @{
-        @"rules": rules,
-        @"final": activeTag,
-        @"auto_detect_interface": @YES
-    };
-
-    // ТОЛЬКО HTTP и SOCKS5 (Никакого TUN = никаких прав Root)
     NSDictionary *config = @{
         @"log": @{@"level": @"info"},
         @"inbounds": @[
@@ -320,8 +283,12 @@
             @{@"type": @"http", @"tag": @"http-in", @"listen": @"127.0.0.1", @"listen_port": @10809}
         ],
         @"outbounds": outbounds,
-        @"dns": dnsConfig,
-        @"route": routeConfig
+        @"route": @{
+            @"rules": @[
+                @{@"ip_cidr": @[@"127.0.0.0/8", @"192.168.0.0/16", @"10.0.0.0/8", @"172.16.0.0/12"], @"outbound": @"direct"}
+            ],
+            @"final": activeTag
+        }
     };
 
     NSError *je = nil;
@@ -330,46 +297,26 @@
     [data writeToFile:self.configPath atomically:YES];
 
     NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    
-    // 1. ЗАПУСК ЯДРА ОТ ИМЕНИ ОБЫЧНОГО ЮЗЕРА (Прямой контроль, без sudo, без двойного пароля)
-    self.singBoxTask = [[NSTask alloc] init];
-    self.singBoxTask.launchPath = bin;
-    self.singBoxTask.arguments = @[@"run", @"-c", self.configPath];
-
-    [[NSFileManager defaultManager] createFileAtPath:self.logPath contents:nil attributes:nil];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
-    self.singBoxTask.standardOutput = fh;
-    self.singBoxTask.standardError = fh;
-
-    __weak typeof(self) ws = self;
-    self.singBoxTask.terminationHandler = ^(NSTask *task) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (ws.isConnected) {
-                ws.statusLabel.stringValue = @"Сбой ядра! Перезапустите.";
-                ws.statusLabel.textColor = [NSColor redColor];
-                [ws forceProxyOff];
-                [ws updateUIConnected:NO];
-            }
-        });
-    };
-    [self.singBoxTask launch];
-
-    // 2. ПРОПИСЫВАЕМ СИСТЕМНЫЕ ПРОКСИ (Единственный раз, когда нужен пароль)
     NSString *iface = [self getActiveNetworkInterface];
-    NSString *cmd = [NSString stringWithFormat:
+    
+    // [ONE SCRIPT TO RULE THEM ALL]: Убиваем старое, пишем прокси, запускаем новое. Один пароль!
+    NSString *shellCommand = [NSString stringWithFormat:
+        @"killall -9 sing-box 2>/dev/null || true ; "
         @"networksetup -setwebproxy '%@' 127.0.0.1 10809 ; "
         @"networksetup -setsecurewebproxy '%@' 127.0.0.1 10809 ; "
-        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808",
-        iface, iface, iface];
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 10808 ; "
+        @"nohup '%@' run -c '%@' > '%@' 2>&1 &", 
+        iface, iface, iface, bin, self.configPath, self.logPath];
+        
+    NSString *scriptSource = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", shellCommand];
     NSDictionary *err = nil;
-    [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
-    
+    [[[NSAppleScript alloc] initWithSource:scriptSource] executeAndReturnError:&err];
+
     if (!err) {
         [self updateUIConnected:YES];
     } else {
         self.statusLabel.stringValue = @"Отменено / Ошибка";
         [self forceProxyOff];
-        [self stopVPN];
     }
 }
 
@@ -384,22 +331,16 @@
 }
 
 - (BOOL)stopVPN {
-    // Убиваем ядро как обычный юзер (Без пароля!)
-    if (self.singBoxTask && [self.singBoxTask isRunning]) {
-        [self.singBoxTask terminate];
-        [self.singBoxTask waitUntilExit];
-    }
-    
-    // Сбрасываем прокси (Пароль потребуется 1 раз)
+    // Безопасная остановка через AppleScript
     NSString *iface = [self getActiveNetworkInterface];
     NSString *cmd = [NSString stringWithFormat:
+        @"killall -9 sing-box 2>/dev/null || true ; "
         @"networksetup -setwebproxystate '%@' off ; "
         @"networksetup -setsecurewebproxystate '%@' off ; "
         @"networksetup -setsocksfirewallproxystate '%@' off",
         iface, iface, iface];
     NSDictionary *err = nil;
     [[[NSAppleScript alloc] initWithSource:[NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", cmd]] executeAndReturnError:&err];
-    
     if (err) { self.statusLabel.stringValue = @"Ошибка сброса прокси!"; return NO; }
     [self updateUIConnected:NO];
     return YES;
