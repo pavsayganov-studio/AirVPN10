@@ -19,7 +19,6 @@ jobs:
       run: |
         git clone -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
-        # Убрали multiplex для стабильности VLESS
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags with_utls,with_grpc,with_reality -trimpath -ldflags="-s -w" -o ../sing-box ./cmd/sing-box
     - name: Compile App
       run: |
@@ -36,8 +35,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }} (OS Loop Fix & Debug Edition)"
-        body: "Официальный релиз v11.0.\n- Внедрен `networksetup -setproxybypassdomains`, который устраняет бесконечные петли и таймауты на уровне самой macOS.\n- Окно автоматически сворачивается при клике мимо него (Transient).\n- Уровень логов переключен на DEBUG для полного контроля за потоком трафика.\n- Компактный и эстетичный интерфейс (280x380)."
+        name: "PauloVPN ${{ github.ref_name }} (TUN Master)"
+        body: "Официальный релиз v0.1.\n- Полный отказ от System Proxy (никаких настроек networksetup, интернет не ломается).\n- Внедрен TUN-режим с защитой от петель по заветам консультанта.\n- Компактный интерфейс с исчезающим окном."
         files: PauloVPN-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
