@@ -1,3 +1,23 @@
+#!/bin/bash
+# =============================================================================
+# Raketa v0.8.1 — Fix 3 compiler errors from v0.8.0
+# Run from repo root: bash patch_raketa_081.sh
+# =============================================================================
+set -e
+G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; R='\033[0;31m'; N='\033[0m'
+
+echo -e "${C}╔══════════════════════════════════════════╗"
+echo -e "║   Raketa v0.8.1 — Compiler Fix Patch     ║"
+echo -e "╚══════════════════════════════════════════╝${N}\n"
+
+[ ! -f "ViewController.m" ] && echo -e "${R}✗ Run from repo root${N}" && exit 1
+
+cp ViewController.m ViewController.m.bak081
+cp Info.plist Info.plist.bak081
+echo -e "${G}✓ Backups created${N}\n"
+
+echo -e "${Y}→ ViewController.m (3 fixes)${N}"
+cat > ViewController.m << 'EOF'
 #import "ViewController.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 
@@ -800,3 +820,101 @@ static dispatch_queue_t sTaskQ;
     return b;
 }
 @end
+EOF
+echo -e "${G}✓ ViewController.m${N}"
+
+# =============================================================================
+echo -e "${Y}→ Info.plist (v0.8.1)${N}"
+cat > Info.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>         <string>Raketa</string>
+    <key>CFBundleIdentifier</key>         <string>com.samurai.raketa</string>
+    <key>CFBundleName</key>               <string>Raketa</string>
+    <key>CFBundleDisplayName</key>        <string>Raketa</string>
+    <key>CFBundleVersion</key>            <string>0.8.1</string>
+    <key>CFBundleShortVersionString</key> <string>0.8.1</string>
+    <key>CFBundlePackageType</key>        <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>     <string>10.13.0</string>
+    <key>LSUIElement</key>                <true/>
+    <key>CFBundleIconFile</key>           <string>AppIcon</string>
+    <key>NSHumanReadableCopyright</key>   <string>Raketa — Ради вас старался Пашенька</string>
+</dict>
+</plist>
+EOF
+echo -e "${G}✓ Info.plist${N}"
+
+# =============================================================================
+echo -e "${Y}→ build.yml (v0.8.1)${N}"
+sed -i 's/0\.8\.0/0.8.1/g' .github/workflows/build.yml 2>/dev/null || true
+# Rewrite fully to be safe
+cat > .github/workflows/build.yml << 'EOF'
+name: Build Raketa
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Go 1.20
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+    - name: Build sing-box core
+      run: |
+        git clone --depth=1 -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
+        cd core-build
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+          go build -tags "with_utls,with_grpc,with_reality" \
+          -trimpath -ldflags="-s -w" \
+          -o ../sing-box ./cmd/sing-box
+    - name: Compile app
+      run: |
+        mkdir -p Raketa.app/Contents/MacOS Raketa.app/Contents/Resources
+        echo "APPL????" > Raketa.app/Contents/PkgInfo
+        cp Info.plist Raketa.app/Contents/Info.plist
+        cp sing-box   Raketa.app/Contents/Resources/sing-box
+        chmod +x      Raketa.app/Contents/Resources/sing-box
+        clang -fobjc-arc \
+          -framework Cocoa \
+          -framework SystemConfiguration \
+          -arch x86_64 -mmacosx-version-min=10.13 \
+          -o Raketa.app/Contents/MacOS/Raketa \
+          main.m AppDelegate.m ViewController.m
+        codesign --force --deep -s - Raketa.app
+        zip -r "Raketa-macOS-10.13-${{ github.ref_name }}.zip" Raketa.app
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: "🚀 Raketa ${{ github.ref_name }}"
+        body: |
+          ## 🚀 Raketa ${{ github.ref_name }}
+          ### v0.8.1 — Compiler fixes
+          - Fixed: `cText` name clash with AERegistry.h `OSType` enum — colors renamed `rk*`
+          - Fixed: `copySecretBtn` property violated ARC naming convention — renamed `secretCopyBtn`
+          - Fixed: `contentTintColor` is macOS 10.14+ only — removed, uses system tint on 10.13
+          - All v0.8.0 CPU and correctness fixes retained
+        files: Raketa-macOS-10.13-*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+EOF
+echo -e "${G}✓ build.yml${N}"
+
+echo ""
+echo -e "${C}╔══════════════════════════════════════════════════════╗"
+echo -e "║  Patch applied. Next:                                ║"
+echo -e "╠══════════════════════════════════════════════════════╣"
+echo -e "║  git add -A                                          ║"
+echo -e "║  git commit -m 'v0.8.1: fix 3 compiler errors'      ║"
+echo -e "║  git tag v0.8.1                                      ║"
+echo -e "║  git push origin main --tags                         ║"
+echo -e "╚══════════════════════════════════════════════════════╝${N}"

@@ -9,37 +9,38 @@ static NSString *const kTGSecret   = @"dd000000000000000000000000000000";
 static NSString *const kSubKey     = @"RaketaSubscriptionURL";
 
 // ── Layout ────────────────────────────────────────────────────────────────────
-static const CGFloat kW   = 300.0;
-static const CGFloat kH   = 370.0;
-static const CGFloat kHTG = 158.0;
-static const CGFloat kPAD = 16.0;
+static const CGFloat kW      = 300.0;
+static const CGFloat kH      = 370.0;   // base height (without TG panel)
+static const CGFloat kHTG    = 158.0;   // TG panel height
+static const CGFloat kPAD    = 16.0;
 
-// ── Colors — prefixed rk_ to avoid conflict with AERegistry.h OSType enums ───
-// (AERegistry.h defines cText='ctxt', cSub, etc. as OSType — we must not clash)
-static NSColor *rkBG, *rkSurface, *rkCard, *rkBorder,
-               *rkText, *rkSub, *rkAccent, *rkGreen, *rkOrange, *rkRed, *rkBtn;
+// ── Colors — allocated once at +initialize, never again ───────────────────────
+static NSColor *cBG, *cSurface, *cCard, *cBorder,
+               *cText, *cSub, *cAccent, *cGreen, *cOrange, *cRed, *cBtn;
 
-// ── Serial queue for all NSTask work (never block main thread) ────────────────
+// ── Background serial queue for all NSTask work ───────────────────────────────
+// NSTimer fires on the main run loop; we offload NSTask to avoid any UI jank.
 static dispatch_queue_t sTaskQ;
 
 @interface ViewController ()
+// UI
 @property (strong) NSTextField    *urlField;
 @property (strong) NSTextField    *statusLabel;
 @property (strong) NSView         *statusDot;
 @property (strong) NSButton       *connectBtn;
 @property (strong) NSPopUpButton  *dropdown;
-// FIX: was "copySecretBtn" — Cocoa ARC treats "copy" prefix as memory ownership
-// method family, causing a compiler error. Renamed to "secretCopyBtn".
-@property (strong) NSButton       *secretCopyBtn;
+@property (strong) NSButton       *copySecretBtn;   // direct ref — no subview search
+// State
 @property (strong) NSString       *configPath;
 @property (strong) NSString       *logPath;
-@property (strong) NSString       *cachedIface;
+@property (strong) NSString       *cachedIface;     // cached — avoids repeated NSTask forks
 @property (strong) NSMutableArray *proxyTags;
 @property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL            connected;
-@property (assign) BOOL            stopping;
-@property (assign) pid_t           corePID;
+@property (assign) BOOL            stopping;        // guard against double-stop
+@property (assign) pid_t           corePID;         // saved PID — kill(pid,0) instead of pgrep
 @property (strong) NSTimer        *watchdog;
+// TG panel
 @property (strong) NSView         *tgPanel;
 @property (strong) NSButton       *tgToggleBtn;
 @property (assign) BOOL            tgOpen;
@@ -48,26 +49,29 @@ static dispatch_queue_t sTaskQ;
 @implementation ViewController
 
 // =============================================================================
-#pragma mark - Class init — colors & queue, once per process
+#pragma mark - Class init — colors & queue, executed once
 // =============================================================================
 + (void)initialize {
     if (self != [ViewController class]) return;
-    rkBG      = [NSColor colorWithRed:0.08 green:0.08 blue:0.10 alpha:1.0];
-    rkSurface = [NSColor colorWithRed:0.12 green:0.12 blue:0.15 alpha:1.0];
-    rkCard    = [NSColor colorWithRed:0.10 green:0.10 blue:0.13 alpha:1.0];
-    rkBorder  = [NSColor colorWithRed:0.20 green:0.20 blue:0.26 alpha:1.0];
-    rkText    = [NSColor colorWithWhite:0.92 alpha:1.0];
-    rkSub     = [NSColor colorWithWhite:0.45 alpha:1.0];
-    rkAccent  = [NSColor colorWithRed:0.28 green:0.60 blue:0.95 alpha:1.0];
-    rkGreen   = [NSColor colorWithRed:0.14 green:0.82 blue:0.42 alpha:1.0];
-    rkOrange  = [NSColor colorWithRed:0.98 green:0.62 blue:0.20 alpha:1.0];
-    rkRed     = [NSColor colorWithRed:0.95 green:0.32 blue:0.32 alpha:1.0];
-    rkBtn     = [NSColor colorWithRed:0.14 green:0.14 blue:0.18 alpha:1.0];
-    sTaskQ    = dispatch_queue_create("com.samurai.raketa.tasks", DISPATCH_QUEUE_SERIAL);
+
+    // All colors created exactly once per process lifetime
+    cBG      = [NSColor colorWithRed:0.08 green:0.08 blue:0.10 alpha:1.0];
+    cSurface = [NSColor colorWithRed:0.12 green:0.12 blue:0.15 alpha:1.0];
+    cCard    = [NSColor colorWithRed:0.10 green:0.10 blue:0.13 alpha:1.0];
+    cBorder  = [NSColor colorWithRed:0.20 green:0.20 blue:0.26 alpha:1.0];
+    cText    = [NSColor colorWithWhite:0.92 alpha:1.0];
+    cSub     = [NSColor colorWithWhite:0.45 alpha:1.0];
+    cAccent  = [NSColor colorWithRed:0.28 green:0.60 blue:0.95 alpha:1.0];
+    cGreen   = [NSColor colorWithRed:0.14 green:0.82 blue:0.42 alpha:1.0];
+    cOrange  = [NSColor colorWithRed:0.98 green:0.62 blue:0.20 alpha:1.0];
+    cRed     = [NSColor colorWithRed:0.95 green:0.32 blue:0.32 alpha:1.0];
+    cBtn     = [NSColor colorWithRed:0.14 green:0.14 blue:0.18 alpha:1.0];
+
+    sTaskQ = dispatch_queue_create("com.samurai.raketa.tasks", DISPATCH_QUEUE_SERIAL);
 }
 
 // =============================================================================
-#pragma mark - Geometry (Y from top of base view)
+#pragma mark - Geometry helper (Y measured from top of base view)
 // =============================================================================
 - (NSRect)rx:(CGFloat)x top:(CGFloat)t w:(CGFloat)w h:(CGFloat)h {
     return NSMakeRect(x, kH - t - h, w, h);
@@ -79,21 +83,21 @@ static dispatch_queue_t sTaskQ;
 - (void)loadView {
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, kH)];
     root.wantsLayer = YES;
-    root.layer.backgroundColor = rkBG.CGColor;
+    root.layer.backgroundColor = cBG.CGColor;
 
     // ── Header ────────────────────────────────────────────────────────────────
     NSView *hdr = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-44, kW, 44)];
     hdr.wantsLayer = YES;
-    hdr.layer.backgroundColor = rkSurface.CGColor;
+    hdr.layer.backgroundColor = cSurface.CGColor;
     [root addSubview:hdr];
 
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
-                         color:rkText frame:NSMakeRect(kPAD, 12, 200, 20)]];
+                         color:cText frame:NSMakeRect(kPAD, 12, 200, 20)]];
 
-    NSTextField *ver = [self lbl:@"v0.8.1"
+    NSTextField *ver = [self lbl:@"v0.8.0"
                             font:[NSFont systemFontOfSize:10]
-                           color:rkSub frame:NSMakeRect(kW-52, 14, 38, 16)];
+                           color:cSub frame:NSMakeRect(kW-52, 14, 38, 16)];
     ver.alignment = NSTextAlignmentRight;
     [hdr addSubview:ver];
 
@@ -111,43 +115,44 @@ static dispatch_queue_t sTaskQ;
 
     // ── Server ────────────────────────────────────────────────────────────────
     [root addSubview:[self sectionLbl:@"СЕРВЕР" top:143]];
-    self.dropdown = [[NSPopUpButton alloc]
-                     initWithFrame:[self rx:kPAD top:155 w:kW-kPAD*2 h:26]
-                          pullsDown:NO];
+    self.dropdown = [[NSPopUpButton alloc] initWithFrame:[self rx:kPAD top:155 w:kW-kPAD*2 h:26]
+                                               pullsDown:NO];
     [self.dropdown addItemWithTitle:@"— серверы не загружены —"];
     self.dropdown.enabled = NO;
-    self.dropdown.font    = [NSFont systemFontOfSize:12];
-    self.dropdown.target  = self;
-    self.dropdown.action  = @selector(serverChanged);
+    self.dropdown.font = [NSFont systemFontOfSize:12];
+    self.dropdown.target = self;
+    self.dropdown.action = @selector(serverChanged);
     [root addSubview:self.dropdown];
 
     // ── Status ────────────────────────────────────────────────────────────────
+    // Dot: positioned absolutely — no rx: (avoids the double-set bug)
     CGFloat dotY = kH - 191 - 7;
     self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(kPAD, dotY, 7, 7)];
     self.statusDot.wantsLayer = YES;
     self.statusDot.layer.cornerRadius = 3.5;
-    self.statusDot.layer.backgroundColor = rkSub.CGColor;
+    self.statusDot.layer.backgroundColor = cSub.CGColor;
     [root addSubview:self.statusDot];
 
     self.statusLabel = [self lbl:@"Готов к работе"
                             font:[NSFont systemFontOfSize:11]
-                           color:rkSub
+                           color:cSub
                            frame:NSMakeRect(kPAD+13, dotY, kW-kPAD*2-13, 15)];
     [root addSubview:self.statusLabel];
 
     // ── Connect button ────────────────────────────────────────────────────────
-    CGFloat bx = (kW - 76) / 2.0;
-    self.connectBtn = [[NSButton alloc] initWithFrame:[self rx:bx top:210 w:76 h:76]];
+    CGFloat btnX = (kW - 76) / 2.0;
+    self.connectBtn = [[NSButton alloc] initWithFrame:[self rx:btnX top:210 w:76 h:76]];
     self.connectBtn.title    = @"";
     self.connectBtn.bordered = NO;
     self.connectBtn.wantsLayer = YES;
-    self.connectBtn.layer.cornerRadius    = 38;
-    self.connectBtn.layer.borderWidth     = 1.5;
-    self.connectBtn.layer.borderColor     = rkBorder.CGColor;
-    self.connectBtn.layer.backgroundColor = rkBtn.CGColor;
+    self.connectBtn.layer.cornerRadius   = 38;
+    self.connectBtn.layer.borderWidth    = 1.5;
+    self.connectBtn.layer.borderColor    = cBorder.CGColor;
+    self.connectBtn.layer.backgroundColor = cBtn.CGColor;
     self.connectBtn.target = self;
     self.connectBtn.action = @selector(toggle);
-    [self setConnectTitle:@"ВЫКЛ" color:rkSub];
+    // Use attributed title — contentTintColor is unreliable on 10.13 with borderedNO
+    [self setConnectBtnTitle:@"ВЫКЛ" color:cSub];
     [root addSubview:self.connectBtn];
 
     [root addSubview:[self sep:NSMakeRect(0, kH-298, kW, 1)]];
@@ -160,19 +165,20 @@ static dispatch_queue_t sTaskQ;
     [root addSubview:self.tgToggleBtn];
 
     // ── Bottom bar ────────────────────────────────────────────────────────────
-    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-340, kW, 26)];
+    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-340, kW, 24)];
+    // BUG FIX: was kH-340 for a 16px bar — correct
     bar.wantsLayer = YES;
-    bar.layer.backgroundColor = rkSurface.CGColor;
+    bar.layer.backgroundColor = cSurface.CGColor;
     [root addSubview:bar];
 
     NSButton *logBtn = [self btn:@"Логи"
-                           frame:NSMakeRect(kPAD, 3, 52, 20)
+                           frame:NSMakeRect(kPAD, 2, 52, 20)
                           action:@selector(openLogs) primary:NO];
     logBtn.font = [NSFont systemFontOfSize:10];
     [bar addSubview:logBtn];
 
     NSButton *quitBtn = [self btn:@"Выход"
-                            frame:NSMakeRect(kW-kPAD-60, 3, 60, 20)
+                            frame:NSMakeRect(kW-kPAD-60, 2, 60, 20)
                            action:@selector(quit) primary:NO];
     quitBtn.font = [NSFont systemFontOfSize:10];
     [bar addSubview:quitBtn];
@@ -181,7 +187,7 @@ static dispatch_queue_t sTaskQ;
     NSTextField *credit = [self lbl:@"Ради вас старался Пашенька"
                                font:[NSFont systemFontOfSize:9]
                               color:[NSColor colorWithWhite:0.22 alpha:1.0]
-                              frame:NSMakeRect(0, 2, kW, 12)];
+                              frame:NSMakeRect(0, kH-370, kW, 14)];
     credit.alignment = NSTextAlignmentCenter;
     [root addSubview:credit];
 
@@ -203,13 +209,13 @@ static dispatch_queue_t sTaskQ;
     self.configPath = [[sup URLByAppendingPathComponent:@"config.json"] path];
     self.logPath    = [[sup URLByAppendingPathComponent:@"raketa.log"]  path];
 
-    // Cache interface name once at startup
+    // Cache interface name once — avoids spawning networksetup on every VPN op
     self.cachedIface = [self detectIface];
 
-    // Reset proxy only if actually on (no spurious password prompt)
+    // Reset proxy only if it's actually on (avoids spurious password prompt)
     if ([self isProxyOn]) [self forceProxyOff];
 
-    // Load cached subscription off the main thread
+    // Load cached subscription asynchronously — never stall the main thread
     NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:kSubKey];
     if (savedURL.length) {
         self.urlField.stringValue = savedURL;
@@ -218,10 +224,8 @@ static dispatch_queue_t sTaskQ;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             NSData *d = [NSData dataWithContentsOfFile:subPath];
             if (!d) return;
-            NSMutableDictionary *j = [NSJSONSerialization
-                JSONObjectWithData:d
-                           options:NSJSONReadingMutableContainers
-                             error:nil];
+            NSMutableDictionary *j = [NSJSONSerialization JSONObjectWithData:d
+                options:NSJSONReadingMutableContainers error:nil];
             if (j) dispatch_async(dispatch_get_main_queue(), ^{ [self parsedJSON:j]; });
         });
     }
@@ -237,23 +241,24 @@ static dispatch_queue_t sTaskQ;
 - (void)buildTGPanel:(NSView *)root {
     self.tgPanel = [[NSView alloc] initWithFrame:NSMakeRect(0, -kHTG, kW, kHTG)];
     self.tgPanel.wantsLayer = YES;
-    self.tgPanel.layer.backgroundColor = rkCard.CGColor;
+    self.tgPanel.layer.backgroundColor = cCard.CGColor;
 
     NSView *topLine = [[NSView alloc] initWithFrame:NSMakeRect(0, kHTG-1, kW, 1)];
     topLine.wantsLayer = YES;
-    topLine.layer.backgroundColor = rkBorder.CGColor;
+    topLine.layer.backgroundColor = cBorder.CGColor;
     [self.tgPanel addSubview:topLine];
 
+    // Header
     [self.tgPanel addSubview:
      [self lbl:@"TELEGRAM — ПОДКЛЮЧЕНИЕ"
           font:[NSFont systemFontOfSize:9 weight:NSFontWeightSemibold]
-         color:rkAccent frame:NSMakeRect(kPAD, kHTG-22, kW-kPAD*2, 14)]];
+         color:cAccent frame:NSMakeRect(kPAD, kHTG-22, kW-kPAD*2, 14)]];
 
-    // Method 1: MTProxy
+    // ── Method 1: MTProxy ─────────────────────────────────────────────────────
     [self.tgPanel addSubview:
      [self lbl:@"Способ 1 — MTProxy (рекомендовано)"
           font:[NSFont systemFontOfSize:10 weight:NSFontWeightMedium]
-         color:rkText frame:NSMakeRect(kPAD, kHTG-38, kW-kPAD*2, 14)]];
+         color:cText frame:NSMakeRect(kPAD, kHTG-38, kW-kPAD*2, 14)]];
 
     [self.tgPanel addSubview:
      [self monoLbl:[NSString stringWithFormat:@"127.0.0.1  ·  %ld  ·  %@",
@@ -266,27 +271,27 @@ static dispatch_queue_t sTaskQ;
     openMT.font = [NSFont systemFontOfSize:10];
     [self.tgPanel addSubview:openMT];
 
-    // Direct property ref to avoid subview-search in copySecret
-    self.secretCopyBtn = [self btn:@"Копировать секрет"
+    // Direct property reference — no subview search needed in copySecret
+    self.copySecretBtn = [self btn:@"Копировать секрет"
                              frame:NSMakeRect(kPAD+154, kHTG-78, kW-kPAD*2-154, 22)
                             action:@selector(copySecret) primary:NO];
-    self.secretCopyBtn.font = [NSFont systemFontOfSize:10];
-    [self.tgPanel addSubview:self.secretCopyBtn];
+    self.copySecretBtn.font = [NSFont systemFontOfSize:10];
+    [self.tgPanel addSubview:self.copySecretBtn];
 
+    // Divider
     NSView *div = [[NSView alloc] initWithFrame:NSMakeRect(kPAD, kHTG-88, kW-kPAD*2, 1)];
     div.wantsLayer = YES;
-    div.layer.backgroundColor = rkBorder.CGColor;
+    div.layer.backgroundColor = cBorder.CGColor;
     [self.tgPanel addSubview:div];
 
-    // Method 2: SOCKS5
+    // ── Method 2: SOCKS5 ──────────────────────────────────────────────────────
     [self.tgPanel addSubview:
      [self lbl:@"Способ 2 — SOCKS5 (запасной)"
           font:[NSFont systemFontOfSize:10 weight:NSFontWeightMedium]
-         color:rkText frame:NSMakeRect(kPAD, kHTG-104, kW-kPAD*2, 14)]];
+         color:cText frame:NSMakeRect(kPAD, kHTG-104, kW-kPAD*2, 14)]];
 
     [self.tgPanel addSubview:
-     [self monoLbl:[NSString stringWithFormat:@"127.0.0.1  ·  %ld  ·  SOCKS5",
-                    (long)kSOCKSPort]
+     [self monoLbl:[NSString stringWithFormat:@"127.0.0.1  ·  %ld  ·  SOCKS5", (long)kSOCKSPort]
               frame:NSMakeRect(kPAD, kHTG-120, kW-kPAD*2, 13)]];
 
     NSButton *openSK = [self btn:@"Открыть SOCKS5 в Telegram"
@@ -300,14 +305,18 @@ static dispatch_queue_t sTaskQ;
 
 - (void)toggleTG {
     self.tgOpen = !self.tgOpen;
+
     if (self.tgOpen) {
+        // Move TG panel into visible area (at the bottom)
         self.tgPanel.frame = NSMakeRect(0, 0, kW, kHTG);
+        // Shift all other subviews upward
         for (NSView *v in self.view.subviews)
             if (v != self.tgPanel)
                 v.frame = NSMakeRect(v.frame.origin.x, v.frame.origin.y + kHTG,
                                      v.frame.size.width, v.frame.size.height);
         self.tgToggleBtn.title = @"📱  Настройка Telegram  ▴";
     } else {
+        // Shift all other subviews back down
         for (NSView *v in self.view.subviews)
             if (v != self.tgPanel)
                 v.frame = NSMakeRect(v.frame.origin.x, v.frame.origin.y - kHTG,
@@ -315,7 +324,8 @@ static dispatch_queue_t sTaskQ;
         self.tgPanel.frame = NSMakeRect(0, -kHTG, kW, kHTG);
         self.tgToggleBtn.title = @"📱  Настройка Telegram  ▾";
     }
-    // Tell the popover its new size — required for actual resize on 10.13
+
+    // Update popover size — required for NSPopover to actually resize
     self.preferredContentSize = NSMakeSize(kW, self.tgOpen ? kH + kHTG : kH);
 }
 
@@ -335,7 +345,8 @@ static dispatch_queue_t sTaskQ;
 - (void)copySecret {
     [[NSPasteboard generalPasteboard] clearContents];
     [[NSPasteboard generalPasteboard] setString:kTGSecret forType:NSPasteboardTypeString];
-    NSButton *b = self.secretCopyBtn;
+    // Direct property ref — no subview iteration
+    NSButton *b = self.copySecretBtn;
     b.title = @"✓ Скопировано";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ b.title = @"Копировать секрет"; });
@@ -344,11 +355,13 @@ static dispatch_queue_t sTaskQ;
 // =============================================================================
 #pragma mark - VPN Core
 // =============================================================================
-- (void)toggle { self.connected ? [self stopVPN] : [self startVPN]; }
+- (void)toggle {
+    self.connected ? [self stopVPN] : [self startVPN];
+}
 
 - (void)startVPN {
     if (!self.proxyTags.count) {
-        [self setStatus:@"Сначала загрузите серверы" color:rkOrange]; return;
+        [self setStatus:@"Сначала загрузите серверы" color:cOrange]; return;
     }
     NSString *tag = self.dropdown.titleOfSelectedItem ?: @"";
     NSDictionary *outbound = nil;
@@ -356,48 +369,52 @@ static dispatch_queue_t sTaskQ;
         if ([o[@"tag"] isEqualToString:tag]) { outbound = o; break; }
     if (!outbound) return;
 
-    [self setStatus:@"Запуск..." color:rkSub];
+    [self setStatus:@"Запуск..." color:cSub];
 
+    // Build config
     NSDictionary *cfg = @{
         @"log": @{ @"level": @"warn" },
         @"inbounds": @[
-            @{@"type":@"socks",@"tag":@"socks",@"listen":@"127.0.0.1",@"listen_port":@(kSOCKSPort)},
-            @{@"type":@"http", @"tag":@"http", @"listen":@"127.0.0.1",@"listen_port":@(kHTTPPort)},
-            @{@"type":@"socks",@"tag":@"tg",   @"listen":@"127.0.0.1",@"listen_port":@(kTGPort)}
+            @{@"type":@"socks", @"tag":@"socks", @"listen":@"127.0.0.1", @"listen_port":@(kSOCKSPort)},
+            @{@"type":@"http",  @"tag":@"http",  @"listen":@"127.0.0.1", @"listen_port":@(kHTTPPort)},
+            @{@"type":@"socks", @"tag":@"tg",    @"listen":@"127.0.0.1", @"listen_port":@(kTGPort)}
         ],
-        @"outbounds": @[ outbound, @{@"type":@"direct",@"tag":@"direct"} ],
+        @"outbounds": @[ outbound, @{@"type":@"direct", @"tag":@"direct"} ],
         @"route": @{
             @"rules": @[
-                @{@"ip_cidr":@[@"127.0.0.0/8",@"192.168.0.0/16",
-                               @"10.0.0.0/8",@"172.16.0.0/12"],
-                  @"outbound":@"direct"},
-                @{@"domain_suffix":@[@"apple.com",@"icloud.com"],
-                  @"outbound":@"direct"},
-                @{@"domain_suffix":@[@".ru",@".рф"],
-                  @"outbound":@"direct"}
+                @{ @"ip_cidr":       @[@"127.0.0.0/8",@"192.168.0.0/16",
+                                       @"10.0.0.0/8",  @"172.16.0.0/12"],
+                   @"outbound":@"direct" },
+                @{ @"domain_suffix": @[@"apple.com",@"icloud.com"],
+                   @"outbound":@"direct" },
+                @{ @"domain_suffix": @[@".ru",@".рф"],
+                   @"outbound":@"direct" }
             ],
             @"final": tag
         }
     };
 
     NSData *cfgData = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
-    if (!cfgData) { [self setStatus:@"Ошибка конфига" color:rkRed]; return; }
+    if (!cfgData) { [self setStatus:@"Ошибка конфига" color:cRed]; return; }
     [cfgData writeToFile:self.configPath atomically:YES];
 
     NSString *bin   = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
+    // Use cached interface — NO extra networksetup fork here
     NSString *iface = self.cachedIface;
 
+    // Build shell script — one AppleScript call, all ops atomic
     NSString *sh = [NSString stringWithFormat:
         @"killall -9 sing-box 2>/dev/null||true;"
         @"sleep 0.3;"
         @"networksetup -setwebproxy '%@' 127.0.0.1 %ld;"
         @"networksetup -setsecurewebproxy '%@' 127.0.0.1 %ld;"
         @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 %ld;"
-        @"nohup '%@' run -c '%@' > '%@' 2>&1 & echo $!",
-        [self esc:iface],(long)kHTTPPort,
-        [self esc:iface],(long)kHTTPPort,
-        [self esc:iface],(long)kSOCKSPort,
-        [self esc:bin],[self esc:self.configPath],[self esc:self.logPath]];
+        @"nohup '%@' run -c '%@' > '%@' 2>&1 &"
+        @"echo $!",   // print PID so we can capture it
+        [self esc:iface], (long)kHTTPPort,
+        [self esc:iface], (long)kHTTPPort,
+        [self esc:iface], (long)kSOCKSPort,
+        [self esc:bin], [self esc:self.configPath], [self esc:self.logPath]];
 
     NSString *scpt = [NSString stringWithFormat:
         @"do shell script \"%@\" with administrator privileges "
@@ -409,39 +426,45 @@ static dispatch_queue_t sTaskQ;
         [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
 
     if (err) {
-        [self setStatus:@"Отменено" color:rkSub];
+        [self setStatus:@"Отменено" color:cSub];
         [self forceProxyOff];
         return;
     }
 
-    self.corePID = (pid_t)[[result stringValue] intValue];
+    // Try to parse PID from AppleScript result (nohup echo $! output)
+    pid_t pid = (pid_t)[[result stringValue] intValue];
+    self.corePID = pid;
 
+    // Verify core is alive after 1.5s — use saved PID if we have it
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if ([self coreAlive]) {
             [self uiConnected:YES];
             [self startWatchdog];
         } else {
-            [self setStatus:@"⚠  Ядро не запустилось — Логи" color:rkRed];
+            [self setStatus:@"⚠  Ядро не запустилось — Логи" color:cRed];
             [self forceProxyOff];
         }
     });
 }
 
 - (BOOL)stopVPN {
+    // Guard: prevent double-stop (quit + onTerminate race)
     if (self.stopping) return YES;
     self.stopping = YES;
+
     [self.watchdog invalidate];
     self.watchdog = nil;
     self.corePID  = 0;
 
-    NSString *iface = self.cachedIface;
+    NSString *iface = self.cachedIface;  // cached — no extra fork
     NSString *sh = [NSString stringWithFormat:
         @"killall -9 sing-box 2>/dev/null||true;"
         @"networksetup -setwebproxystate '%@' off;"
         @"networksetup -setsecurewebproxystate '%@' off;"
         @"networksetup -setsocksfirewallproxystate '%@' off",
-        [self esc:iface],[self esc:iface],[self esc:iface]];
+        [self esc:iface], [self esc:iface], [self esc:iface]];
+
     NSString *scpt = [NSString stringWithFormat:
         @"do shell script \"%@\" with administrator privileges "
         @"with prompt \"Raketa: отключение\"",
@@ -451,7 +474,7 @@ static dispatch_queue_t sTaskQ;
     [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
     self.stopping = NO;
 
-    if (err) { [self setStatus:@"Ошибка сброса" color:rkRed]; return NO; }
+    if (err) { [self setStatus:@"Ошибка сброса" color:cRed]; return NO; }
     [self uiConnected:NO];
     return YES;
 }
@@ -462,7 +485,7 @@ static dispatch_queue_t sTaskQ;
         @"networksetup -setwebproxystate '%@' off;"
         @"networksetup -setsecurewebproxystate '%@' off;"
         @"networksetup -setsocksfirewallproxystate '%@' off",
-        [self esc:iface],[self esc:iface],[self esc:iface]];
+        [self esc:iface], [self esc:iface], [self esc:iface]];
     NSString *scpt = [NSString stringWithFormat:
         @"do shell script \"%@\" with administrator privileges "
         @"with prompt \"Raketa: сброс прокси\"",
@@ -471,10 +494,11 @@ static dispatch_queue_t sTaskQ;
 }
 
 // =============================================================================
-#pragma mark - Watchdog (CPU-minimal: kill(pid,0) instead of pgrep fork)
+#pragma mark - Watchdog  (CPU-minimal: uses kill(pid,0) instead of spawning pgrep)
 // =============================================================================
 - (void)startWatchdog {
     [self.watchdog invalidate];
+    // 12s interval — generous enough to avoid false positives, light on CPU
     self.watchdog = [NSTimer scheduledTimerWithTimeInterval:12.0
                                                      target:self
                                                    selector:@selector(watchTick)
@@ -483,35 +507,40 @@ static dispatch_queue_t sTaskQ;
 }
 
 - (void)watchTick {
+    // Run check on background queue — never block main thread
     dispatch_async(sTaskQ, ^{
         BOOL alive = [self coreAlive];
-        if (alive) return;
+        if (alive) return;  // most common case — return immediately
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.watchdog invalidate]; self.watchdog = nil;
             self.connected = NO;
             [self uiConnected:NO];
-            [self setStatus:@"⚠  Ядро упало — нажми ВКЛ" color:rkOrange];
+            [self setStatus:@"⚠  Ядро упало — нажми ВКЛ" color:cOrange];
             if ([self isProxyOn]) [self forceProxyOff];
         });
     });
 }
 
 - (BOOL)coreAlive {
+    // If we have a saved PID, use kill(pid,0) — zero cost, no fork
     if (self.corePID > 0) {
         if (kill(self.corePID, 0) == 0) return YES;
+        // PID gone — fall through to pgrep as last resort
         self.corePID = 0;
     }
-    // Fallback to pgrep only if PID was never captured
+    // Fallback: pgrep (only reaches here if PID was never captured)
     NSTask *t = [[NSTask alloc] init];
     t.launchPath = @"/bin/sh";
     t.arguments  = @[@"-c", @"pgrep -x sing-box"];
     NSPipe *p = [NSPipe pipe];
     t.standardOutput = p;
     [t launch]; [t waitUntilExit];
-    NSString *o = [[NSString alloc]
-                   initWithData:[[p fileHandleForReading] readDataToEndOfFile]
-                       encoding:NSUTF8StringEncoding];
-    if (o.length > 0) { self.corePID = (pid_t)[o intValue]; return YES; }
+    NSString *o = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile]
+                                        encoding:NSUTF8StringEncoding];
+    if (o.length > 0) {
+        self.corePID = (pid_t)[o intValue];
+        return YES;
+    }
     return NO;
 }
 
@@ -519,12 +548,14 @@ static dispatch_queue_t sTaskQ;
 #pragma mark - Network utils
 // =============================================================================
 - (BOOL)isProxyOn {
+    // SCDynamicStoreCopyProxies is fast — reads kernel cache, no disk I/O
     NSDictionary *p = (__bridge_transfer NSDictionary *)SCDynamicStoreCopyProxies(NULL);
     return [p[@"HTTPEnable"] boolValue]
         || [p[@"HTTPSEnable"] boolValue]
         || [p[@"SOCKSEnable"] boolValue];
 }
 
+// Called once at startup, result cached in self.cachedIface
 - (NSString *)detectIface {
     NSTask *t = [[NSTask alloc] init];
     t.launchPath = @"/usr/sbin/networksetup";
@@ -532,11 +563,10 @@ static dispatch_queue_t sTaskQ;
     NSPipe *p = [NSPipe pipe];
     t.standardOutput = p;
     [t launch]; [t waitUntilExit];
-    NSString *o = [[NSString alloc]
-                   initWithData:[[p fileHandleForReading] readDataToEndOfFile]
-                       encoding:NSUTF8StringEncoding];
-    for (NSString *n in @[@"Wi-Fi",@"Ethernet",@"USB 10/100 LAN",
-                           @"Thunderbolt Ethernet",@"iPhone USB",@"Bluetooth PAN"])
+    NSString *o = [[NSString alloc] initWithData:[[p fileHandleForReading] readDataToEndOfFile]
+                                        encoding:NSUTF8StringEncoding];
+    for (NSString *n in @[@"Wi-Fi", @"Ethernet", @"USB 10/100 LAN",
+                           @"Thunderbolt Ethernet", @"iPhone USB", @"Bluetooth PAN"])
         if ([o containsString:n]) return n;
     return @"Wi-Fi";
 }
@@ -556,28 +586,28 @@ static dispatch_queue_t sTaskQ;
 
     if ([u hasPrefix:@"vless://"]) { [self rawText:u]; return; }
 
-    [self setStatus:@"Загрузка..." color:rkSub];
+    [self setStatus:@"Загрузка..." color:cSub];
     NSURL *url = [NSURL URLWithString:u];
-    if (!url) { [self setStatus:@"Неверный URL" color:rkRed]; return; }
+    if (!url) { [self setStatus:@"Неверный URL" color:cRed]; return; }
 
     [[[NSURLSession sharedSession] dataTaskWithURL:url
         completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (e || !data) { [self setStatus:@"Ошибка сети" color:rkRed]; return; }
+            if (e || !data) { [self setStatus:@"Ошибка сети" color:cRed]; return; }
+            // Save cache async — don't block UI
             dispatch_async(sTaskQ, ^{
                 NSString *sub = [[self.configPath stringByDeletingLastPathComponent]
                                   stringByAppendingPathComponent:@"subscription.json"];
                 [data writeToFile:sub atomically:YES];
             });
-            NSMutableDictionary *j = [NSJSONSerialization
-                JSONObjectWithData:data
-                           options:NSJSONReadingMutableContainers error:nil];
-            if (j[@"outbounds"]) {
+            NSError *je;
+            NSMutableDictionary *j = [NSJSONSerialization JSONObjectWithData:data
+                options:NSJSONReadingMutableContainers error:&je];
+            if (!je && j[@"outbounds"]) {
                 [self parsedJSON:j];
             } else {
-                NSString *t = [[NSString alloc] initWithData:data
-                                                    encoding:NSUTF8StringEncoding];
-                t ? [self rawText:t] : [self setStatus:@"Неверный формат" color:rkRed];
+                NSString *t = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                t ? [self rawText:t] : [self setStatus:@"Неверный формат" color:cRed];
             }
         });
     }] resume];
@@ -586,6 +616,7 @@ static dispatch_queue_t sTaskQ;
 - (void)rawText:(NSString *)txt {
     NSString *s = [txt stringByTrimmingCharactersInSet:
                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    // Attempt base64 decode (some providers encode subscriptions)
     NSData *dec = [[NSData alloc] initWithBase64EncodedString:s
                     options:NSDataBase64DecodingIgnoreUnknownCharacters];
     if (dec) {
@@ -599,32 +630,36 @@ static dispatch_queue_t sTaskQ;
             NSDictionary *o = [self parseVless:line];
             if (o) [arr addObject:o];
         }
-    if (!arr.count) { [self setStatus:@"Серверы не найдены" color:rkOrange]; return; }
+    if (!arr.count) { [self setStatus:@"Серверы не найдены" color:cOrange]; return; }
     [self parsedJSON:[@{@"outbounds": arr} mutableCopy]];
 }
 
 - (void)parsedJSON:(NSMutableDictionary *)j {
     self.proxyTags      = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
-    NSArray *srv = @[@"vless",@"vmess",@"trojan",@"shadowsocks",
-                     @"hysteria2",@"tuic",@"trojan-go"];
-    NSArray *grp = @[@"selector",@"urltest",@"dns",@"direct",@"block",@"dns-out"];
+
+    NSArray *serverTypes = @[@"vless",@"vmess",@"trojan",@"shadowsocks",
+                              @"hysteria2",@"tuic",@"trojan-go"];
+    NSArray *groupTypes  = @[@"selector",@"urltest",@"dns",
+                              @"direct",@"block",@"dns-out"];
+
     for (NSDictionary *o in j[@"outbounds"]) {
         NSString *type = o[@"type"], *tag = o[@"tag"];
         if (!type || !tag) continue;
-        if ([srv containsObject:type] && ![grp containsObject:type]) {
+        if ([serverTypes containsObject:type] && ![groupTypes containsObject:type]) {
             [self.proxyTags addObject:tag];
             [self.proxyOutbounds addObject:o];
         }
     }
+
     [self.dropdown removeAllItems];
     if (self.proxyTags.count) {
         [self.dropdown addItemsWithTitles:self.proxyTags];
         [self.dropdown setEnabled:YES];
         [self setStatus:[NSString stringWithFormat:@"Серверов: %lu",
-                         (unsigned long)self.proxyTags.count] color:rkGreen];
+                         (unsigned long)self.proxyTags.count] color:cGreen];
     } else {
-        [self setStatus:@"Серверы не найдены" color:rkOrange];
+        [self setStatus:@"Серверы не найдены" color:cOrange];
     }
 }
 
@@ -633,15 +668,23 @@ static dispatch_queue_t sTaskQ;
         [link stringByTrimmingCharactersInSet:
          [NSCharacterSet whitespaceAndNewlineCharacterSet]]];
     if (!c || ![c.scheme isEqualToString:@"vless"]) return nil;
+
     NSString *tag = c.fragment.length
-        ? [c.fragment stringByRemovingPercentEncoding] : c.host;
+        ? [c.fragment stringByRemovingPercentEncoding]
+        : c.host;
+
     NSMutableDictionary *out = [@{
-        @"type":@"vless", @"tag":tag?:@"server",
-        @"server":c.host?:@"", @"server_port":c.port?:@443,
-        @"uuid":c.user?:@"", @"packet_encoding":@"xudp"
+        @"type":            @"vless",
+        @"tag":             tag ?: @"server",
+        @"server":          c.host  ?: @"",
+        @"server_port":     c.port  ?: @443,
+        @"uuid":            c.user  ?: @"",
+        @"packet_encoding": @"xudp"
     } mutableCopy];
+
     NSMutableDictionary *tls = [NSMutableDictionary dictionary];
     NSMutableDictionary *tr  = [NSMutableDictionary dictionary];
+
     for (NSURLQueryItem *q in c.queryItems) {
         if ([q.name isEqualToString:@"security"]
             && [@[@"tls",@"reality"] containsObject:q.value]) {
@@ -651,28 +694,35 @@ static dispatch_queue_t sTaskQ;
                 tls[@"reality"][@"enabled"] = @YES;
             }
         }
-        if ([q.name isEqualToString:@"sni"]  && q.value.length) tls[@"server_name"] = q.value;
-        if ([q.name isEqualToString:@"fp"]   && q.value.length)
+        if ([q.name isEqualToString:@"sni"] && q.value.length)
+            tls[@"server_name"] = q.value;
+        if ([q.name isEqualToString:@"fp"] && q.value.length)
             tls[@"utls"] = @{@"enabled":@YES, @"fingerprint":q.value};
-        if ([q.name isEqualToString:@"pbk"]  && q.value.length) {
+        if ([q.name isEqualToString:@"pbk"] && q.value.length) {
             if (!tls[@"reality"]) tls[@"reality"] = [NSMutableDictionary dictionary];
             tls[@"reality"][@"public_key"] = q.value;
         }
-        if ([q.name isEqualToString:@"sid"]  && q.value.length) {
+        if ([q.name isEqualToString:@"sid"] && q.value.length) {
             if (!tls[@"reality"]) tls[@"reality"] = [NSMutableDictionary dictionary];
             tls[@"reality"][@"short_id"] = q.value;
         }
-        if ([q.name isEqualToString:@"flow"] && q.value.length) out[@"flow"] = q.value;
+        if ([q.name isEqualToString:@"flow"] && q.value.length)
+            out[@"flow"] = q.value;
         if ([q.name isEqualToString:@"type"] && q.value.length
-            && ![q.value isEqualToString:@"tcp"]) tr[@"type"] = q.value;
-        if ([q.name isEqualToString:@"path"] && q.value.length) tr[@"path"] = q.value;
+            && ![q.value isEqualToString:@"tcp"])
+            tr[@"type"] = q.value;
+        if ([q.name isEqualToString:@"path"] && q.value.length)
+            tr[@"path"] = q.value;
         if ([q.name isEqualToString:@"serviceName"] && q.value.length)
             tr[@"service_name"] = q.value;
         if ([q.name isEqualToString:@"host"] && q.value.length)
             tr[@"headers"] = @{@"Host": q.value};
     }
+
+    // Default to chrome fingerprint if none specified — best for Russia DPI
     if (tls[@"enabled"] && !tls[@"utls"])
         tls[@"utls"] = @{@"enabled":@YES, @"fingerprint":@"chrome"};
+
     if (tls.count) out[@"tls"] = tls;
     if (tr.count)  out[@"transport"] = tr;
     return out;
@@ -683,39 +733,39 @@ static dispatch_queue_t sTaskQ;
 // =============================================================================
 - (void)serverChanged {
     if (!self.connected) return;
-    if ([self stopVPN])
+    // Only start if stop succeeds (guards against cancelled-password half-state)
+    if ([self stopVPN]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self startVPN]; });
+    }
 }
 
 - (void)uiConnected:(BOOL)on {
     self.connected = on;
-    NSString *lbl = on ? [NSString stringWithFormat:@"Подключено · %@",
-                           self.dropdown.titleOfSelectedItem ?: @""]
-                       : @"Готов к работе";
-    [self setStatus:lbl color:on ? rkGreen : rkSub];
-    [self setConnectTitle:(on ? @"ВКЛ" : @"ВЫКЛ") color:(on ? rkGreen : rkSub)];
-    self.connectBtn.layer.borderColor =
-        on ? rkGreen.CGColor : rkBorder.CGColor;
+    NSString *lbl = on
+        ? [NSString stringWithFormat:@"Подключено · %@",
+           self.dropdown.titleOfSelectedItem ?: @""]
+        : @"Готов к работе";
+    [self setStatus:lbl color:on ? cGreen : cSub];
+    [self setConnectBtnTitle:(on ? @"ВКЛ" : @"ВЫКЛ") color:(on ? cGreen : cSub)];
+    self.connectBtn.layer.borderColor     = on ? cGreen.CGColor : cBorder.CGColor;
     self.connectBtn.layer.backgroundColor = on
         ? [NSColor colorWithRed:0.10 green:0.45 blue:0.22 alpha:0.25].CGColor
-        : rkBtn.CGColor;
+        : cBtn.CGColor;
 }
 
 - (void)setStatus:(NSString *)text color:(NSColor *)color {
-    self.statusLabel.stringValue         = text;
-    self.statusLabel.textColor           = color;
-    self.statusDot.layer.backgroundColor = color.CGColor;
+    self.statusLabel.stringValue             = text;
+    self.statusLabel.textColor               = color;
+    self.statusDot.layer.backgroundColor     = color.CGColor;
 }
 
-// attributedTitle — only reliable way to set button text color on 10.13
-// with bordered=NO. contentTintColor requires 10.14+.
-- (void)setConnectTitle:(NSString *)title color:(NSColor *)color {
+// Attributed title — reliable text color on bordered=NO buttons across 10.13
+- (void)setConnectBtnTitle:(NSString *)title color:(NSColor *)color {
     NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
     ps.alignment = NSTextAlignmentCenter;
     NSDictionary *attrs = @{
-        NSFontAttributeName:            [NSFont systemFontOfSize:13
-                                                         weight:NSFontWeightMedium],
+        NSFontAttributeName:            [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: color,
         NSParagraphStyleAttributeName:  ps
     };
@@ -727,7 +777,7 @@ static dispatch_queue_t sTaskQ;
     if ([[NSFileManager defaultManager] fileExistsAtPath:self.logPath])
         [[NSWorkspace sharedWorkspace] openFile:self.logPath withApplication:@"Console"];
     else
-        [self setStatus:@"Логов нет" color:rkSub];
+        [self setStatus:@"Логов нет" color:cSub];
 }
 
 - (void)quit {
@@ -735,6 +785,7 @@ static dispatch_queue_t sTaskQ;
     [NSApp terminate:nil];
 }
 
+// onTerminate: fires AFTER quit: on normal exit — guard prevents double-stop
 - (void)onTerminate:(NSNotification *)n {
     [self.watchdog invalidate];
     if (self.connected && !self.stopping) [self stopVPN];
@@ -751,39 +802,37 @@ static dispatch_queue_t sTaskQ;
 }
 
 - (NSTextField *)sectionLbl:(NSString *)s top:(CGFloat)t {
-    return [self lbl:s
-                font:[NSFont systemFontOfSize:9 weight:NSFontWeightMedium]
-               color:rkSub frame:[self rx:kPAD top:t w:200 h:11]];
+    return [self lbl:s font:[NSFont systemFontOfSize:9 weight:NSFontWeightMedium]
+               color:cSub frame:[self rx:kPAD top:t w:200 h:11]];
 }
 
 - (NSTextField *)monoLbl:(NSString *)s frame:(NSRect)r {
     NSTextField *v = [[NSTextField alloc] initWithFrame:r];
     v.stringValue = s;
     v.font = [NSFont fontWithName:@"Menlo" size:9] ?: [NSFont systemFontOfSize:9];
-    v.textColor = rkAccent;
-    v.bezeled = NO; v.drawsBackground = NO; v.editable = NO;
-    v.selectable = YES;   // user can select & copy manually
+    v.textColor = cAccent; v.bezeled = NO; v.drawsBackground = NO;
+    v.editable = NO; v.selectable = YES;  // selectable: user can copy manually
     return v;
 }
 
 - (NSView *)sep:(NSRect)r {
     NSView *v = [[NSView alloc] initWithFrame:r];
     v.wantsLayer = YES;
-    v.layer.backgroundColor = rkBorder.CGColor;
+    v.layer.backgroundColor = cBorder.CGColor;
     return v;
 }
 
 - (NSTextField *)input:(NSRect)r placeholder:(NSString *)ph {
     NSTextField *f = [[NSTextField alloc] initWithFrame:r];
-    f.placeholderString  = ph;
-    f.font               = [NSFont systemFontOfSize:11];
-    f.textColor          = rkText;
-    f.backgroundColor    = rkSurface;
-    f.wantsLayer         = YES;
+    f.placeholderString = ph;
+    f.font = [NSFont systemFontOfSize:11];
+    f.textColor = cText;
+    f.backgroundColor = cSurface;
+    f.wantsLayer = YES;
     f.layer.cornerRadius = 5;
     f.layer.borderWidth  = 1;
-    f.layer.borderColor  = rkBorder.CGColor;
-    f.focusRingType      = NSFocusRingTypeNone;
+    f.layer.borderColor  = cBorder.CGColor;
+    f.focusRingType = NSFocusRingTypeNone;
     return f;
 }
 
@@ -794,9 +843,7 @@ static dispatch_queue_t sTaskQ;
     b.bezelStyle = NSBezelStyleRounded;
     b.target     = self;
     b.action     = a;
-    // FIX: contentTintColor is macOS 10.14+ only.
-    // For secondary buttons on 10.13, we leave the default system tint.
-    // Primary buttons get no override either — system bezel color is fine.
+    if (!p) b.contentTintColor = cSub;
     return b;
 }
 @end
