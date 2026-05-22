@@ -1,3 +1,79 @@
+#!/bin/bash
+# =============================================================================
+# Raketa v0.7.1 — Rename + Clean UI
+# Запускать из корня репозитория: bash patch_raketa_071.sh
+# =============================================================================
+set -e
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; N='\033[0m'
+
+echo -e "${C}╔══════════════════════════════════════════╗"
+echo -e "║   Raketa v0.7.1 — Rename + Clean UI      ║"
+echo -e "╚══════════════════════════════════════════╝${N}\n"
+
+if [ ! -f "ViewController.m" ]; then
+    echo -e "${R}✗ Запусти из корня репозитория${N}"; exit 1
+fi
+
+for f in ViewController.m AppDelegate.m Info.plist; do
+    [ -f "$f" ] && cp "$f" "${f}.bak071" && echo -e "${G}✓ Бэкап: ${f}.bak071${N}"
+done
+echo ""
+
+# =============================================================================
+# AppDelegate.m
+# =============================================================================
+echo -e "${Y}→ AppDelegate.m...${N}"
+cat > AppDelegate.m << 'EOF'
+#import "AppDelegate.h"
+#import "ViewController.h"
+
+@interface AppDelegate ()
+@property (strong) NSStatusItem *statusItem;
+@property (strong) NSPopover    *popover;
+@end
+
+@implementation AppDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)n {
+    NSMenu *main = [[NSMenu alloc] init];
+    NSMenuItem *ei = [[NSMenuItem alloc] init];
+    NSMenu *em = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [em addItemWithTitle:@"Cut"        action:@selector(cut:)       keyEquivalent:@"x"];
+    [em addItemWithTitle:@"Copy"       action:@selector(copy:)      keyEquivalent:@"c"];
+    [em addItemWithTitle:@"Paste"      action:@selector(paste:)     keyEquivalent:@"v"];
+    [em addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [ei setSubmenu:em]; [main addItem:ei]; [NSApp setMainMenu:main];
+
+    self.statusItem = [[NSStatusBar systemStatusBar]
+                       statusItemWithLength:NSVariableStatusItemLength];
+    self.statusItem.button.title  = @"🚀 Raketa";
+    self.statusItem.button.action = @selector(togglePopover:);
+    self.statusItem.button.target = self;
+
+    self.popover = [[NSPopover alloc] init];
+    self.popover.contentViewController = [[ViewController alloc] init];
+    self.popover.behavior = NSPopoverBehaviorTransient;
+}
+
+- (void)togglePopover:(id)sender {
+    if (self.popover.isShown) {
+        [self.popover performClose:sender];
+    } else {
+        [NSApp activateIgnoringOtherApps:YES];
+        [self.popover showRelativeToRect:self.statusItem.button.bounds
+                                  ofView:self.statusItem.button
+                           preferredEdge:NSRectEdgeMinY];
+    }
+}
+@end
+EOF
+echo -e "${G}✓ AppDelegate.m${N}"
+
+# =============================================================================
+# ViewController.m
+# =============================================================================
+echo -e "${Y}→ ViewController.m...${N}"
+cat > ViewController.m << 'EOF'
 #import "ViewController.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 
@@ -645,3 +721,120 @@ static const CGFloat PAD     = 16.0;
     return b;
 }
 @end
+EOF
+echo -e "${G}✓ ViewController.m${N}"
+
+# =============================================================================
+# Info.plist
+# =============================================================================
+echo -e "${Y}→ Info.plist...${N}"
+cat > Info.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>         <string>Raketa</string>
+    <key>CFBundleIdentifier</key>         <string>com.samurai.raketa</string>
+    <key>CFBundleName</key>               <string>Raketa</string>
+    <key>CFBundleDisplayName</key>        <string>Raketa</string>
+    <key>CFBundleVersion</key>            <string>0.7.1</string>
+    <key>CFBundleShortVersionString</key> <string>0.7.1</string>
+    <key>CFBundlePackageType</key>        <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>     <string>10.13.0</string>
+    <key>LSUIElement</key>                <true/>
+    <key>CFBundleIconFile</key>           <string>AppIcon</string>
+    <key>NSHumanReadableCopyright</key>   <string>Raketa — Ради вас старался Пашенька</string>
+</dict>
+</plist>
+EOF
+echo -e "${G}✓ Info.plist${N}"
+
+# =============================================================================
+# Переименование папки .app в build.yml
+# =============================================================================
+echo -e "${Y}→ build.yml...${N}"
+cat > .github/workflows/build.yml << 'EOF'
+name: Build Raketa
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go 1.20
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: Build sing-box core
+      run: |
+        git clone --depth=1 -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
+        cd core-build
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+          go build -tags "with_utls,with_grpc,with_reality" \
+          -trimpath -ldflags="-s -w" \
+          -o ../sing-box ./cmd/sing-box
+
+    - name: Compile app
+      run: |
+        mkdir -p Raketa.app/Contents/MacOS Raketa.app/Contents/Resources
+        echo "APPL????" > Raketa.app/Contents/PkgInfo
+        cp Info.plist Raketa.app/Contents/Info.plist
+        cp sing-box Raketa.app/Contents/Resources/sing-box
+        chmod +x Raketa.app/Contents/Resources/sing-box
+
+        clang -fobjc-arc \
+          -framework Cocoa \
+          -framework SystemConfiguration \
+          -arch x86_64 -mmacosx-version-min=10.13 \
+          -o Raketa.app/Contents/MacOS/Raketa \
+          main.m AppDelegate.m ViewController.m
+
+        codesign --force --deep -s - Raketa.app
+        zip -r "Raketa-macOS-10.13-${{ github.ref_name }}.zip" Raketa.app
+
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: "Raketa ${{ github.ref_name }}"
+        body: |
+          ## 🚀 Raketa ${{ github.ref_name }}
+
+          ### Что нового
+          - Переименован в **Raketa** (статус-бар: 🚀 Raketa)
+          - Чистый непрозрачный тёмный интерфейс, без прозрачности
+          - Аккуратные секции: Подписка / Сервер / Статус / Кнопка
+          - Панель Telegram: MTProxy (10810) + SOCKS5 (10808), deep link одним кликом
+          - Данные подключения можно выделить и скопировать
+          - Подпись в нижней части: «Ради вас старался Пашенька»
+          - Watchdog, shell escape, фильтрация selector/urltest
+
+          ### Telegram
+          Нажми «📱 Настройка Telegram» → «⚡ Открыть в Telegram»
+        files: Raketa-macOS-10.13-*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+EOF
+echo -e "${G}✓ build.yml (Raketa.app)${N}"
+
+# =============================================================================
+echo ""
+echo -e "${C}╔═══════════════════════════════════════════════════╗"
+echo -e "║  Патч применён. Далее:                            ║"
+echo -e "╠═══════════════════════════════════════════════════╣"
+echo -e "║  git add -A                                       ║"
+echo -e "║  git commit -m 'v0.7.1: rename Raketa, clean UI' ║"
+echo -e "║  git tag v0.7.1                                   ║"
+echo -e "║  git push origin main --tags                      ║"
+echo -e "╠═══════════════════════════════════════════════════╣"
+echo -e "║  Статус-бар:  🚀 Raketa                           ║"
+echo -e "║  Логи:        ~/Library/AppSupport/Raketa/        ║"
+echo -e "╚═══════════════════════════════════════════════════╝${N}"

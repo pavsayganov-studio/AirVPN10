@@ -1,4 +1,4 @@
-name: Build PauloVPN
+name: Build Raketa
 on:
   workflow_dispatch:
   push:
@@ -22,57 +22,47 @@ jobs:
         git clone --depth=1 -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
         cd core-build
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
-          go build \
-            -tags "with_utls,with_grpc,with_reality" \
-            -trimpath \
-            -ldflags="-s -w" \
-            -o ../sing-box \
-            ./cmd/sing-box
+          go build -tags "with_utls,with_grpc,with_reality" \
+          -trimpath -ldflags="-s -w" \
+          -o ../sing-box ./cmd/sing-box
 
-    - name: Compile macOS app
+    - name: Compile app
       run: |
-        mkdir -p AirVPN.app/Contents/MacOS
-        mkdir -p AirVPN.app/Contents/Resources
+        mkdir -p Raketa.app/Contents/MacOS Raketa.app/Contents/Resources
+        echo "APPL????" > Raketa.app/Contents/PkgInfo
+        cp Info.plist Raketa.app/Contents/Info.plist
+        cp sing-box Raketa.app/Contents/Resources/sing-box
+        chmod +x Raketa.app/Contents/Resources/sing-box
 
-        echo "APPL????" > AirVPN.app/Contents/PkgInfo
-        cp Info.plist AirVPN.app/Contents/Info.plist
-
-        cp sing-box AirVPN.app/Contents/Resources/sing-box
-        chmod +x AirVPN.app/Contents/Resources/sing-box
-
-        # Компилируем с SystemConfiguration (нужен для SCDynamicStoreCopyProxies)
-        clang \
-          -fobjc-arc \
+        clang -fobjc-arc \
           -framework Cocoa \
           -framework SystemConfiguration \
-          -arch x86_64 \
-          -mmacosx-version-min=10.13 \
-          -o AirVPN.app/Contents/MacOS/AirVPN \
+          -arch x86_64 -mmacosx-version-min=10.13 \
+          -o Raketa.app/Contents/MacOS/Raketa \
           main.m AppDelegate.m ViewController.m
 
-        codesign --force --deep -s - AirVPN.app
-        zip -r "PauloVPN-macOS-10.13-${{ github.ref_name }}.zip" AirVPN.app
+        codesign --force --deep -s - Raketa.app
+        zip -r "Raketa-macOS-10.13-${{ github.ref_name }}.zip" Raketa.app
 
-    - name: Create Release
+    - name: Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "PauloVPN ${{ github.ref_name }}"
+        name: "Raketa ${{ github.ref_name }}"
         body: |
-          ## PauloVPN ${{ github.ref_name }}
+          ## 🚀 Raketa ${{ github.ref_name }}
 
-          ### Что нового в v0.6
-          - ✅ Telegram: дополнительный SOCKS5 на порту 10810 + deep link одним кликом
-          - ✅ Watchdog: автообнаружение падения ядра, сброс прокси без пароля
-          - ✅ Панель настройки Telegram прямо в интерфейсе
-          - ✅ Убраны selector/urltest группы из конфига — нет фоновых пингов
-          - ✅ Telegram IP больше не в direct — Telegram работает через VPN
-          - ✅ Shell injection protection — эскейпинг путей
-          - ✅ Лог перезаписывается при старте (не растёт бесконечно)
-          - ✅ Пароль только когда реально нужен
+          ### Что нового
+          - Переименован в **Raketa** (статус-бар: 🚀 Raketa)
+          - Чистый непрозрачный тёмный интерфейс, без прозрачности
+          - Аккуратные секции: Подписка / Сервер / Статус / Кнопка
+          - Панель Telegram: MTProxy (10810) + SOCKS5 (10808), deep link одним кликом
+          - Данные подключения можно выделить и скопировать
+          - Подпись в нижней части: «Ради вас старался Пашенька»
+          - Watchdog, shell escape, фильтрация selector/urltest
 
           ### Telegram
-          Нажми кнопку "📱 Настройка Telegram" в приложении.
-        files: PauloVPN-macOS-10.13-*.zip
+          Нажми «📱 Настройка Telegram» → «⚡ Открыть в Telegram»
+        files: Raketa-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
