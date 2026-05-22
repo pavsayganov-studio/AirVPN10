@@ -80,7 +80,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 12, 180, 20)]];
-    NSTextField *ver = [self lbl:@"v0.9.0" font:[NSFont systemFontOfSize:10]
+    NSTextField *ver = [self lbl:@"v0.8.3" font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-48, 14, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
     [hdr addSubview:ver];
@@ -610,6 +610,7 @@ static dispatch_queue_t sTaskQ;
     } else {
         [self setStatus:@"Серверы не найдены" color:rkOrange];
     }
+}
 }
 
 - (NSDictionary *)parseVless:(NSString *)link {
