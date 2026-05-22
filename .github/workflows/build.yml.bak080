@@ -31,8 +31,8 @@ jobs:
         mkdir -p Raketa.app/Contents/MacOS Raketa.app/Contents/Resources
         echo "APPL????" > Raketa.app/Contents/PkgInfo
         cp Info.plist Raketa.app/Contents/Info.plist
-        cp sing-box   Raketa.app/Contents/Resources/sing-box
-        chmod +x      Raketa.app/Contents/Resources/sing-box
+        cp sing-box Raketa.app/Contents/Resources/sing-box
+        chmod +x Raketa.app/Contents/Resources/sing-box
 
         clang -fobjc-arc \
           -framework Cocoa \
@@ -48,27 +48,21 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: "🚀 Raketa ${{ github.ref_name }}"
+        name: "Raketa ${{ github.ref_name }}"
         body: |
           ## 🚀 Raketa ${{ github.ref_name }}
 
-          ### v0.8.0 — Deep Review
-          **CPU fixes**
-          - Watchdog uses `kill(pid,0)` instead of spawning `pgrep` — near-zero CPU cost
-          - Watchdog interval raised from 8s → 12s
-          - Network interface detected once at startup and cached — was spawning 3 NSTask forks per VPN op
-          - Subscription file loaded asynchronously — main thread never stalls on disk I/O
+          ### Что нового
+          - Переименован в **Raketa** (статус-бар: 🚀 Raketa)
+          - Чистый непрозрачный тёмный интерфейс, без прозрачности
+          - Аккуратные секции: Подписка / Сервер / Статус / Кнопка
+          - Панель Telegram: MTProxy (10810) + SOCKS5 (10808), deep link одним кликом
+          - Данные подключения можно выделить и скопировать
+          - Подпись в нижней части: «Ради вас старался Пашенька»
+          - Watchdog, shell escape, фильтрация selector/urltest
 
-          **Bug fixes**
-          - Double-stop on quit fixed with `stopping` guard flag
-          - `serverChanged` only calls `startVPN` if `stopVPN` succeeded (password cancel no longer leaves broken state)
-          - `statusDot` frame double-set removed
-          - Connect button title color now uses `attributedTitle` — reliable on macOS 10.13 with borderless buttons
-          - `copySecret` uses direct property reference instead of subview title search
-          - `preferredContentSize` updated on TG panel toggle — popover actually resizes
-          - Colors allocated once in `+initialize` — not on every `#define` access
-
-          **Architecture unchanged** — same System Proxy + SOCKS5 + sing-box approach
+          ### Telegram
+          Нажми «📱 Настройка Telegram» → «⚡ Открыть в Telegram»
         files: Raketa-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,3 +1,75 @@
+#!/bin/bash
+# =============================================================================
+# Raketa v0.8.0 — Deep code review patch
+# Run from repo root: bash patch_raketa_080.sh
+# =============================================================================
+set -e
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; N='\033[0m'
+
+echo -e "${C}╔══════════════════════════════════════════╗"
+echo -e "║   Raketa v0.8.0 — Deep Review Patch      ║"
+echo -e "╚══════════════════════════════════════════╝${N}\n"
+
+[ ! -f "ViewController.m" ] && echo -e "${R}✗ Run from repo root${N}" && exit 1
+
+for f in ViewController.m AppDelegate.m Info.plist .github/workflows/build.yml; do
+    [ -f "$f" ] && cp "$f" "${f}.bak080" && echo -e "${G}✓ Backup: ${f}.bak080${N}"
+done
+echo ""
+
+# =============================================================================
+echo -e "${Y}→ AppDelegate.m${N}"
+cat > AppDelegate.m << 'EOF'
+#import "AppDelegate.h"
+#import "ViewController.h"
+
+@interface AppDelegate ()
+@property (strong) NSStatusItem *statusItem;
+@property (strong) NSPopover    *popover;
+@end
+
+@implementation AppDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)n {
+    // Edit menu — enables Cut/Copy/Paste in the URL text field
+    NSMenu *main = [[NSMenu alloc] init];
+    NSMenuItem *editItem = [[NSMenuItem alloc] init];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    for (NSArray *a in @[@[@"Cut",@"cut:",@"x"],@[@"Copy",@"copy:",@"c"],
+                          @[@"Paste",@"paste:",@"v"],@[@"Select All",@"selectAll:",@"a"]])
+        [editMenu addItemWithTitle:a[0] action:NSSelectorFromString(a[1]) keyEquivalent:a[2]];
+    [editItem setSubmenu:editMenu];
+    [main addItem:editItem];
+    [NSApp setMainMenu:main];
+
+    self.statusItem = [[NSStatusBar systemStatusBar]
+                        statusItemWithLength:NSVariableStatusItemLength];
+    self.statusItem.button.title  = @"🚀 Raketa";
+    self.statusItem.button.action = @selector(togglePopover:);
+    self.statusItem.button.target = self;
+
+    self.popover = [[NSPopover alloc] init];
+    self.popover.contentViewController = [[ViewController alloc] init];
+    self.popover.behavior = NSPopoverBehaviorTransient;
+}
+
+- (void)togglePopover:(id)sender {
+    if (self.popover.isShown) {
+        [self.popover performClose:sender];
+    } else {
+        [NSApp activateIgnoringOtherApps:YES];
+        [self.popover showRelativeToRect:self.statusItem.button.bounds
+                                  ofView:self.statusItem.button
+                           preferredEdge:NSRectEdgeMinY];
+    }
+}
+@end
+EOF
+echo -e "${G}✓ AppDelegate.m${N}"
+
+# =============================================================================
+echo -e "${Y}→ ViewController.m${N}"
+cat > ViewController.m << 'EOF'
 #import "ViewController.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 
@@ -847,3 +919,119 @@ static dispatch_queue_t sTaskQ;
     return b;
 }
 @end
+EOF
+echo -e "${G}✓ ViewController.m${N}"
+
+# =============================================================================
+echo -e "${Y}→ Info.plist${N}"
+cat > Info.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>         <string>Raketa</string>
+    <key>CFBundleIdentifier</key>         <string>com.samurai.raketa</string>
+    <key>CFBundleName</key>               <string>Raketa</string>
+    <key>CFBundleDisplayName</key>        <string>Raketa</string>
+    <key>CFBundleVersion</key>            <string>0.8.0</string>
+    <key>CFBundleShortVersionString</key> <string>0.8.0</string>
+    <key>CFBundlePackageType</key>        <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>     <string>10.13.0</string>
+    <key>LSUIElement</key>                <true/>
+    <key>CFBundleIconFile</key>           <string>AppIcon</string>
+    <key>NSHumanReadableCopyright</key>   <string>Raketa — Ради вас старался Пашенька</string>
+</dict>
+</plist>
+EOF
+echo -e "${G}✓ Info.plist (v0.8.0)${N}"
+
+# =============================================================================
+echo -e "${Y}→ build.yml${N}"
+cat > .github/workflows/build.yml << 'EOF'
+name: Build Raketa
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go 1.20
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: Build sing-box core
+      run: |
+        git clone --depth=1 -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
+        cd core-build
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+          go build -tags "with_utls,with_grpc,with_reality" \
+          -trimpath -ldflags="-s -w" \
+          -o ../sing-box ./cmd/sing-box
+
+    - name: Compile app
+      run: |
+        mkdir -p Raketa.app/Contents/MacOS Raketa.app/Contents/Resources
+        echo "APPL????" > Raketa.app/Contents/PkgInfo
+        cp Info.plist Raketa.app/Contents/Info.plist
+        cp sing-box   Raketa.app/Contents/Resources/sing-box
+        chmod +x      Raketa.app/Contents/Resources/sing-box
+
+        clang -fobjc-arc \
+          -framework Cocoa \
+          -framework SystemConfiguration \
+          -arch x86_64 -mmacosx-version-min=10.13 \
+          -o Raketa.app/Contents/MacOS/Raketa \
+          main.m AppDelegate.m ViewController.m
+
+        codesign --force --deep -s - Raketa.app
+        zip -r "Raketa-macOS-10.13-${{ github.ref_name }}.zip" Raketa.app
+
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: "🚀 Raketa ${{ github.ref_name }}"
+        body: |
+          ## 🚀 Raketa ${{ github.ref_name }}
+
+          ### v0.8.0 — Deep Review
+          **CPU fixes**
+          - Watchdog uses `kill(pid,0)` instead of spawning `pgrep` — near-zero CPU cost
+          - Watchdog interval raised from 8s → 12s
+          - Network interface detected once at startup and cached — was spawning 3 NSTask forks per VPN op
+          - Subscription file loaded asynchronously — main thread never stalls on disk I/O
+
+          **Bug fixes**
+          - Double-stop on quit fixed with `stopping` guard flag
+          - `serverChanged` only calls `startVPN` if `stopVPN` succeeded (password cancel no longer leaves broken state)
+          - `statusDot` frame double-set removed
+          - Connect button title color now uses `attributedTitle` — reliable on macOS 10.13 with borderless buttons
+          - `copySecret` uses direct property reference instead of subview title search
+          - `preferredContentSize` updated on TG panel toggle — popover actually resizes
+          - Colors allocated once in `+initialize` — not on every `#define` access
+
+          **Architecture unchanged** — same System Proxy + SOCKS5 + sing-box approach
+        files: Raketa-macOS-10.13-*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+EOF
+echo -e "${G}✓ build.yml${N}"
+
+# =============================================================================
+echo ""
+echo -e "${C}╔══════════════════════════════════════════════════════╗"
+echo -e "║  Patch applied. Next:                                ║"
+echo -e "╠══════════════════════════════════════════════════════╣"
+echo -e "║  git add -A                                          ║"
+echo -e "║  git commit -m 'v0.8.0: deep review, CPU fixes'     ║"
+echo -e "║  git tag v0.8.0                                      ║"
+echo -e "║  git push origin main --tags                         ║"
+echo -e "╚══════════════════════════════════════════════════════╝${N}"

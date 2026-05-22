@@ -9,19 +9,17 @@
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)n {
-    // Edit menu — enables Cut/Copy/Paste in the URL text field
     NSMenu *main = [[NSMenu alloc] init];
-    NSMenuItem *editItem = [[NSMenuItem alloc] init];
-    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
-    for (NSArray *a in @[@[@"Cut",@"cut:",@"x"],@[@"Copy",@"copy:",@"c"],
-                          @[@"Paste",@"paste:",@"v"],@[@"Select All",@"selectAll:",@"a"]])
-        [editMenu addItemWithTitle:a[0] action:NSSelectorFromString(a[1]) keyEquivalent:a[2]];
-    [editItem setSubmenu:editMenu];
-    [main addItem:editItem];
-    [NSApp setMainMenu:main];
+    NSMenuItem *ei = [[NSMenuItem alloc] init];
+    NSMenu *em = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [em addItemWithTitle:@"Cut"        action:@selector(cut:)       keyEquivalent:@"x"];
+    [em addItemWithTitle:@"Copy"       action:@selector(copy:)      keyEquivalent:@"c"];
+    [em addItemWithTitle:@"Paste"      action:@selector(paste:)     keyEquivalent:@"v"];
+    [em addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [ei setSubmenu:em]; [main addItem:ei]; [NSApp setMainMenu:main];
 
     self.statusItem = [[NSStatusBar systemStatusBar]
-                        statusItemWithLength:NSVariableStatusItemLength];
+                       statusItemWithLength:NSVariableStatusItemLength];
     self.statusItem.button.title  = @"🚀 Raketa";
     self.statusItem.button.action = @selector(togglePopover:);
     self.statusItem.button.target = self;
