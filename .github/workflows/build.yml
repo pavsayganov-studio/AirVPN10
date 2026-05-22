@@ -45,11 +45,11 @@ jobs:
         name: "🚀 Raketa ${{ github.ref_name }}"
         body: |
           ## 🚀 Raketa ${{ github.ref_name }}
-          ### v0.8.1 — Compiler fixes
-          - Fixed: `cText` name clash with AERegistry.h `OSType` enum — colors renamed `rk*`
-          - Fixed: `copySecretBtn` property violated ARC naming convention — renamed `secretCopyBtn`
-          - Fixed: `contentTintColor` is macOS 10.14+ only — removed, uses system tint on 10.13
-          - All v0.8.0 CPU and correctness fixes retained
+          ### v0.8.2 — GUI polish
+          - Тема: нежно-голубой фон, чёрный текст
+          - Подписка: кнопка «Вставить из буфера» вместо текстового поля
+          - Telegram: полные инструкции MTProxy и SOCKS5, кнопки «Добавить в Telegram» для обоих способов
+          - Подпись внизу: шрифт HelveticaNeue-Light с отслеживанием букв (kerning), без наезжания
         files: Raketa-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
