@@ -3,25 +3,25 @@
 
 // ── Ports ─────────────────────────────────────────────────────────────────────
 static const NSInteger kSOCKSPort = 10808;
-static const NSInteger kHTTPPort  = 10809;
+static const NSInteger kMixedPort = 10809;   // "mixed" type: HTTP+SOCKS on one port
 static const NSInteger kTGPort    = 10810;
 static NSString *const kTGSecret  = @"dd000000000000000000000000000000";
 static NSString *const kSubKey    = @"RaketaSubscriptionURL";
+static NSString *const kSubFile   = @"subscription.json";
 
 // ── Layout ────────────────────────────────────────────────────────────────────
-static const CGFloat kW   = 300.0;
-static const CGFloat kH   = 370.0;
-static const CGFloat kHTG = 170.0;   // TG panel height (slightly taller for deep links)
-static const CGFloat kPAD = 16.0;
+static const CGFloat kW   = 290.0;
+static const CGFloat kH   = 296.0;   // compact — was 370
+static const CGFloat kHTG = 168.0;
+static const CGFloat kPAD = 14.0;
 
-// ── Colors — light blue theme, allocated once ─────────────────────────────────
+// ── Colors ────────────────────────────────────────────────────────────────────
 static NSColor *rkBG, *rkSurface, *rkCard, *rkBorder,
                *rkText, *rkSub, *rkAccent, *rkGreen, *rkOrange, *rkRed, *rkBtn;
-
 static dispatch_queue_t sTaskQ;
 
 @interface ViewController ()
-@property (strong) NSButton       *pasteBtn;        // replaces URL text field
+@property (strong) NSButton       *pasteBtn;
 @property (strong) NSTextField    *statusLabel;
 @property (strong) NSView         *statusDot;
 @property (strong) NSButton       *connectBtn;
@@ -29,6 +29,7 @@ static dispatch_queue_t sTaskQ;
 @property (strong) NSButton       *secretCopyBtn;
 @property (strong) NSString       *configPath;
 @property (strong) NSString       *logPath;
+@property (strong) NSString       *subPath;       // path to subscription.json
 @property (strong) NSString       *cachedIface;
 @property (strong) NSMutableArray *proxyTags;
 @property (strong) NSMutableArray *proxyOutbounds;
@@ -45,70 +46,59 @@ static dispatch_queue_t sTaskQ;
 
 + (void)initialize {
     if (self != [ViewController class]) return;
-
-    // Light blue theme
-    rkBG      = [NSColor colorWithRed:0.88 green:0.93 blue:0.98 alpha:1.0]; // soft sky blue
-    rkSurface = [NSColor colorWithRed:0.80 green:0.89 blue:0.96 alpha:1.0]; // slightly deeper blue
-    rkCard    = [NSColor colorWithRed:0.83 green:0.91 blue:0.97 alpha:1.0]; // TG panel
-    rkBorder  = [NSColor colorWithRed:0.62 green:0.78 blue:0.92 alpha:1.0]; // blue-grey border
-    rkText    = [NSColor colorWithWhite:0.10 alpha:1.0];                    // near-black text
-    rkSub     = [NSColor colorWithWhite:0.38 alpha:1.0];                    // secondary text
-    rkAccent  = [NSColor colorWithRed:0.10 green:0.40 blue:0.78 alpha:1.0]; // strong blue accent
-    rkGreen   = [NSColor colorWithRed:0.08 green:0.58 blue:0.25 alpha:1.0]; // connected green
-    rkOrange  = [NSColor colorWithRed:0.80 green:0.42 blue:0.05 alpha:1.0]; // warning
-    rkRed     = [NSColor colorWithRed:0.78 green:0.10 blue:0.10 alpha:1.0]; // error
-    rkBtn     = [NSColor colorWithRed:0.72 green:0.84 blue:0.94 alpha:1.0]; // button fill
-
-    sTaskQ = dispatch_queue_create("com.samurai.raketa.tasks", DISPATCH_QUEUE_SERIAL);
+    rkBG      = [NSColor colorWithRed:0.88 green:0.93 blue:0.98 alpha:1.0];
+    rkSurface = [NSColor colorWithRed:0.80 green:0.89 blue:0.96 alpha:1.0];
+    rkCard    = [NSColor colorWithRed:0.83 green:0.91 blue:0.97 alpha:1.0];
+    rkBorder  = [NSColor colorWithRed:0.62 green:0.78 blue:0.92 alpha:1.0];
+    rkText    = [NSColor colorWithWhite:0.10 alpha:1.0];
+    rkSub     = [NSColor colorWithWhite:0.40 alpha:1.0];
+    rkAccent  = [NSColor colorWithRed:0.10 green:0.40 blue:0.78 alpha:1.0];
+    rkGreen   = [NSColor colorWithRed:0.08 green:0.55 blue:0.22 alpha:1.0];
+    rkOrange  = [NSColor colorWithRed:0.75 green:0.38 blue:0.04 alpha:1.0];
+    rkRed     = [NSColor colorWithRed:0.72 green:0.08 blue:0.08 alpha:1.0];
+    rkBtn     = [NSColor colorWithRed:0.72 green:0.84 blue:0.94 alpha:1.0];
+    sTaskQ    = dispatch_queue_create("com.samurai.raketa.tasks", DISPATCH_QUEUE_SERIAL);
 }
 
-// ── Geometry (Y from top of base view) ───────────────────────────────────────
 - (NSRect)rx:(CGFloat)x top:(CGFloat)t w:(CGFloat)w h:(CGFloat)h {
     return NSMakeRect(x, kH - t - h, w, h);
 }
 
 // =============================================================================
-#pragma mark - loadView
+#pragma mark - loadView  (compact layout, no circle button)
 // =============================================================================
 - (void)loadView {
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, kH)];
     root.wantsLayer = YES;
     root.layer.backgroundColor = rkBG.CGColor;
 
-    // ── Header ────────────────────────────────────────────────────────────────
+    // ── Header (0–44) ─────────────────────────────────────────────────────────
     NSView *hdr = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-44, kW, 44)];
     hdr.wantsLayer = YES;
     hdr.layer.backgroundColor = rkSurface.CGColor;
     [root addSubview:hdr];
-
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
-                         color:rkText frame:NSMakeRect(kPAD, 12, 200, 20)]];
-
-    NSTextField *ver = [self lbl:@"v0.8.2"
-                            font:[NSFont systemFontOfSize:10]
-                           color:rkSub frame:NSMakeRect(kW-52, 14, 38, 16)];
+                         color:rkText frame:NSMakeRect(kPAD, 12, 180, 20)]];
+    NSTextField *ver = [self lbl:@"v0.8.3" font:[NSFont systemFontOfSize:10]
+                           color:rkSub frame:NSMakeRect(kW-48, 14, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
     [hdr addSubview:ver];
-
     [root addSubview:[self sep:NSMakeRect(0, kH-45, kW, 1)]];
 
-    // ── Subscription — "Вставить" button replaces text field ─────────────────
-    [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:54]];
-
+    // ── ПОДПИСКА (52–99) ──────────────────────────────────────────────────────
+    [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:52]];
     self.pasteBtn = [self btn:@"⎘  Вставить ссылку из буфера"
-                        frame:[self rx:kPAD top:66 w:kW-kPAD*2 h:28]
+                        frame:[self rx:kPAD top:63 w:kW-kPAD*2 h:28]
                        action:@selector(pasteAndLoad) primary:YES];
     self.pasteBtn.font = [NSFont systemFontOfSize:12];
     [root addSubview:self.pasteBtn];
+    [root addSubview:[self sep:NSMakeRect(0, kH-99, kW, 1)]];
 
-    [root addSubview:[self sep:NSMakeRect(0, kH-104, kW, 1)]];
-
-    // ── Server ────────────────────────────────────────────────────────────────
-    [root addSubview:[self sectionLbl:@"СЕРВЕР" top:113]];
+    // ── СЕРВЕР (108–153) ──────────────────────────────────────────────────────
+    [root addSubview:[self sectionLbl:@"СЕРВЕР" top:108]];
     self.dropdown = [[NSPopUpButton alloc]
-                     initWithFrame:[self rx:kPAD top:125 w:kW-kPAD*2 h:26]
-                          pullsDown:NO];
+                     initWithFrame:[self rx:kPAD top:119 w:kW-kPAD*2 h:26] pullsDown:NO];
     [self.dropdown addItemWithTitle:@"— серверы не загружены —"];
     self.dropdown.enabled = NO;
     self.dropdown.font    = [NSFont systemFontOfSize:12];
@@ -116,27 +106,25 @@ static dispatch_queue_t sTaskQ;
     self.dropdown.action  = @selector(serverChanged);
     [root addSubview:self.dropdown];
 
-    // ── Status ────────────────────────────────────────────────────────────────
-    CGFloat dotY = kH - 161 - 7;
-    self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(kPAD, dotY, 7, 7)];
+    // ── Status (153–170) ──────────────────────────────────────────────────────
+    CGFloat dotY = kH - 153 - 8;
+    self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(kPAD, dotY+1, 7, 7)];
     self.statusDot.wantsLayer = YES;
     self.statusDot.layer.cornerRadius    = 3.5;
     self.statusDot.layer.backgroundColor = rkSub.CGColor;
     [root addSubview:self.statusDot];
-
     self.statusLabel = [self lbl:@"Готов к работе"
-                            font:[NSFont systemFontOfSize:11]
-                           color:rkSub
-                           frame:NSMakeRect(kPAD+13, dotY, kW-kPAD*2-13, 15)];
+                            font:[NSFont systemFontOfSize:11] color:rkSub
+                           frame:NSMakeRect(kPAD+13, dotY, kW-kPAD*2-13, 14)];
     [root addSubview:self.statusLabel];
 
-    // ── Connect button ────────────────────────────────────────────────────────
-    CGFloat bx = (kW - 80) / 2.0;
-    self.connectBtn = [[NSButton alloc] initWithFrame:[self rx:bx top:182 w:80 h:80]];
+    // ── Connect button — full-width rounded rect (170–214) ────────────────────
+    self.connectBtn = [[NSButton alloc]
+                       initWithFrame:[self rx:kPAD top:170 w:kW-kPAD*2 h:36]];
     self.connectBtn.title    = @"";
     self.connectBtn.bordered = NO;
     self.connectBtn.wantsLayer = YES;
-    self.connectBtn.layer.cornerRadius    = 40;
+    self.connectBtn.layer.cornerRadius    = 10;
     self.connectBtn.layer.borderWidth     = 1.5;
     self.connectBtn.layer.borderColor     = rkBorder.CGColor;
     self.connectBtn.layer.backgroundColor = rkBtn.CGColor;
@@ -144,58 +132,49 @@ static dispatch_queue_t sTaskQ;
     self.connectBtn.action = @selector(toggle);
     [self setConnectTitle:@"ВЫКЛ" color:rkSub];
     [root addSubview:self.connectBtn];
+    [root addSubview:[self sep:NSMakeRect(0, kH-214, kW, 1)]];
 
-    [root addSubview:[self sep:NSMakeRect(0, kH-274, kW, 1)]];
-
-    // ── Telegram toggle ───────────────────────────────────────────────────────
+    // ── Telegram toggle (222–248) ─────────────────────────────────────────────
     self.tgToggleBtn = [self btn:@"📱  Настройка Telegram  ▾"
-                           frame:[self rx:kPAD top:283 w:kW-kPAD*2 h:26]
+                           frame:[self rx:kPAD top:222 w:kW-kPAD*2 h:24]
                           action:@selector(toggleTG) primary:NO];
     self.tgToggleBtn.font = [NSFont systemFontOfSize:11];
     [root addSubview:self.tgToggleBtn];
+    [root addSubview:[self sep:NSMakeRect(0, kH-253, kW, 1)]];
 
-    // ── Bottom bar ────────────────────────────────────────────────────────────
-    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-320, kW, 26)];
+    // ── Bottom bar (253–296) ──────────────────────────────────────────────────
+    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, 43)];
     bar.wantsLayer = YES;
     bar.layer.backgroundColor = rkSurface.CGColor;
     [root addSubview:bar];
 
-    NSButton *logBtn = [self btn:@"Логи"
-                           frame:NSMakeRect(kPAD, 3, 52, 20)
-                          action:@selector(openLogs) primary:NO];
-    logBtn.font = [NSFont systemFontOfSize:10];
-    [bar addSubview:logBtn];
+    NSButton *logBtn = [self btn:@"Логи" frame:NSMakeRect(kPAD, 14, 48, 18)
+                         action:@selector(openLogs) primary:NO];
+    logBtn.font = [NSFont systemFontOfSize:10]; [bar addSubview:logBtn];
 
-    NSButton *quitBtn = [self btn:@"Выход"
-                            frame:NSMakeRect(kW-kPAD-60, 3, 60, 20)
-                           action:@selector(quit) primary:NO];
-    quitBtn.font = [NSFont systemFontOfSize:10];
-    [bar addSubview:quitBtn];
+    NSButton *quitBtn = [self btn:@"Выход" frame:NSMakeRect(kW-kPAD-56, 14, 56, 18)
+                          action:@selector(quit) primary:NO];
+    quitBtn.font = [NSFont systemFontOfSize:10]; [bar addSubview:quitBtn];
 
-    // ── Credit — tracked letter spacing to prevent glyph crowding ─────────────
-    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, kH-346, kW, 16)];
+    // Credit — tracked spacing, centred in bar
+    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 2, kW, 12)];
     credit.bezeled = NO; credit.drawsBackground = NO;
     credit.editable = NO; credit.selectable = NO;
     credit.alignment = NSTextAlignmentCenter;
-    // Attributed string with explicit tracking — prevents glyph overlap
-    NSDictionary *creditAttrs = @{
-        NSFontAttributeName:            [NSFont fontWithName:@"HelveticaNeue-Light" size:9]
-                                        ?: [NSFont systemFontOfSize:9],
-        NSForegroundColorAttributeName: rkSub,
-        NSKernAttributeName:            @(0.8)   // 0.8pt letter spacing
-    };
     credit.attributedStringValue = [[NSAttributedString alloc]
-        initWithString:@"Ради вас старался Пашенька" attributes:creditAttrs];
-    [root addSubview:credit];
+        initWithString:@"Ради вас старался Пашенька" attributes:@{
+            NSFontAttributeName:            [NSFont fontWithName:@"HelveticaNeue-Light" size:9]
+                                            ?: [NSFont systemFontOfSize:9],
+            NSForegroundColorAttributeName: rkSub,
+            NSKernAttributeName:            @(0.8)
+        }];
+    [bar addSubview:credit];
 
     // ── TG Panel ──────────────────────────────────────────────────────────────
     [self buildTGPanel:root];
 
-    self.view      = root;
-    self.connected = NO;
-    self.stopping  = NO;
-    self.tgOpen    = NO;
-    self.corePID   = 0;
+    self.view = root; self.connected = NO; self.stopping = NO;
+    self.tgOpen = NO; self.corePID = 0;
 
     // ── Paths ─────────────────────────────────────────────────────────────────
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -205,23 +184,23 @@ static dispatch_queue_t sTaskQ;
     [fm createDirectoryAtURL:sup withIntermediateDirectories:YES attributes:nil error:nil];
     self.configPath = [[sup URLByAppendingPathComponent:@"config.json"] path];
     self.logPath    = [[sup URLByAppendingPathComponent:@"raketa.log"]  path];
+    self.subPath    = [[sup URLByAppendingPathComponent:kSubFile] path];
 
     self.cachedIface = [self detectIface];
     if ([self isProxyOn]) [self forceProxyOff];
 
-    // Load cached subscription off the main thread
-    NSString *savedURL = [[NSUserDefaults standardUserDefaults] stringForKey:kSubKey];
-    if (savedURL.length) {
-        NSString *subPath = [[self.configPath stringByDeletingLastPathComponent]
-                              stringByAppendingPathComponent:@"subscription.json"];
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            NSData *d = [NSData dataWithContentsOfFile:subPath];
-            if (!d) return;
-            NSMutableDictionary *j = [NSJSONSerialization
-                JSONObjectWithData:d options:NSJSONReadingMutableContainers error:nil];
-            if (j) dispatch_async(dispatch_get_main_queue(), ^{ [self parsedJSON:j]; });
-        });
-    }
+    // ── Load persisted servers off main thread ────────────────────────────────
+    // FIX: was reading subscription.json only when savedURL existed.
+    // Now we always try to load subscription.json first — it contains the
+    // canonical parsed outbounds and is written by persistOutbounds: after
+    // every successful parse, regardless of how the data arrived.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSData *d = [NSData dataWithContentsOfFile:self.subPath];
+        if (!d) return;
+        NSMutableDictionary *j = [NSJSONSerialization
+            JSONObjectWithData:d options:NSJSONReadingMutableContainers error:nil];
+        if (j) dispatch_async(dispatch_get_main_queue(), ^{ [self parsedJSON:j]; });
+    });
 
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(onTerminate:)
@@ -229,42 +208,47 @@ static dispatch_queue_t sTaskQ;
 }
 
 // =============================================================================
+#pragma mark - Persistence
+// =============================================================================
+
+// Called after every successful parsedJSON: — writes outbounds to disk.
+// This is the single source of truth for server persistence across restarts.
+- (void)persistOutbounds:(NSArray *)outbounds {
+    NSDictionary *payload = @{@"outbounds": outbounds};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+    if (!data) return;
+    NSString *path = self.subPath;
+    dispatch_async(sTaskQ, ^{
+        [data writeToFile:path atomically:YES];
+    });
+}
+
+// =============================================================================
 #pragma mark - Paste & Load
 // =============================================================================
 - (void)pasteAndLoad {
-    NSString *text = [[NSPasteboard generalPasteboard]
-                      stringForType:NSPasteboardTypeString];
-    text = [text stringByTrimmingCharactersInSet:
-            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-
+    NSString *text = [[[NSPasteboard generalPasteboard]
+                        stringForType:NSPasteboardTypeString]
+                       stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!text.length) {
-        [self setStatus:@"Буфер обмена пуст" color:rkOrange];
-        return;
+        [self setStatus:@"Буфер обмена пуст" color:rkOrange]; return;
     }
-
-    // Accept vless:// single link OR http/https subscription URL
     BOOL isVless = [text hasPrefix:@"vless://"];
     BOOL isURL   = [text hasPrefix:@"http://"] || [text hasPrefix:@"https://"];
-
     if (!isVless && !isURL) {
-        [self setStatus:@"Не найдена ссылка в буфере" color:rkOrange];
-        return;
+        [self setStatus:@"Нет ссылки в буфере" color:rkOrange]; return;
     }
 
     [[NSUserDefaults standardUserDefaults] setObject:text forKey:kSubKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
 
-    // Visual feedback on button
-    NSString *savedTitle = self.pasteBtn.title;
+    NSString *orig = self.pasteBtn.title;
     self.pasteBtn.title = @"✓  Ссылка получена";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ self.pasteBtn.title = savedTitle; });
+                   dispatch_get_main_queue(), ^{ self.pasteBtn.title = orig; });
 
-    if (isVless) {
-        [self rawText:text];
-    } else {
-        [self downloadURL:text];
-    }
+    if (isVless) [self rawText:text]; else [self downloadURL:text];
 }
 
 - (void)downloadURL:(NSString *)urlString {
@@ -275,11 +259,6 @@ static dispatch_queue_t sTaskQ;
         completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (e || !data) { [self setStatus:@"Ошибка сети" color:rkRed]; return; }
-            dispatch_async(sTaskQ, ^{
-                NSString *sub = [[self.configPath stringByDeletingLastPathComponent]
-                                  stringByAppendingPathComponent:@"subscription.json"];
-                [data writeToFile:sub atomically:YES];
-            });
             NSMutableDictionary *j = [NSJSONSerialization
                 JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
             if (j[@"outbounds"]) {
@@ -306,73 +285,59 @@ static dispatch_queue_t sTaskQ;
     topLine.layer.backgroundColor = rkBorder.CGColor;
     [self.tgPanel addSubview:topLine];
 
-    // Panel header
     [self.tgPanel addSubview:
      [self lbl:@"TELEGRAM — ПРОКСИ"
           font:[NSFont systemFontOfSize:9 weight:NSFontWeightSemibold]
-         color:rkAccent frame:NSMakeRect(kPAD, kHTG-20, kW-kPAD*2, 13)]];
+         color:rkAccent frame:NSMakeRect(kPAD, kHTG-19, kW-kPAD*2, 13)]];
 
-    // ── Method 1: MTProxy ─────────────────────────────────────────────────────
+    // Method 1: MTProxy
     [self.tgPanel addSubview:
      [self lbl:@"Способ 1 — MTProxy"
           font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
-         color:rkText frame:NSMakeRect(kPAD, kHTG-36, 120, 13)]];
+         color:rkText frame:NSMakeRect(kPAD, kHTG-34, 118, 13)]];
+    [self.tgPanel addSubview:
+     [self lbl:@"рекомендовано" font:[NSFont systemFontOfSize:8]
+         color:rkAccent frame:NSMakeRect(kPAD+120, kHTG-33, 90, 12)]];
 
-    // Badge: "рекомендовано"
-    NSTextField *badge = [self lbl:@"рекомендовано"
-                              font:[NSFont systemFontOfSize:8]
-                             color:rkAccent
-                             frame:NSMakeRect(kPAD+122, kHTG-35, 100, 12)];
-    [self.tgPanel addSubview:badge];
-
-    // Mono details — selectable so user can copy manually too
     [self.tgPanel addSubview:
      [self monoLbl:[NSString stringWithFormat:@"Сервер: 127.0.0.1   Порт: %ld",
                     (long)kTGPort]
-              frame:NSMakeRect(kPAD, kHTG-51, kW-kPAD*2, 13)]];
-
+              frame:NSMakeRect(kPAD, kHTG-49, kW-kPAD*2, 13)]];
     [self.tgPanel addSubview:
      [self monoLbl:[NSString stringWithFormat:@"Секрет: %@", kTGSecret]
-              frame:NSMakeRect(kPAD, kHTG-65, kW-kPAD*2, 13)]];
+              frame:NSMakeRect(kPAD, kHTG-63, kW-kPAD*2, 13)]];
 
-    // Action buttons for MTProxy
     NSButton *openMT = [self btn:@"⚡  Добавить в Telegram"
-                           frame:NSMakeRect(kPAD, kHTG-89, 150, 22)
+                           frame:NSMakeRect(kPAD, kHTG-87, 148, 22)
                           action:@selector(openMTLink) primary:YES];
-    openMT.font = [NSFont systemFontOfSize:10];
-    [self.tgPanel addSubview:openMT];
+    openMT.font = [NSFont systemFontOfSize:10]; [self.tgPanel addSubview:openMT];
 
     self.secretCopyBtn = [self btn:@"Копировать секрет"
-                             frame:NSMakeRect(kPAD+156, kHTG-89, kW-kPAD*2-156, 22)
+                             frame:NSMakeRect(kPAD+154, kHTG-87, kW-kPAD*2-154, 22)
                             action:@selector(copySecret) primary:NO];
     self.secretCopyBtn.font = [NSFont systemFontOfSize:10];
     [self.tgPanel addSubview:self.secretCopyBtn];
 
-    // Divider
-    [self.tgPanel addSubview:[self sep:NSMakeRect(kPAD, kHTG-99, kW-kPAD*2, 1)]];
+    [self.tgPanel addSubview:[self sep:NSMakeRect(kPAD, kHTG-97, kW-kPAD*2, 1)]];
 
-    // ── Method 2: SOCKS5 ──────────────────────────────────────────────────────
+    // Method 2: SOCKS5
     [self.tgPanel addSubview:
      [self lbl:@"Способ 2 — SOCKS5"
           font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
-         color:rkText frame:NSMakeRect(kPAD, kHTG-114, 120, 13)]];
-
-    NSTextField *badge2 = [self lbl:@"запасной"
-                               font:[NSFont systemFontOfSize:8]
-                              color:rkSub
-                              frame:NSMakeRect(kPAD+122, kHTG-113, 80, 12)];
-    [self.tgPanel addSubview:badge2];
+         color:rkText frame:NSMakeRect(kPAD, kHTG-112, 118, 13)]];
+    [self.tgPanel addSubview:
+     [self lbl:@"запасной" font:[NSFont systemFontOfSize:8]
+         color:rkSub frame:NSMakeRect(kPAD+120, kHTG-111, 70, 12)]];
 
     [self.tgPanel addSubview:
-     [self monoLbl:[NSString stringWithFormat:@"Сервер: 127.0.0.1   Порт: %ld   Тип: SOCKS5",
-                    (long)kSOCKSPort]
-              frame:NSMakeRect(kPAD, kHTG-129, kW-kPAD*2, 13)]];
+     [self monoLbl:[NSString stringWithFormat:
+                    @"Сервер: 127.0.0.1   Порт: %ld   Тип: SOCKS5", (long)kSOCKSPort]
+              frame:NSMakeRect(kPAD, kHTG-127, kW-kPAD*2, 13)]];
 
     NSButton *openSK = [self btn:@"⚡  Добавить SOCKS5 в Telegram"
-                           frame:NSMakeRect(kPAD, kHTG-153, kW-kPAD*2, 22)
+                           frame:NSMakeRect(kPAD, kHTG-151, kW-kPAD*2, 22)
                           action:@selector(openSOCKSLink) primary:NO];
-    openSK.font = [NSFont systemFontOfSize:10];
-    [self.tgPanel addSubview:openSK];
+    openSK.font = [NSFont systemFontOfSize:10]; [self.tgPanel addSubview:openSK];
 
     [root addSubview:self.tgPanel];
 }
@@ -403,13 +368,11 @@ static dispatch_queue_t sTaskQ;
                    (long)kTGPort, kTGSecret];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:u]];
 }
-
 - (void)openSOCKSLink {
     NSString *u = [NSString stringWithFormat:
                    @"tg://socks?server=127.0.0.1&port=%ld", (long)kSOCKSPort];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:u]];
 }
-
 - (void)copySecret {
     [[NSPasteboard generalPasteboard] clearContents];
     [[NSPasteboard generalPasteboard] setString:kTGSecret forType:NSPasteboardTypeString];
@@ -437,13 +400,19 @@ static dispatch_queue_t sTaskQ;
     [self setStatus:@"Запуск..." color:rkSub];
 
     NSDictionary *cfg = @{
-        @"log": @{ @"level": @"warn" },
+        @"log": @{@"level": @"warn"},
         @"inbounds": @[
-            @{@"type":@"socks",@"tag":@"socks",@"listen":@"127.0.0.1",@"listen_port":@(kSOCKSPort)},
-            @{@"type":@"http", @"tag":@"http", @"listen":@"127.0.0.1",@"listen_port":@(kHTTPPort)},
-            @{@"type":@"socks",@"tag":@"tg",   @"listen":@"127.0.0.1",@"listen_port":@(kTGPort)}
+            // FIX: "mixed" handles both HTTP CONNECT and SOCKS5 on one port.
+            // The previous "http" type caused "protocol wrong type for socket"
+            // errors when apps sent non-HTTP traffic to the HTTP proxy port.
+            @{@"type":@"mixed",@"tag":@"mixed",
+              @"listen":@"127.0.0.1",@"listen_port":@(kMixedPort)},
+            @{@"type":@"socks",@"tag":@"socks",
+              @"listen":@"127.0.0.1",@"listen_port":@(kSOCKSPort)},
+            @{@"type":@"socks",@"tag":@"tg",
+              @"listen":@"127.0.0.1",@"listen_port":@(kTGPort)}
         ],
-        @"outbounds": @[ outbound, @{@"type":@"direct",@"tag":@"direct"} ],
+        @"outbounds": @[outbound, @{@"type":@"direct",@"tag":@"direct"}],
         @"route": @{
             @"rules": @[
                 @{@"ip_cidr":@[@"127.0.0.0/8",@"192.168.0.0/16",
@@ -472,8 +441,8 @@ static dispatch_queue_t sTaskQ;
         @"networksetup -setsecurewebproxy '%@' 127.0.0.1 %ld;"
         @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 %ld;"
         @"nohup '%@' run -c '%@' > '%@' 2>&1 & echo $!",
-        [self esc:iface],(long)kHTTPPort,
-        [self esc:iface],(long)kHTTPPort,
+        [self esc:iface],(long)kMixedPort,
+        [self esc:iface],(long)kMixedPort,
         [self esc:iface],(long)kSOCKSPort,
         [self esc:bin],[self esc:self.configPath],[self esc:self.logPath]];
 
@@ -491,12 +460,9 @@ static dispatch_queue_t sTaskQ;
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if ([self coreAlive]) {
-            [self uiConnected:YES]; [self startWatchdog];
-        } else {
-            [self setStatus:@"⚠  Ядро не запустилось — Логи" color:rkRed];
-            [self forceProxyOff];
-        }
+        if ([self coreAlive]) { [self uiConnected:YES]; [self startWatchdog]; }
+        else { [self setStatus:@"⚠  Ядро не запустилось — Логи" color:rkRed];
+               [self forceProxyOff]; }
     });
 }
 
@@ -504,7 +470,6 @@ static dispatch_queue_t sTaskQ;
     if (self.stopping) return YES;
     self.stopping = YES;
     [self.watchdog invalidate]; self.watchdog = nil; self.corePID = 0;
-
     NSString *iface = self.cachedIface;
     NSString *sh = [NSString stringWithFormat:
         @"killall -9 sing-box 2>/dev/null||true;"
@@ -516,7 +481,6 @@ static dispatch_queue_t sTaskQ;
         @"do shell script \"%@\" with administrator privileges "
         @"with prompt \"Raketa: отключение\"",
         [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
-
     NSDictionary *err = nil;
     [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
     self.stopping = NO;
@@ -544,11 +508,8 @@ static dispatch_queue_t sTaskQ;
 - (void)startWatchdog {
     [self.watchdog invalidate];
     self.watchdog = [NSTimer scheduledTimerWithTimeInterval:12.0
-                                                     target:self
-                                                   selector:@selector(watchTick)
-                                                   userInfo:nil repeats:YES];
+        target:self selector:@selector(watchTick) userInfo:nil repeats:YES];
 }
-
 - (void)watchTick {
     dispatch_async(sTaskQ, ^{
         if ([self coreAlive]) return;
@@ -560,7 +521,6 @@ static dispatch_queue_t sTaskQ;
         });
     });
 }
-
 - (BOOL)coreAlive {
     if (self.corePID > 0) {
         if (kill(self.corePID, 0) == 0) return YES;
@@ -581,12 +541,9 @@ static dispatch_queue_t sTaskQ;
 #pragma mark - Network utils
 // =============================================================================
 - (BOOL)isProxyOn {
-    NSDictionary *p = (__bridge_transfer NSDictionary *)SCDynamicStoreCopyProxies(NULL);
-    return [p[@"HTTPEnable"] boolValue]
-        || [p[@"HTTPSEnable"] boolValue]
-        || [p[@"SOCKSEnable"] boolValue];
+    NSDictionary *px = (__bridge_transfer NSDictionary *)SCDynamicStoreCopyProxies(NULL);
+    return [px[@"HTTPEnable"] boolValue]||[px[@"HTTPSEnable"] boolValue]||[px[@"SOCKSEnable"] boolValue];
 }
-
 - (NSString *)detectIface {
     NSTask *t = [[NSTask alloc] init];
     t.launchPath = @"/usr/sbin/networksetup";
@@ -601,7 +558,6 @@ static dispatch_queue_t sTaskQ;
         if ([o containsString:n]) return n;
     return @"Wi-Fi";
 }
-
 - (NSString *)esc:(NSString *)s {
     return [s stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
 }
@@ -614,16 +570,14 @@ static dispatch_queue_t sTaskQ;
                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSData *dec = [[NSData alloc] initWithBase64EncodedString:s
                     options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    if (dec) {
-        NSString *ds = [[NSString alloc] initWithData:dec encoding:NSUTF8StringEncoding];
-        if (ds) s = ds;
-    }
+    if (dec) { NSString *ds = [[NSString alloc] initWithData:dec
+                                                     encoding:NSUTF8StringEncoding];
+               if (ds) s = ds; }
     NSMutableArray *arr = [NSMutableArray array];
     for (NSString *line in [s componentsSeparatedByCharactersInSet:
                              [NSCharacterSet newlineCharacterSet]])
         if ([line hasPrefix:@"vless://"]) {
-            NSDictionary *o = [self parseVless:line];
-            if (o) [arr addObject:o];
+            NSDictionary *o = [self parseVless:line]; if (o) [arr addObject:o];
         }
     if (!arr.count) { [self setStatus:@"Серверы не найдены" color:rkOrange]; return; }
     [self parsedJSON:[@{@"outbounds": arr} mutableCopy]];
@@ -648,9 +602,22 @@ static dispatch_queue_t sTaskQ;
         [self.dropdown setEnabled:YES];
         [self setStatus:[NSString stringWithFormat:@"Серверов: %lu",
                          (unsigned long)self.proxyTags.count] color:rkGreen];
+        // FIX: persist outbounds after every successful parse —
+        // whether data came from rawText:, downloadURL:, or a remote subscription.
+        // This guarantees subscription.json is always up-to-date and
+        // loadView can restore servers on next launch without re-fetching.
+        [self persistOutbounds:self.proxyOutbounds];
     } else {
         [self setStatus:@"Серверы не найдены" color:rkOrange];
     }
+}
+
+- (void)persistOutbounds:(NSArray *)outbounds {
+    NSDictionary *payload = @{@"outbounds": outbounds};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+    if (!data) return;
+    NSString *path = self.subPath;
+    dispatch_async(sTaskQ, ^{ [data writeToFile:path atomically:YES]; });
 }
 
 - (NSDictionary *)parseVless:(NSString *)link {
@@ -709,30 +676,27 @@ static dispatch_queue_t sTaskQ;
 - (void)serverChanged {
     if (!self.connected) return;
     if ([self stopVPN])
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4*NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self startVPN]; });
 }
-
 - (void)uiConnected:(BOOL)on {
     self.connected = on;
     NSString *lbl = on ? [NSString stringWithFormat:@"Подключено · %@",
                            self.dropdown.titleOfSelectedItem ?: @""]
                        : @"Готов к работе";
     [self setStatus:lbl color:on ? rkGreen : rkSub];
-    [self setConnectTitle:(on ? @"ВКЛ" : @"ВЫКЛ") color:(on ? rkGreen : rkSub)];
+    [self setConnectTitle:(on ? @"● ВКЛ" : @"○ ВЫКЛ") color:(on ? rkGreen : rkSub)];
     self.connectBtn.layer.borderColor =
         on ? rkGreen.CGColor : rkBorder.CGColor;
     self.connectBtn.layer.backgroundColor = on
-        ? [NSColor colorWithRed:0.06 green:0.45 blue:0.18 alpha:0.20].CGColor
+        ? [NSColor colorWithRed:0.06 green:0.45 blue:0.18 alpha:0.15].CGColor
         : rkBtn.CGColor;
 }
-
 - (void)setStatus:(NSString *)text color:(NSColor *)color {
     self.statusLabel.stringValue         = text;
     self.statusLabel.textColor           = color;
     self.statusDot.layer.backgroundColor = color.CGColor;
 }
-
 - (void)setConnectTitle:(NSString *)title color:(NSColor *)color {
     NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
     ps.alignment = NSTextAlignmentCenter;
@@ -744,19 +708,12 @@ static dispatch_queue_t sTaskQ;
             NSParagraphStyleAttributeName:  ps
         }];
 }
-
 - (void)openLogs {
     if ([[NSFileManager defaultManager] fileExistsAtPath:self.logPath])
         [[NSWorkspace sharedWorkspace] openFile:self.logPath withApplication:@"Console"];
-    else
-        [self setStatus:@"Логов нет" color:rkSub];
+    else [self setStatus:@"Логов нет" color:rkSub];
 }
-
-- (void)quit {
-    if (self.connected) [self stopVPN];
-    [NSApp terminate:nil];
-}
-
+- (void)quit { if (self.connected) [self stopVPN]; [NSApp terminate:nil]; }
 - (void)onTerminate:(NSNotification *)n {
     [self.watchdog invalidate];
     if (self.connected && !self.stopping) [self stopVPN];
@@ -771,12 +728,10 @@ static dispatch_queue_t sTaskQ;
     v.bezeled = NO; v.drawsBackground = NO; v.editable = NO; v.selectable = NO;
     return v;
 }
-
 - (NSTextField *)sectionLbl:(NSString *)s top:(CGFloat)t {
     return [self lbl:s font:[NSFont systemFontOfSize:9 weight:NSFontWeightMedium]
                color:rkSub frame:[self rx:kPAD top:t w:200 h:11]];
 }
-
 - (NSTextField *)monoLbl:(NSString *)s frame:(NSRect)r {
     NSTextField *v = [[NSTextField alloc] initWithFrame:r];
     v.stringValue = s;
@@ -785,12 +740,10 @@ static dispatch_queue_t sTaskQ;
     v.editable = NO; v.selectable = YES;
     return v;
 }
-
 - (NSView *)sep:(NSRect)r {
     NSView *v = [[NSView alloc] initWithFrame:r];
     v.wantsLayer = YES; v.layer.backgroundColor = rkBorder.CGColor; return v;
 }
-
 - (NSButton *)btn:(NSString *)t frame:(NSRect)r action:(SEL)a primary:(BOOL)p {
     NSButton *b = [[NSButton alloc] initWithFrame:r];
     b.title = t; b.font = [NSFont systemFontOfSize:12];
