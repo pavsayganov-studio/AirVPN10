@@ -28,12 +28,16 @@ jobs:
           -trimpath -ldflags="-s -w" \
           -o ../sing-box ./cmd/sing-box
 
+    # ── Icon generation ───────────────────────────────────────────────────────
+    # cairosvg: pure-Python SVG rasterizer, no system font dependency.
+    # Reads AppIcon.svg → produces PNG for every required icns size.
+    # iconutil (macOS built-in) assembles AppIcon.icns.
     - name: Generate AppIcon.icns from SVG
       run: |
-        # --break-system-packages: required on macOS runners with PEP 668
-        pip3 install cairosvg --quiet --break-system-packages
+        pip3 install cairosvg --quiet
         python3 generate_icon.py
 
+    # ── Compile ───────────────────────────────────────────────────────────────
     - name: Compile app
       run: |
         mkdir -p Raketa.app/Contents/MacOS \
@@ -41,7 +45,9 @@ jobs:
 
         echo "APPL????" > Raketa.app/Contents/PkgInfo
         cp Info.plist   Raketa.app/Contents/Info.plist
+        # Icon — generated in previous step
         cp AppIcon.icns Raketa.app/Contents/Resources/AppIcon.icns
+        # Core binary
         cp sing-box     Raketa.app/Contents/Resources/sing-box
         chmod +x        Raketa.app/Contents/Resources/sing-box
 
@@ -63,17 +69,11 @@ jobs:
         body: |
           ## 🚀 Raketa ${{ github.ref_name }}
 
-          ### v0.9.3 — Production release
-          **Исправлено**
-          - pip `--break-system-packages` — иконка теперь собирается без ошибки PEP 668
-
-          **HIG 10.13 compliance (zero CPU cost)**
-          - Внешние отступы 20pt (был 14pt)
-          - Шрифты: 13pt базовый, 11pt вторичный, 9pt микро — точно по HIG
-          - Высота кнопок: 21pt для Логи/Выход, connect = 36pt capsule (corner 18)
-          - Межгрупповые отступы 12pt, связанные элементы 8pt
-          - Header уменьшен до 32pt (ближе к HIG 22pt title bar)
-          - Все предыдущие исправления v0.9.x включены
+          ### v0.9.2 — SVG icon
+          - AppIcon.svg добавлен в репозиторий (белая «R» на голубом градиенте)
+          - При сборке: SVG → PNG (cairosvg) → AppIcon.icns (iconutil)
+          - Нет бинарных файлов в репо, нет зависимости от шрифтов системы
+          - Все исправления v0.9.x включены
         files: Raketa-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
