@@ -1,0 +1,63 @@
+name: Build Raketa
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Go 1.20
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+    - name: Build sing-box core
+      run: |
+        git clone --depth=1 -b v1.8.11 https://github.com/SagerNet/sing-box.git core-build
+        cd core-build
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+          go build -tags "with_utls,with_grpc,with_reality" \
+          -trimpath -ldflags="-s -w" \
+          -o ../sing-box ./cmd/sing-box
+    - name: Compile app
+      run: |
+        mkdir -p Raketa.app/Contents/MacOS Raketa.app/Contents/Resources
+        echo "APPL????" > Raketa.app/Contents/PkgInfo
+        cp Info.plist Raketa.app/Contents/Info.plist
+        cp sing-box   Raketa.app/Contents/Resources/sing-box
+        chmod +x      Raketa.app/Contents/Resources/sing-box
+        clang -fobjc-arc \
+          -framework Cocoa \
+          -framework SystemConfiguration \
+          -arch x86_64 -mmacosx-version-min=10.13 \
+          -o Raketa.app/Contents/MacOS/Raketa \
+          main.m AppDelegate.m ViewController.m
+        codesign --force --deep -s - Raketa.app
+        zip -r "Raketa-macOS-10.13-${{ github.ref_name }}.zip" Raketa.app
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: "🚀 Raketa ${{ github.ref_name }}"
+        body: |
+          ## 🚀 Raketa ${{ github.ref_name }}
+          ### v0.9.0 — Bug fixes
+          **Критический: серверы не сохранялись**
+          Исправлен механизм персистентности — `parsedJSON:` теперь всегда записывает
+          `subscription.json` после успешного парсинга, независимо от источника
+          (vless:// ссылка, base64, JSON подписка). При запуске читается этот файл.
+
+          **Лог-ошибка "protocol wrong type for socket"**
+          HTTP inbound заменён на `mixed` — он корректно обрабатывает как HTTP CONNECT,
+          так и SOCKS5 на одном порту. Ошибка в логах исчезнет.
+
+          **Layout**
+          Окно уменьшено (370→296px), круглая кнопка заменена на компактный прямоугольник,
+          кнопка Telegram больше не перекрывается нижней панелью.
+        files: Raketa-macOS-10.13-*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
