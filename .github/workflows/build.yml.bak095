@@ -1,0 +1,79 @@
+name: Build Raketa
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go 1.20
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: Build sing-box core
+      run: |
+        git clone --depth=1 -b v1.8.11 \
+          https://github.com/SagerNet/sing-box.git core-build
+        cd core-build
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+          go build -tags "with_utls,with_grpc,with_reality" \
+          -trimpath -ldflags="-s -w" \
+          -o ../sing-box ./cmd/sing-box
+
+    - name: Generate AppIcon.icns from SVG
+      run: |
+        # --break-system-packages: required on macOS runners with PEP 668
+        pip3 install cairosvg --quiet --break-system-packages
+        python3 generate_icon.py
+
+    - name: Compile app
+      run: |
+        mkdir -p Raketa.app/Contents/MacOS \
+                 Raketa.app/Contents/Resources
+
+        echo "APPL????" > Raketa.app/Contents/PkgInfo
+        cp Info.plist   Raketa.app/Contents/Info.plist
+        cp AppIcon.icns Raketa.app/Contents/Resources/AppIcon.icns
+        cp sing-box     Raketa.app/Contents/Resources/sing-box
+        chmod +x        Raketa.app/Contents/Resources/sing-box
+
+        clang -fobjc-arc \
+          -framework Cocoa \
+          -framework SystemConfiguration \
+          -arch x86_64 -mmacosx-version-min=10.13 \
+          -o Raketa.app/Contents/MacOS/Raketa \
+          main.m AppDelegate.m ViewController.m
+
+        codesign --force --deep -s - Raketa.app
+        zip -r "Raketa-macOS-10.13-${{ github.ref_name }}.zip" Raketa.app
+
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: "🚀 Raketa ${{ github.ref_name }}"
+        body: |
+          ## 🚀 Raketa ${{ github.ref_name }}
+
+          ### v0.9.3 — Production release
+          **Исправлено**
+          - pip `--break-system-packages` — иконка теперь собирается без ошибки PEP 668
+
+          **HIG 10.13 compliance (zero CPU cost)**
+          - Внешние отступы 20pt (был 14pt)
+          - Шрифты: 13pt базовый, 11pt вторичный, 9pt микро — точно по HIG
+          - Высота кнопок: 21pt для Логи/Выход, connect = 36pt capsule (corner 18)
+          - Межгрупповые отступы 12pt, связанные элементы 8pt
+          - Header уменьшен до 32pt (ближе к HIG 22pt title bar)
+          - Все предыдущие исправления v0.9.x включены
+        files: Raketa-macOS-10.13-*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
