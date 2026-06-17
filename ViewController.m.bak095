@@ -420,7 +420,7 @@ static dispatch_queue_t sTaskQ;
         @"networksetup -setwebproxy '%@' 127.0.0.1 %ld;"
         @"networksetup -setsecurewebproxy '%@' 127.0.0.1 %ld;"
         @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 %ld;"
-        @"nohup '%@' run -c '%@' > '%@' 2>&1 & echo $!",
+        @"'%@' run -c '%@' > '%@' 2>&1 & echo $!",
         [self esc:iface],(long)kMixedPort,
         [self esc:iface],(long)kMixedPort,
         [self esc:iface],(long)kSOCKSPort,

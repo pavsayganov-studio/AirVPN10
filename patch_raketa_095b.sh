@@ -1,3 +1,24 @@
+#!/bin/bash
+# =============================================================================
+# Raketa v0.9.5 — nohup fix + inline refresh button
+# Run from repo root: bash patch_raketa_095b.sh
+# =============================================================================
+set -e
+G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; R='\033[0;31m'; N='\033[0m'
+
+echo -e "${C}╔══════════════════════════════════════════╗"
+echo -e "║   Raketa v0.9.5 — nohup fix + refresh   ║"
+echo -e "╚══════════════════════════════════════════╝${N}\n"
+
+[ ! -f "ViewController.m" ] && echo -e "${R}✗ Run from repo root${N}" && exit 1
+
+cp ViewController.m ViewController.m.bak095
+cp Info.plist Info.plist.bak095
+cp .github/workflows/build.yml .github/workflows/build.yml.bak095
+echo -e "${G}✓ Backups created${N}\n"
+
+echo -e "${Y}→ ViewController.m${N}"
+cat > ViewController.m << 'EOF'
 #import "ViewController.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 
@@ -799,3 +820,56 @@ static dispatch_queue_t sTaskQ;
     return b;
 }
 @end
+EOF
+echo -e "${G}✓ ViewController.m${N}"
+
+echo -e "${Y}→ Info.plist (v0.9.5)${N}"
+python3 -c "
+import re, sys
+s = open('Info.plist').read()
+s = re.sub(r'0\.9\.[0-9]+', '0.9.5', s)
+open('Info.plist','w').write(s)
+print('✓ Info.plist → v0.9.5')
+"
+
+echo -e "${Y}→ build.yml (v0.9.5)${N}"
+python3 - << 'PY'
+with open('.github/workflows/build.yml', 'r') as f:
+    s = f.read()
+# Update release body
+old = s[s.find('        body: |'):s.find('        files:')]
+new = """        body: |
+          ## 🚀 Raketa ${{ github.ref_name }}
+
+          ### v0.9.5
+          **macOS 10.13 + 12.x совместимость**
+          - Убран `nohup` — на macOS 12 падал с ENOTTY (нет терминала в AppleScript).
+            Фоновый запуск через `&` работает на обеих версиях.
+
+          **Обновление ключей**
+          - Кнопка «＋ Добавить ключи» стала уже
+          - Рядом — квадратная кнопка ↻ (tooltip: «Обновить ключи»): заново
+            загружает серверы по сохранённой подписке без лишних кликов.
+
+"""
+s = s.replace(old, new)
+with open('.github/workflows/build.yml', 'w') as f:
+    f.write(s)
+print("✓ build.yml updated")
+PY
+
+echo ""
+echo -e "${G}Verification:${N}"
+grep -c 'nohup' ViewController.m && echo "ERROR: nohup still present" || echo "✓ nohup removed"
+grep -q 'refreshIconBtn' ViewController.m && echo "✓ refreshIconBtn present" || echo "ERROR: missing"
+grep -q "0.9.5" Info.plist && echo "✓ Info.plist v0.9.5" || echo "ERROR: version not updated"
+
+echo ""
+echo -e "${C}╔══════════════════════════════════════════════════════╗"
+echo -e "║  Commands:                                           ║"
+echo -e "╠══════════════════════════════════════════════════════╣"
+echo -e "║  git add -A                                          ║"
+echo -e "║  git commit -m 'v0.9.5: nohup fix + refresh button' ║"
+echo -e "║  git tag v0.9.5                                      ║"
+echo -e "║  git push origin main --tags                         ║"
+echo -e "╚══════════════════════════════════════════════════════╝${N}"
