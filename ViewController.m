@@ -105,7 +105,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.9.5"
+    NSTextField *ver = [self lbl:@"v0.9.7"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -128,9 +128,21 @@ static dispatch_queue_t sTaskQ;
     CGFloat refX = kPAD + kAddW + 8;
     self.refreshIconBtn = [[NSButton alloc]
                            initWithFrame:[self rx:refX top:55 w:kRefW h:28]];
-    self.refreshIconBtn.title      = @"↻";
-    self.refreshIconBtn.font       = [NSFont systemFontOfSize:15];
-    self.refreshIconBtn.bezelStyle = NSBezelStyleRounded;
+    // attributedTitle + bordered=NO: NSBezelStyleRounded clips/hides the ↻
+    // glyph at small button sizes on macOS 10.13. This renders reliably.
+    NSDictionary *iconAttrs = @{
+        NSFontAttributeName:            [NSFont systemFontOfSize:16
+                                                         weight:NSFontWeightRegular],
+        NSForegroundColorAttributeName: rkSub
+    };
+    self.refreshIconBtn.attributedTitle =
+        [[NSAttributedString alloc] initWithString:@"↻" attributes:iconAttrs];
+    self.refreshIconBtn.bordered    = NO;
+    self.refreshIconBtn.wantsLayer  = YES;
+    self.refreshIconBtn.layer.cornerRadius    = 6;
+    self.refreshIconBtn.layer.borderWidth     = 0.5;
+    self.refreshIconBtn.layer.borderColor     = rkBorder.CGColor;
+    self.refreshIconBtn.layer.backgroundColor = rkBtn.CGColor;
     self.refreshIconBtn.toolTip    = @"Обновить ключи";
     self.refreshIconBtn.target     = self;
     self.refreshIconBtn.action     = @selector(refreshKeys);
@@ -163,7 +175,7 @@ static dispatch_queue_t sTaskQ;
 
     // ── Connect button (168–204) — capsule-style rounded rect ────────────────
     self.connectBtn = [[NSButton alloc]
-                       initWithFrame:[self rx:kPAD top:168 w:kW-kPAD*2 h:36]];
+                       initWithFrame:[self rx:kPAD top:152 w:kW-kPAD*2 h:36]];
     self.connectBtn.title    = @"";
     self.connectBtn.bordered = NO;
     self.connectBtn.wantsLayer = YES;
@@ -284,7 +296,8 @@ static dispatch_queue_t sTaskQ;
         [self setStatus:@"Сначала добавьте ключи" color:rkOrange]; return;
     }
     // Spin the icon while loading — simple visual feedback without animation overhead
-    [self flashButton:self.refreshIconBtn title:@"…"];
+    // Feedback via status line — avoids clobbering the icon's attributedTitle
+    [self setStatus:@"Обновление серверов..." color:rkSub];
     if ([saved hasPrefix:@"http://"] || [saved hasPrefix:@"https://"]) {
         [self downloadURL:saved];
     } else if ([saved hasPrefix:@"vless://"]) {
