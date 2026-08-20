@@ -1,9 +1,16 @@
 name: Build Raketa
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 permissions:
   contents: write
 
@@ -12,6 +19,47 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0   # need full tag history to compute the next version
+
+    # ── Compute and publish the next version tag ──────────────────────────
+    # Finds the highest existing vX.Y.Z tag, bumps it according to the
+    # chosen input (default: patch), creates the tag, and pushes it.
+    # Every later step references $NEW_TAG instead of ${{ github.ref_name }},
+    # since this workflow is no longer triggered by a tag push.
+    - name: Determine next version
+      id: version
+      run: |
+        git fetch --tags --force
+        LATEST=$(git tag -l 'v*.*.*' | sort -V | tail -1)
+        if [ -z "$LATEST" ]; then
+          LATEST="v0.0.0"
+        fi
+        echo "Latest tag: $LATEST"
+
+        VERSION="${LATEST#v}"
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f2)
+        PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+        case "${{ github.event.inputs.bump }}" in
+          major)
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+          minor)
+            MINOR=$((MINOR + 1)); PATCH=0 ;;
+          *)
+            PATCH=$((PATCH + 1)) ;;
+        esac
+
+        NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+        echo "New tag: $NEW_TAG"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag "$NEW_TAG"
+        git push origin "$NEW_TAG"
+
+        echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
 
     - name: Set up Go 1.20
       uses: actions/setup-go@v4
@@ -30,7 +78,6 @@ jobs:
 
     - name: Generate AppIcon.icns from SVG
       run: |
-        # --break-system-packages: required on macOS runners with PEP 668
         pip3 install cairosvg --quiet --break-system-packages
         python3 generate_icon.py
 
@@ -38,39 +85,30 @@ jobs:
       run: |
         mkdir -p Raketa.app/Contents/MacOS \
                  Raketa.app/Contents/Resources
-
         echo "APPL????" > Raketa.app/Contents/PkgInfo
         cp Info.plist   Raketa.app/Contents/Info.plist
         cp AppIcon.icns Raketa.app/Contents/Resources/AppIcon.icns
         cp sing-box     Raketa.app/Contents/Resources/sing-box
         chmod +x        Raketa.app/Contents/Resources/sing-box
-
         clang -fobjc-arc \
           -framework Cocoa \
           -framework SystemConfiguration \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o Raketa.app/Contents/MacOS/Raketa \
           main.m AppDelegate.m ViewController.m
-
         codesign --force --deep -s - Raketa.app
-        zip -r "Raketa-macOS-10.13-${{ github.ref_name }}.zip" Raketa.app
+        zip -r "Raketa-macOS-10.13-${{ steps.version.outputs.tag }}.zip" Raketa.app
 
     - name: Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ github.ref_name }}
-        name: "🚀 Raketa ${{ github.ref_name }}"
+        tag_name: ${{ steps.version.outputs.tag }}
+        name: "🚀 Raketa ${{ steps.version.outputs.tag }}"
         body: |
-          ## 🚀 Raketa ${{ github.ref_name }}
+          ## 🚀 Raketa ${{ steps.version.outputs.tag }}
 
-          ### v0.9.7
-          - ↻ иконка обновления подписки теперь видна (была пустая кнопка).
-            Причина: NSBezelStyleRounded скрывал Unicode-глиф на macOS 10.13
-            при малом размере кнопки. Исправлено через attributedTitle + bordered=NO.
-          - Кнопка ВКЛ/ВЫКЛ больше не перекрывается нижней панелью (зазор 17pt)
-          - Обновление ключей отображается в строке статуса, а не на самой иконке
-          - Все исправления v0.9.5 (совместимость с macOS 12) сохранены
-
+          Собрано автоматически из ветки `main` при запуске workflow
+          вручную (bump: `${{ github.event.inputs.bump }}`).
         files: Raketa-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
