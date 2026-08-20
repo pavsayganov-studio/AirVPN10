@@ -105,7 +105,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.9.8"
+    NSTextField *ver = [self lbl:@"v0.10.0"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;

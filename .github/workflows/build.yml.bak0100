@@ -2,10 +2,15 @@ name: Build Raketa
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Версия релиза, например 0.10.0 (без буквы v)"
+      bump:
+        description: "Version bump type"
         required: true
-        type: string
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 permissions:
   contents: write
 
@@ -15,33 +20,39 @@ jobs:
     steps:
     - uses: actions/checkout@v3
       with:
-        fetch-depth: 0
+        fetch-depth: 0   # need full tag history to compute the next version
 
-    # ── Validate and create the tag from manual input ──────────────────────
-    # No tag-scanning, no auto-bump — the person types the exact version.
-    # This permanently eliminates the class of bug where `sort -V` picked
-    # an unexpected "latest" tag from repo history (root cause of the
-    # v9.1.3 incident).
-    - name: Validate version and create tag
+    # ── Compute and publish the next version tag ──────────────────────────
+    # Finds the highest existing vX.Y.Z tag, bumps it according to the
+    # chosen input (default: patch), creates the tag, and pushes it.
+    # Every later step references $NEW_TAG instead of ${{ github.ref_name }},
+    # since this workflow is no longer triggered by a tag push.
+    - name: Determine next version
       id: version
       run: |
-        RAW="${{ github.event.inputs.version }}"
-
-        # Strip a leading 'v' if the person typed one anyway — forgiving input
-        RAW="${RAW#v}"
-
-        if ! [[ "$RAW" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-          echo "::error::Неверный формат версии: '$RAW'. Нужно X.Y.Z, например 0.10.0"
-          exit 1
+        git fetch --tags --force
+        LATEST=$(git tag -l 'v*.*.*' | sort -V | tail -1)
+        if [ -z "$LATEST" ]; then
+          LATEST="v0.0.0"
         fi
+        echo "Latest tag: $LATEST"
 
-        NEW_TAG="v${RAW}"
-        echo "Requested version: $NEW_TAG"
+        VERSION="${LATEST#v}"
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f2)
+        PATCH=$(echo "$VERSION" | cut -d. -f3)
 
-        if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-          echo "::error::Тег $NEW_TAG уже существует. Выберите другую версию."
-          exit 1
-        fi
+        case "${{ github.event.inputs.bump }}" in
+          major)
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+          minor)
+            MINOR=$((MINOR + 1)); PATCH=0 ;;
+          *)
+            PATCH=$((PATCH + 1)) ;;
+        esac
+
+        NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+        echo "New tag: $NEW_TAG"
 
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -96,7 +107,8 @@ jobs:
         body: |
           ## 🚀 Raketa ${{ steps.version.outputs.tag }}
 
-          Собрано из ветки `main` при ручном запуске workflow.
+          Собрано автоматически из ветки `main` при запуске workflow
+          вручную (bump: `${{ github.event.inputs.bump }}`).
         files: Raketa-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
