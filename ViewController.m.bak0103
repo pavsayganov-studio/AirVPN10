@@ -105,7 +105,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.10.3"
+    NSTextField *ver = [self lbl:@"v0.10.2"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -547,20 +547,6 @@ static dispatch_queue_t sTaskQ;
     NSData *cfgData = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
     if (!cfgData) { [self setStatus:@"Ошибка конфига" color:rkRed]; return; }
     [cfgData writeToFile:self.configPath atomically:YES];
-
-    // FIX (roadmap.md #2.3): config.json holds the VLESS UUID and Reality
-    // key material for every saved server. writeToFile:atomically: creates
-    // a fresh temp file under the hood and rename()s it into place — its
-    // permissions come from the process umask (typically 644, world-
-    // readable), not from any prior version of this file. Since this write
-    // happens on every connect, not just once, the permissions would
-    // reset to the umask default every time without this. sing-box itself
-    // reads this file as root (via the privileged shell call below), and
-    // root bypasses POSIX permission checks entirely — 0600 only blocks
-    // *other local user accounts* on a shared Mac from reading it.
-    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0600}
-                                      ofItemAtPath:self.configPath
-                                             error:nil];
 
     NSString *bin   = singBoxBin;  // already resolved & validated above
     NSString *iface = self.cachedIface;

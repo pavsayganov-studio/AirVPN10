@@ -105,7 +105,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.10.3"
+    NSTextField *ver = [self lbl:@"v0.10.1"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -486,29 +486,6 @@ static dispatch_queue_t sTaskQ;
         if ([o[@"tag"] isEqualToString:tag]) { outbound = o; break; }
     if (!outbound) return;
 
-    // FIX (roadmap.md #2.2): neither parseVless: nor parsedJSON: guarantee
-    // a usable server/server_port — a malformed vless:// link can leave
-    // server as an empty string, and a raw JSON subscription isn't
-    // validated beyond having a type/tag at all. Without this check, a bad
-    // outbound still reaches config.json and the privileged sing-box
-    // launch, wasting an admin password prompt on a config that was
-    // always going to fail. isKindOfClass: checks guard against a
-    // malformed subscription putting an unexpected JSON type (e.g. an
-    // array) in server_port's slot, which would crash on intValue.
-    NSString *server = [outbound[@"server"] isKindOfClass:[NSString class]]
-        ? [outbound[@"server"] stringByTrimmingCharactersInSet:
-           [NSCharacterSet whitespaceAndNewlineCharacterSet]]
-        : nil;
-    id portRaw = outbound[@"server_port"];
-    BOOL portTypeOK = [portRaw isKindOfClass:[NSNumber class]]
-                    || [portRaw isKindOfClass:[NSString class]];
-    NSInteger port = portTypeOK ? [portRaw integerValue] : 0;
-
-    if (!server.length || port < 1 || port > 65535) {
-        [self setStatus:@"Некорректные данные сервера" color:rkRed];
-        return;
-    }
-
     // FIX (roadmap.md #2.6): see note above OLD_STARTVPN_HEAD in the patch
     // script for why this check exists and what it prevents.
     NSString *singBoxBin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
@@ -547,20 +524,6 @@ static dispatch_queue_t sTaskQ;
     NSData *cfgData = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
     if (!cfgData) { [self setStatus:@"Ошибка конфига" color:rkRed]; return; }
     [cfgData writeToFile:self.configPath atomically:YES];
-
-    // FIX (roadmap.md #2.3): config.json holds the VLESS UUID and Reality
-    // key material for every saved server. writeToFile:atomically: creates
-    // a fresh temp file under the hood and rename()s it into place — its
-    // permissions come from the process umask (typically 644, world-
-    // readable), not from any prior version of this file. Since this write
-    // happens on every connect, not just once, the permissions would
-    // reset to the umask default every time without this. sing-box itself
-    // reads this file as root (via the privileged shell call below), and
-    // root bypasses POSIX permission checks entirely — 0600 only blocks
-    // *other local user accounts* on a shared Mac from reading it.
-    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0600}
-                                      ofItemAtPath:self.configPath
-                                             error:nil];
 
     NSString *bin   = singBoxBin;  // already resolved & validated above
     NSString *iface = self.cachedIface;

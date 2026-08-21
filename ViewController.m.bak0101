@@ -105,7 +105,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.10.3"
+    NSTextField *ver = [self lbl:@"v0.10.0"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -113,11 +113,7 @@ static dispatch_queue_t sTaskQ;
     [root addSubview:[self sep:NSMakeRect(0, kH-33, kW, 1)]];
 
     // ── ПОДПИСКА (44–83) — one row: wide add button + square refresh ──────────
-    // FIX (GUI spacing pass): label nudged 3pt earlier (44->41). At 44 the
-    // label's own frame technically overlapped the button row below it by
-    // 2px. Moving the label rather than the row avoids cascading this
-    // change into the separator/section below.
-    [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:41]];
+    [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:44]];
 
     // "Добавить ключи" — primary, wide
     self.addKeysBtn = [self btn:@"＋  Добавить ключи"
@@ -155,10 +151,7 @@ static dispatch_queue_t sTaskQ;
     [root addSubview:[self sep:NSMakeRect(0, kH-83, kW, 1)]];
 
     // ── СЕРВЕР (96–141) ───────────────────────────────────────────────────────
-    // FIX (GUI spacing pass): same nudge as the ПОДПИСКА label above, and
-    // equalized the gap from the separator above (was 12pt vs the other
-    // section's 11pt — 1px drift between the two; both are now 8pt).
-    [root addSubview:[self sectionLbl:@"СЕРВЕР" top:92]];
+    [root addSubview:[self sectionLbl:@"СЕРВЕР" top:96]];
     self.dropdown = [[NSPopUpButton alloc]
                      initWithFrame:[self rx:kPAD top:107 w:kW-kPAD*2 h:26] pullsDown:NO];
     [self.dropdown addItemWithTitle:@"— серверы не загружены —"];
@@ -181,12 +174,8 @@ static dispatch_queue_t sTaskQ;
     [root addSubview:self.statusLabel];
 
     // ── Connect button (168–204) — capsule-style rounded rect ────────────────
-    // FIX (GUI spacing pass): was top:152, drifted from the 168 documented
-    // in this section's own comment above. At 152 the button encroached on
-    // the status row above it and no longer landed flush on the separator
-    // at kH-204. Restored to the documented value.
     self.connectBtn = [[NSButton alloc]
-                       initWithFrame:[self rx:kPAD top:168 w:kW-kPAD*2 h:36]];
+                       initWithFrame:[self rx:kPAD top:152 w:kW-kPAD*2 h:36]];
     self.connectBtn.title    = @"";
     self.connectBtn.bordered = NO;
     self.connectBtn.wantsLayer = YES;
@@ -329,26 +318,10 @@ static dispatch_queue_t sTaskQ;
     [self setStatus:@"Загрузка серверов..." color:rkSub];
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url) { [self setStatus:@"Неверный URL" color:rkRed]; return; }
-
-    // FIX (roadmap.md #2.1): [NSURLSession sharedSession] defaults to a 60s
-    // request timeout. This app's audience is on DPI-blocked / unstable
-    // networks where an unreachable subscription server is a common case,
-    // not an edge case — a silent 60s hang reads as a frozen app. Building
-    // the request explicitly lets us cap it at 10s and tell a timeout apart
-    // from other network failures.
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.timeoutInterval = 10.0;
-
-    [[[NSURLSession sharedSession] dataTaskWithRequest:req
+    [[[NSURLSession sharedSession] dataTaskWithURL:url
         completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (e || !data) {
-                NSString *msg = (e.code == NSURLErrorTimedOut)
-                    ? @"Сервер не отвечает"
-                    : @"Ошибка сети";
-                [self setStatus:msg color:rkRed];
-                return;
-            }
+            if (e || !data) { [self setStatus:@"Ошибка сети" color:rkRed]; return; }
             NSMutableDictionary *j = [NSJSONSerialization
                 JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
             if (j[@"outbounds"]) {
@@ -486,37 +459,6 @@ static dispatch_queue_t sTaskQ;
         if ([o[@"tag"] isEqualToString:tag]) { outbound = o; break; }
     if (!outbound) return;
 
-    // FIX (roadmap.md #2.2): neither parseVless: nor parsedJSON: guarantee
-    // a usable server/server_port — a malformed vless:// link can leave
-    // server as an empty string, and a raw JSON subscription isn't
-    // validated beyond having a type/tag at all. Without this check, a bad
-    // outbound still reaches config.json and the privileged sing-box
-    // launch, wasting an admin password prompt on a config that was
-    // always going to fail. isKindOfClass: checks guard against a
-    // malformed subscription putting an unexpected JSON type (e.g. an
-    // array) in server_port's slot, which would crash on intValue.
-    NSString *server = [outbound[@"server"] isKindOfClass:[NSString class]]
-        ? [outbound[@"server"] stringByTrimmingCharactersInSet:
-           [NSCharacterSet whitespaceAndNewlineCharacterSet]]
-        : nil;
-    id portRaw = outbound[@"server_port"];
-    BOOL portTypeOK = [portRaw isKindOfClass:[NSNumber class]]
-                    || [portRaw isKindOfClass:[NSString class]];
-    NSInteger port = portTypeOK ? [portRaw integerValue] : 0;
-
-    if (!server.length || port < 1 || port > 65535) {
-        [self setStatus:@"Некорректные данные сервера" color:rkRed];
-        return;
-    }
-
-    // FIX (roadmap.md #2.6): see note above OLD_STARTVPN_HEAD in the patch
-    // script for why this check exists and what it prevents.
-    NSString *singBoxBin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
-    if (!singBoxBin || ![[NSFileManager defaultManager] fileExistsAtPath:singBoxBin]) {
-        [self setStatus:@"sing-box не найден в приложении" color:rkRed];
-        return;
-    }
-
     [self setStatus:@"Запуск..." color:rkSub];
 
     NSDictionary *cfg = @{
@@ -548,21 +490,7 @@ static dispatch_queue_t sTaskQ;
     if (!cfgData) { [self setStatus:@"Ошибка конфига" color:rkRed]; return; }
     [cfgData writeToFile:self.configPath atomically:YES];
 
-    // FIX (roadmap.md #2.3): config.json holds the VLESS UUID and Reality
-    // key material for every saved server. writeToFile:atomically: creates
-    // a fresh temp file under the hood and rename()s it into place — its
-    // permissions come from the process umask (typically 644, world-
-    // readable), not from any prior version of this file. Since this write
-    // happens on every connect, not just once, the permissions would
-    // reset to the umask default every time without this. sing-box itself
-    // reads this file as root (via the privileged shell call below), and
-    // root bypasses POSIX permission checks entirely — 0600 only blocks
-    // *other local user accounts* on a shared Mac from reading it.
-    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0600}
-                                      ofItemAtPath:self.configPath
-                                             error:nil];
-
-    NSString *bin   = singBoxBin;  // already resolved & validated above
+    NSString *bin   = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
     NSString *iface = self.cachedIface;
 
     // FIX (macOS 10.13 + 12.x): removed `nohup`.
