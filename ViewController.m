@@ -9,29 +9,35 @@ static NSString *const kTGSecret  = @"dd000000000000000000000000000000";
 static NSString *const kSubKey    = @"RaketaSubscriptionURL";
 static NSString *const kSubFile   = @"subscription.json";
 
-// ── Layout ────────────────────────────────────────────────────────────────────
-// kH=278: one-row subscription buttons save 36pt vs two-row layout.
-// Bottom bar is 73pt — comfortable for credit + buttons.
+// ── Layout (v0.11.0 GUI refresh) ───────────────────────────────────────────────
+// This map is regenerated from scratch, not patched incrementally — previous
+// versions accumulated small per-bug nudges (see v0.10.1/0.10.2 "GUI spacing
+// pass" comments below, now removed) until the comment map and the actual
+// NSMakeRect() numbers had drifted apart, and the gap before the bottom bar
+// had shrunk to 1pt with no breathing room. Every section below keeps a
+// >=14pt gap from its neighbor; nothing is flush against anything else.
+// Hairline separators are gone by design (person's request) — sections are
+// now distinguished by spacing alone, no drawn lines.
 //
-// Map (top-down, pt):
+// Map (top-down, pt) — kept in sync with rx:top:w:h: calls below. If you
+// change a number here, change the matching call, and vice versa.
 //   0  – 32   header
-//  32  – 33   sep
-//  33  – 44   gap (12pt)
-//  44  – 55   ПОДПИСКА label (11pt)
-//  55  – 83   [＋ Добавить ключи (224pt)] [↻ (28pt)]  h=28
-//  83  – 84   sep
-//  84  – 96   gap (12pt)
-//  96  –107   СЕРВЕР label
-// 107  –115   gap (8pt)
-// 115  –141   dropdown (26pt)
-// 141  –149   gap (8pt)
-// 149  –156   status row (dot + text)
-// 156  –168   gap (12pt)
-// 168  –204   connect button (36pt, corner radius 18)
-// 204  –205   sep
-// 205  –278   bottom bar (73pt): Логи | credit | ✈ | Выход
+//  32  – 46   gap (14pt)
+//  46  – 59   ПОДПИСКА label (13pt)
+//  59  – 67   gap (8pt)
+//  67  – 95   [＋ Добавить ключи (224pt)] [↻ (28pt)]  h=28
+//  95  –113   gap (18pt)
+// 113  –126   СЕРВЕР label (13pt)
+// 126  –134   gap (8pt)
+// 134  –160   dropdown (26pt)
+// 160  –174   gap (14pt)
+// 174  –188   status row (dot + text, 14pt)
+// 188  –202   gap (14pt)
+// 202  –238   connect button (36pt, corner radius 18)
+// 238  –254   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
+// 254  –310   bottom bar (56pt): Логи | credit | ✈ | Выход
 static const CGFloat kW      = 300.0;
-static const CGFloat kH      = 278.0;
+static const CGFloat kH      = 310.0;
 static const CGFloat kHTG    = 170.0;
 static const CGFloat kPAD    = 20.0;
 // Width of "Добавить ключи" button: kW - kPAD*2 - 8(gap) - 28(refresh) = 224
@@ -105,23 +111,23 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.10.3"
+    NSTextField *ver = [self lbl:@"v0.11.0"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
     [hdr addSubview:ver];
-    [root addSubview:[self sep:NSMakeRect(0, kH-33, kW, 1)]];
+    // No hairline separator here by design (v0.11.0): the header keeps its
+    // own surface color (rkSurface vs rkBG below), which reads as a distinct
+    // band without needing a drawn line. Every other separator in this
+    // method is gone for the same reason — sections are now told apart by
+    // spacing alone, per the redesign brief.
 
-    // ── ПОДПИСКА (44–83) — one row: wide add button + square refresh ──────────
-    // FIX (GUI spacing pass): label nudged 3pt earlier (44->41). At 44 the
-    // label's own frame technically overlapped the button row below it by
-    // 2px. Moving the label rather than the row avoids cascading this
-    // change into the separator/section below.
-    [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:41]];
+    // ── ПОДПИСКА (46–95) — one row: wide add button + square refresh ──────────
+    [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:46]];
 
     // "Добавить ключи" — primary, wide
     self.addKeysBtn = [self btn:@"＋  Добавить ключи"
-                          frame:[self rx:kPAD top:55 w:kAddW h:28]
+                          frame:[self rx:kPAD top:67 w:kAddW h:28]
                          action:@selector(addKeys) primary:YES];
     self.addKeysBtn.font = [NSFont systemFontOfSize:13];
     [root addSubview:self.addKeysBtn];
@@ -131,7 +137,7 @@ static dispatch_queue_t sTaskQ;
     // present in all macOS system fonts since 10.9
     CGFloat refX = kPAD + kAddW + 8;
     self.refreshIconBtn = [[NSButton alloc]
-                           initWithFrame:[self rx:refX top:55 w:kRefW h:28]];
+                           initWithFrame:[self rx:refX top:67 w:kRefW h:28]];
     // attributedTitle + bordered=NO: NSBezelStyleRounded clips/hides the ↻
     // glyph at small button sizes on macOS 10.13. This renders reliably.
     NSDictionary *iconAttrs = @{
@@ -152,15 +158,10 @@ static dispatch_queue_t sTaskQ;
     self.refreshIconBtn.action     = @selector(refreshKeys);
     [root addSubview:self.refreshIconBtn];
 
-    [root addSubview:[self sep:NSMakeRect(0, kH-83, kW, 1)]];
-
-    // ── СЕРВЕР (96–141) ───────────────────────────────────────────────────────
-    // FIX (GUI spacing pass): same nudge as the ПОДПИСКА label above, and
-    // equalized the gap from the separator above (was 12pt vs the other
-    // section's 11pt — 1px drift between the two; both are now 8pt).
-    [root addSubview:[self sectionLbl:@"СЕРВЕР" top:92]];
+    // ── СЕРВЕР (113–160) ───────────────────────────────────────────────────────
+    [root addSubview:[self sectionLbl:@"СЕРВЕР" top:113]];
     self.dropdown = [[NSPopUpButton alloc]
-                     initWithFrame:[self rx:kPAD top:107 w:kW-kPAD*2 h:26] pullsDown:NO];
+                     initWithFrame:[self rx:kPAD top:134 w:kW-kPAD*2 h:26] pullsDown:NO];
     [self.dropdown addItemWithTitle:@"— серверы не загружены —"];
     self.dropdown.enabled = NO;
     self.dropdown.font    = [NSFont systemFontOfSize:13];
@@ -168,8 +169,8 @@ static dispatch_queue_t sTaskQ;
     self.dropdown.action  = @selector(serverChanged);
     [root addSubview:self.dropdown];
 
-    // ── Status (149–156) ──────────────────────────────────────────────────────
-    CGFloat dotY = kH - 149 - 8;
+    // ── Status (174–188) ──────────────────────────────────────────────────────
+    CGFloat dotY = kH - 174 - 7;
     self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(kPAD, dotY+1, 7, 7)];
     self.statusDot.wantsLayer = YES;
     self.statusDot.layer.cornerRadius    = 3.5;
@@ -177,50 +178,53 @@ static dispatch_queue_t sTaskQ;
     [root addSubview:self.statusDot];
     self.statusLabel = [self lbl:@"Готов к работе"
                             font:[NSFont systemFontOfSize:11] color:rkSub
-                           frame:NSMakeRect(kPAD+13, dotY, kW-kPAD*2-13, 14)];
+                           frame:NSMakeRect(kPAD+13, dotY-2, kW-kPAD*2-13, 14)];
     [root addSubview:self.statusLabel];
 
-    // ── Connect button (168–204) — capsule-style rounded rect ────────────────
-    // FIX (GUI spacing pass): was top:152, drifted from the 168 documented
-    // in this section's own comment above. At 152 the button encroached on
-    // the status row above it and no longer landed flush on the separator
-    // at kH-204. Restored to the documented value.
+    // ── Connect button (202–238) — capsule-style rounded rect ────────────────
+    // BUGFIX (v0.11.0): reported "button crowds the bottom bar" — the gap
+    // below this button had eroded to 1pt over several point-fixes (see the
+    // old top-of-file map, now replaced). Every other section in this
+    // method keeps >=14pt from its neighbor; this one now gets 16pt too,
+    // and there's no separator line immediately under it to crowd against.
     self.connectBtn = [[NSButton alloc]
-                       initWithFrame:[self rx:kPAD top:168 w:kW-kPAD*2 h:36]];
+                       initWithFrame:[self rx:kPAD top:202 w:kW-kPAD*2 h:36]];
     self.connectBtn.title    = @"";
     self.connectBtn.bordered = NO;
     self.connectBtn.wantsLayer = YES;
     self.connectBtn.layer.cornerRadius    = 18;
-    self.connectBtn.layer.borderWidth     = 1.0;
+    // Thinner border (was 1.0) — part of the "same colors, lighter touch"
+    // refresh; the icon-refresh button already used 0.5 and looked right,
+    // so the connect button now matches it exactly.
+    self.connectBtn.layer.borderWidth     = 0.5;
     self.connectBtn.layer.borderColor     = rkBorder.CGColor;
     self.connectBtn.layer.backgroundColor = rkBtn.CGColor;
     self.connectBtn.target = self;
     self.connectBtn.action = @selector(toggle);
     [self setConnectTitle:@"○  ВЫКЛ" color:rkSub];
     [root addSubview:self.connectBtn];
-    [root addSubview:[self sep:NSMakeRect(0, kH-204, kW, 1)]];
 
-    // ── Bottom bar (204–278) — 74pt: Логи | credit | ✈ | Выход ──────────────
-    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, 73)];
+    // ── Bottom bar (254–310) — 56pt: Логи | credit | ✈ | Выход ──────────────
+    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, 56)];
     bar.wantsLayer = YES;
     bar.layer.backgroundColor = rkSurface.CGColor;
     [root addSubview:bar];
 
     NSButton *logBtn = [self btn:@"Логи"
-                           frame:NSMakeRect(kPAD, 36, 58, 21)
+                           frame:NSMakeRect(kPAD, 26, 58, 21)
                           action:@selector(openLogs) primary:NO];
     logBtn.font = [NSFont systemFontOfSize:11];
     [bar addSubview:logBtn];
 
     NSButton *quitBtn = [self btn:@"Выход"
-                            frame:NSMakeRect(kW-kPAD-68, 36, 68, 21)
+                            frame:NSMakeRect(kW-kPAD-68, 26, 68, 21)
                            action:@selector(quit) primary:NO];
     quitBtn.font = [NSFont systemFontOfSize:11];
     [bar addSubview:quitBtn];
 
     // ✈ Telegram icon button — 32×21pt, left of Выход with 4pt gap
     self.tgIconBtn = [[NSButton alloc]
-                      initWithFrame:NSMakeRect(kW-kPAD-68-4-32, 36, 32, 21)];
+                      initWithFrame:NSMakeRect(kW-kPAD-68-4-32, 26, 32, 21)];
     self.tgIconBtn.title      = @"✈";
     self.tgIconBtn.font       = [NSFont systemFontOfSize:14];
     self.tgIconBtn.bezelStyle = NSBezelStyleRounded;
@@ -230,7 +234,7 @@ static dispatch_queue_t sTaskQ;
     [bar addSubview:self.tgIconBtn];
 
     // Credit — 9pt Mini, tracked, centred
-    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 10, kW, 14)];
+    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 4, kW, 14)];
     credit.bezeled = NO; credit.drawsBackground = NO;
     credit.editable = NO; credit.selectable = NO;
     credit.alignment = NSTextAlignmentCenter;
