@@ -69,6 +69,14 @@ static dispatch_queue_t sTaskQ;
 @property (strong) NSMutableArray *proxyOutbounds;
 @property (assign) BOOL            connected;
 @property (assign) BOOL            stopping;
+// BUGFIX: guards addKeys/refreshKeys against a double-fire — both call
+// downloadURL: asynchronously, and with no lock, a second click while the
+// first fetch is in flight starts a second NSURLSession task racing the
+// first. Whichever completes second silently overwrites whatever the
+// first one already wrote to kSubKey/config. This flag is the lock;
+// both trigger buttons are disabled while it's true (see addKeys/
+// refreshKeys/downloadURL below).
+@property (assign) BOOL            fetchingKeys;
 @property (assign) pid_t           corePID;
 @property (strong) NSTimer        *watchdog;
 @end
@@ -111,7 +119,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.11.0"
+    NSTextField *ver = [self lbl:@"v0.11.1"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -250,7 +258,7 @@ static dispatch_queue_t sTaskQ;
     // ── TG Panel ──────────────────────────────────────────────────────────────
     [self buildTGPanel:root];
 
-    self.view = root; self.connected = NO; self.stopping = NO;
+    self.view = root; self.connected = NO; self.stopping = NO; self.fetchingKeys = NO;
     self.tgOpen = NO; self.corePID = 0;
 
     // ── Paths ─────────────────────────────────────────────────────────────────
@@ -286,6 +294,7 @@ static dispatch_queue_t sTaskQ;
 
 // "Добавить ключи" — paste vless:// or subscription URL from clipboard
 - (void)addKeys {
+    if (self.fetchingKeys) return;   // BUGFIX: ignore clicks mid-fetch, see property comment
     NSString *text = [[[NSPasteboard generalPasteboard]
                         stringForType:NSPasteboardTypeString]
                        stringByTrimmingCharactersInSet:
@@ -306,6 +315,7 @@ static dispatch_queue_t sTaskQ;
 
 // ↻ "Обновить ключи" — re-fetch from saved source
 - (void)refreshKeys {
+    if (self.fetchingKeys) return;   // BUGFIX: ignore clicks mid-fetch, see property comment
     NSString *saved = [[NSUserDefaults standardUserDefaults] stringForKey:kSubKey];
     if (!saved.length) {
         [self setStatus:@"Сначала добавьте ключи" color:rkOrange]; return;
@@ -334,6 +344,16 @@ static dispatch_queue_t sTaskQ;
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url) { [self setStatus:@"Неверный URL" color:rkRed]; return; }
 
+    // BUGFIX: lock + disable both trigger buttons for the duration of the
+    // actual network round-trip only — rawText: (pasted vless:// keys) is
+    // fully synchronous and never reaches this method, so it doesn't need
+    // the lock. Cleared unconditionally as the first thing inside the
+    // completion block, before any branching, so every exit path (timeout,
+    // network error, bad JSON, bad vless) releases it the same way.
+    self.fetchingKeys = YES;
+    self.addKeysBtn.enabled = NO;
+    self.refreshIconBtn.enabled = NO;
+
     // FIX (roadmap.md #2.1): [NSURLSession sharedSession] defaults to a 60s
     // request timeout. This app's audience is on DPI-blocked / unstable
     // networks where an unreachable subscription server is a common case,
@@ -346,6 +366,9 @@ static dispatch_queue_t sTaskQ;
     [[[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.fetchingKeys = NO;
+            self.addKeysBtn.enabled = YES;
+            self.refreshIconBtn.enabled = YES;
             if (e || !data) {
                 NSString *msg = (e.code == NSURLErrorTimedOut)
                     ? @"Сервер не отвечает"
