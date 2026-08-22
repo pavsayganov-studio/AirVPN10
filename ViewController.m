@@ -119,7 +119,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.11.1"
+    NSTextField *ver = [self lbl:@"v0.11.2"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -300,12 +300,19 @@ static dispatch_queue_t sTaskQ;
                        stringByTrimmingCharactersInSet:
                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!text.length) {
-        [self setStatus:@"Буфер обмена пуст" color:rkOrange]; return;
+        // BUGFIX: this and the two messages below it were all plain orange
+        // text with similar short phrasing ("Буфер... / Нет... / Сначала...")
+        // — easy to mix up at a glance. Added the ⚠ prefix already used
+        // elsewhere in this file for actionable-error states (see
+        // uiConnected's crash messages) so all four read consistently as
+        // "needs your attention" against neutral status lines like
+        // "Готов к работе" / "Выбран: ...".
+        [self setStatus:@"⚠  Буфер обмена пуст" color:rkOrange]; return;
     }
     BOOL isVless = [text hasPrefix:@"vless://"];
     BOOL isURL   = [text hasPrefix:@"http://"] || [text hasPrefix:@"https://"];
     if (!isVless && !isURL) {
-        [self setStatus:@"Нет ссылки в буфере" color:rkOrange]; return;
+        [self setStatus:@"⚠  Нет ссылки в буфере" color:rkOrange]; return;
     }
     [[NSUserDefaults standardUserDefaults] setObject:text forKey:kSubKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
@@ -318,7 +325,7 @@ static dispatch_queue_t sTaskQ;
     if (self.fetchingKeys) return;   // BUGFIX: ignore clicks mid-fetch, see property comment
     NSString *saved = [[NSUserDefaults standardUserDefaults] stringForKey:kSubKey];
     if (!saved.length) {
-        [self setStatus:@"Сначала добавьте ключи" color:rkOrange]; return;
+        [self setStatus:@"⚠  Сначала добавьте ключи" color:rkOrange]; return;
     }
     // Spin the icon while loading — simple visual feedback without animation overhead
     // Feedback via status line — avoids clobbering the icon's attributedTitle
@@ -328,7 +335,7 @@ static dispatch_queue_t sTaskQ;
     } else if ([saved hasPrefix:@"vless://"]) {
         [self rawText:saved];
     } else {
-        [self setStatus:@"Неизвестный формат" color:rkRed];
+        [self setStatus:@"⚠  Неизвестный формат" color:rkRed];
     }
 }
 
@@ -505,7 +512,7 @@ static dispatch_queue_t sTaskQ;
 
 - (void)startVPN {
     if (!self.proxyTags.count) {
-        [self setStatus:@"Сначала добавьте ключи" color:rkOrange]; return;
+        [self setStatus:@"⚠  Сначала добавьте ключи" color:rkOrange]; return;
     }
     NSString *tag = self.dropdown.titleOfSelectedItem ?: @"";
     NSDictionary *outbound = nil;
@@ -835,7 +842,14 @@ static dispatch_queue_t sTaskQ;
 #pragma mark - UI State
 // =============================================================================
 - (void)serverChanged {
-    if (!self.connected) return;
+    // BUGFIX: previously this method did nothing at all while disconnected —
+    // picking a server in the dropdown gave zero feedback beyond the popup
+    // closing. Status line now always reflects the current selection.
+    if (!self.connected) {
+        [self setStatus:[NSString stringWithFormat:@"Выбран: %@",
+                          self.dropdown.titleOfSelectedItem ?: @""] color:rkSub];
+        return;
+    }
     if ([self stopVPN])
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4*NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self startVPN]; });
