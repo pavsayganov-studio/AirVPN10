@@ -119,7 +119,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.11.2"
+    NSTextField *ver = [self lbl:@"v0.11.3"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -134,10 +134,31 @@ static dispatch_queue_t sTaskQ;
     [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:46]];
 
     // "Добавить ключи" — primary, wide
-    self.addKeysBtn = [self btn:@"＋  Добавить ключи"
-                          frame:[self rx:kPAD top:67 w:kAddW h:28]
-                         action:@selector(addKeys) primary:YES];
-    self.addKeysBtn.font = [NSFont systemFontOfSize:13];
+    // BUGFIX: previously used the system NSBezelStyleRounded bezel. That
+    // bezel draws its own highlight/shadow outside its nominal frame, which
+    // made it look visually taller/heavier than the custom CALayer square
+    // refresh button sitting right next to it on the same row — even
+    // though both frames use identical top/height values. Converted to the
+    // same CALayer approach as the refresh button so the pair reads as one
+    // consistent row instead of two different visual languages. Kept the
+    // fill white (not rkBtn's pale blue) so it still reads as the primary
+    // action on the row — the refresh button stays secondary/pale blue.
+    self.addKeysBtn = [[NSButton alloc]
+                       initWithFrame:[self rx:kPAD top:67 w:kAddW h:28]];
+    self.addKeysBtn.attributedTitle = [[NSAttributedString alloc]
+        initWithString:@"＋  Добавить ключи"
+            attributes:@{
+                NSFontAttributeName:            [NSFont systemFontOfSize:13],
+                NSForegroundColorAttributeName: rkText
+            }];
+    self.addKeysBtn.bordered    = NO;
+    self.addKeysBtn.wantsLayer  = YES;
+    self.addKeysBtn.layer.cornerRadius    = 6;
+    self.addKeysBtn.layer.borderWidth     = 0.5;
+    self.addKeysBtn.layer.borderColor     = rkBorder.CGColor;
+    self.addKeysBtn.layer.backgroundColor = [NSColor whiteColor].CGColor;
+    self.addKeysBtn.target = self;
+    self.addKeysBtn.action = @selector(addKeys);
     [root addSubview:self.addKeysBtn];
 
     // ↻ refresh button — square, icon only, right of add button
@@ -358,8 +379,7 @@ static dispatch_queue_t sTaskQ;
     // completion block, before any branching, so every exit path (timeout,
     // network error, bad JSON, bad vless) releases it the same way.
     self.fetchingKeys = YES;
-    self.addKeysBtn.enabled = NO;
-    self.refreshIconBtn.enabled = NO;
+    [self setSubscriptionControlsEnabled:NO];
 
     // FIX (roadmap.md #2.1): [NSURLSession sharedSession] defaults to a 60s
     // request timeout. This app's audience is on DPI-blocked / unstable
@@ -374,8 +394,7 @@ static dispatch_queue_t sTaskQ;
         completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
         dispatch_async(dispatch_get_main_queue(), ^{
             self.fetchingKeys = NO;
-            self.addKeysBtn.enabled = YES;
-            self.refreshIconBtn.enabled = YES;
+            [self setSubscriptionControlsEnabled:YES];
             if (e || !data) {
                 NSString *msg = (e.code == NSURLErrorTimedOut)
                     ? @"Сервер не отвечает"
@@ -870,6 +889,19 @@ static dispatch_queue_t sTaskQ;
     self.statusLabel.stringValue         = text;
     self.statusLabel.textColor           = color;
     self.statusDot.layer.backgroundColor = color.CGColor;
+}
+// BUGFIX: addKeysBtn and refreshIconBtn are both `bordered = NO` custom
+// CALayer buttons (as of this pass — addKeysBtn used to be a system
+// NSBezelStyleRounded button, which dims automatically on `.enabled = NO`;
+// bordered=NO buttons don't reliably get that for free, since the dimming
+// is tied to the system bezel/image rendering this button no longer uses).
+// Setting `.enabled` alone would silently stop taking clicks without
+// showing it — this keeps the two in sync explicitly.
+- (void)setSubscriptionControlsEnabled:(BOOL)enabled {
+    self.addKeysBtn.enabled = enabled;
+    self.refreshIconBtn.enabled = enabled;
+    self.addKeysBtn.layer.opacity = enabled ? 1.0 : 0.4;
+    self.refreshIconBtn.layer.opacity = enabled ? 1.0 : 0.4;
 }
 - (void)setConnectTitle:(NSString *)title color:(NSColor *)color {
     NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
