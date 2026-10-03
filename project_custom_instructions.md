@@ -25,11 +25,16 @@ them unless the person explicitly asks to:
 - **System Proxy architecture, not TUN.** This was tried and abandoned
   early (double password prompts, unrecoverable hangs on crash). Don't
   suggest switching back without being asked.
-- **Delivery format: one complete script per change**, bash or Python,
-  self-contained, ending in exact `git add / commit / tag / push`
-  commands. The person works exclusively through GitHub Codespaces — no
-  local Xcode, no diffs, no "edit line N" instructions. Every script backs
-  up files it touches before rewriting them (`cp X X.bakVERSION`).
+- **Delivery format: one complete Python patch script per change**
+  (`patch_raketa_<ver>.py`), self-contained: it backs up touched files
+  (`cp X X.bakVERSION`), applies anchored edits, verifies, then runs
+  `git commit` + `git push origin main` itself and deletes itself. No tag —
+  releases are cut by hand in Actions → Build Raketa → Run workflow. The
+  person works exclusively through GitHub Codespaces — no local Xcode, no
+  diffs, no "edit line N" instructions.
+- **Source of truth is the code** (repomix of the repo). When docs and code
+  disagree, the code wins; every patch updates the affected docs
+  (`handoff.md`, `README.md`, `design.md`, `roadmap.md`).
 - Never touch the underlying VLESS/Reality/routing logic, the credit line
   in the UI, or the overall visual style without being asked — these are
   finished, approved, and explicitly praised by the person as correct.

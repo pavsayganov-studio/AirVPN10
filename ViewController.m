@@ -1,5 +1,6 @@
 #import "ViewController.h"
 #import <SystemConfiguration/SystemConfiguration.h>
+#import "DPIEngine.h"
 
 // ── Ports ─────────────────────────────────────────────────────────────────────
 static const NSInteger kSOCKSPort = 10808;
@@ -34,10 +35,14 @@ static NSString *const kSubFile   = @"subscription.json";
 // 174  –188   status row (dot + text, 14pt)
 // 188  –202   gap (14pt)
 // 202  –238   connect button (36pt, corner radius 18)
-// 238  –254   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
-// 254  –310   bottom bar (56pt): Логи | credit | ✈ | Выход
+// 238  –252   gap (14pt)
+// 252  –265   YOUTUBE label (13pt) + strategy caption on the right (v0.12.0)
+// 265  –273   gap (8pt)
+// 273  –301   [🔍 (28pt)] [▶ Смотреть YouTube (188pt)] [▾ (28pt)]  h=28
+// 301  –317   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
+// 317  –373   bottom bar (56pt): Логи | credit | ✈ | Выход
 static const CGFloat kW      = 300.0;
-static const CGFloat kH      = 310.0;
+static const CGFloat kH      = 373.0;
 static const CGFloat kHTG    = 170.0;
 static const CGFloat kPAD    = 20.0;
 // Width of "Добавить ключи" button: kW - kPAD*2 - 8(gap) - 28(refresh) = 224
@@ -79,6 +84,16 @@ static dispatch_queue_t sTaskQ;
 @property (assign) BOOL            fetchingKeys;
 @property (assign) pid_t           corePID;
 @property (strong) NSTimer        *watchdog;
+// ── YouTube / DPI bypass (v0.12.0) ──
+@property (strong) DPIEngine      *dpi;
+@property (strong) NSButton       *ytSearchBtn;   // 🔍 update list + find strategies
+@property (strong) NSButton       *ytBtn;         // ▶ Смотреть YouTube
+@property (strong) NSButton       *ytListBtn;     // ▾ top-10 strategies menu
+@property (strong) NSTextField    *ytCaption;     // "№7 · 16/19"
+@property (copy)   NSString       *ytConfigPath;
+@property (assign) BOOL            ytActive;      // YouTube mode running
+@property (assign) BOOL            ytBusy;        // start/stop/switch in flight
+@property (assign) BOOL            ytStartAfterSearch;
 @end
 
 @implementation ViewController
@@ -119,7 +134,7 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.11.3"
+    NSTextField *ver = [self lbl:@"v0.12.0"
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -233,7 +248,10 @@ static dispatch_queue_t sTaskQ;
     [self setConnectTitle:@"○  ВЫКЛ" color:rkSub];
     [root addSubview:self.connectBtn];
 
-    // ── Bottom bar (254–310) — 56pt: Логи | credit | ✈ | Выход ──────────────
+    // ── YouTube / DPI row (252–301) — v0.12.0 ────────────────────────────────
+    [self buildYouTubeRow:root];
+
+    // ── Bottom bar (317–373) — 56pt: Логи | credit | ✈ | Выход ──────────────
     NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, 56)];
     bar.wantsLayer = YES;
     bar.layer.backgroundColor = rkSurface.CGColor;
@@ -291,6 +309,21 @@ static dispatch_queue_t sTaskQ;
     self.configPath = [[sup URLByAppendingPathComponent:@"config.json"] path];
     self.logPath    = [[sup URLByAppendingPathComponent:@"raketa.log"]  path];
     self.subPath    = [[sup URLByAppendingPathComponent:kSubFile] path];
+    self.ytConfigPath = [[sup URLByAppendingPathComponent:@"config-yt.json"] path];
+
+    // DPI engine (v0.12.0). A missing ciadpi only disables the YouTube row;
+    // it can never affect the VPN.
+    self.dpi = [[DPIEngine alloc]
+        initWithBinary:[[NSBundle mainBundle] pathForResource:@"ciadpi" ofType:nil]
+           resourceDir:[[NSBundle mainBundle] resourcePath]
+            supportDir:sup.path];
+    [self.dpi cleanupStaleProxy];          // orphan from a crashed session, if any
+    __weak typeof(self) wself = self;
+    self.dpi.onProxyGaveUp = ^{
+        if (wself.ytActive)
+            [wself setStatus:@"⚠  DPI-движок остановился — выключите YouTube" color:rkOrange];
+    };
+    [self ytUIRender];
 
     self.cachedIface = [self detectIface];
     if ([self isProxyOn]) [self forceProxyOff];
@@ -527,7 +560,13 @@ static dispatch_queue_t sTaskQ;
 // =============================================================================
 #pragma mark - VPN Core
 // =============================================================================
-- (void)toggle { self.connected ? [self stopVPN] : [self startVPN]; }
+- (void)toggle {
+    if (self.ytBusy) return;                 // never interleave with a YouTube start/stop
+    // v0.12.0: YouTube mode owns the system proxy; hand it over cleanly.
+    // NO = password prompt cancelled -> keep YouTube mode, do not start the VPN.
+    if (!self.connected && self.ytActive && ![self ytStopSync]) return;
+    self.connected ? [self stopVPN] : [self startVPN];
+}
 
 - (void)startVPN {
     if (!self.proxyTags.count) {
@@ -691,6 +730,328 @@ static dispatch_queue_t sTaskQ;
 }
 
 // =============================================================================
+#pragma mark - YouTube / DPI bypass  (v0.12.0)
+// =============================================================================
+// Design rules for this section:
+//  * The VPN code path (startVPN / stopVPN / config generation) is NOT modified.
+//    This section only *reuses* stopVPN as the privileged teardown (kill the
+//    core + system proxy off) and the existing watchdog.
+//  * YouTube mode and VPN are mutually exclusive at the system-proxy level:
+//    only one sing-box owns ports 10808/10809 at a time. toggle() tears YouTube
+//    mode down first when the person presses ВКЛ.
+//  * Switching strategy while YouTube mode is on restarts only ciadpi (a
+//    user-level process) — no sing-box restart, no password prompt.
+//  * No timers added here. Search runs only when the person asks for it.
+
+- (NSButton *)ytIconBtn:(NSString *)glyph tip:(NSString *)tip action:(SEL)a frame:(NSRect)r {
+    NSButton *b = [[NSButton alloc] initWithFrame:r];
+    // Same recipe as refreshIconBtn: attributedTitle + bordered=NO renders the
+    // glyph reliably at small sizes on macOS 10.13.
+    [self ytSetTitle:glyph on:b size:15 color:rkSub];
+    b.bordered   = NO;
+    b.wantsLayer = YES;
+    b.layer.cornerRadius    = 6;
+    b.layer.borderWidth     = 0.5;
+    b.layer.borderColor     = rkBorder.CGColor;
+    b.layer.backgroundColor = rkBtn.CGColor;
+    b.toolTip = tip;
+    b.target  = self;
+    b.action  = a;
+    return b;
+}
+
+- (void)ytSetTitle:(NSString *)t on:(NSButton *)b size:(CGFloat)sz color:(NSColor *)c {
+    NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+    ps.alignment = NSTextAlignmentCenter;
+    b.attributedTitle = [[NSAttributedString alloc] initWithString:t attributes:@{
+        NSFontAttributeName:            [NSFont systemFontOfSize:sz weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: c,
+        NSParagraphStyleAttributeName:  ps }];
+}
+
+// Row (273–301): [🔍 (28)] [▶ Смотреть YouTube (188)] [▾ (28)]
+- (void)buildYouTubeRow:(NSView *)root {
+    [root addSubview:[self sectionLbl:@"YOUTUBE" top:252]];
+    self.ytCaption = [self lbl:@"" font:[NSFont systemFontOfSize:11] color:rkSub
+                         frame:[self rx:kW-kPAD-160 top:252 w:160 h:13]];
+    self.ytCaption.alignment = NSTextAlignmentRight;
+    [root addSubview:self.ytCaption];
+
+    CGFloat midX = kPAD + kRefW + 8;
+    CGFloat midW = kW - kPAD*2 - kRefW*2 - 16;
+
+    self.ytSearchBtn = [self ytIconBtn:@"🔍" tip:@"Обновить список стратегий и найти лучшие для этой сети"
+                                action:@selector(ytSearchClicked)
+                                 frame:[self rx:kPAD top:273 w:kRefW h:28]];
+    [root addSubview:self.ytSearchBtn];
+
+    self.ytBtn = [[NSButton alloc] initWithFrame:[self rx:midX top:273 w:midW h:28]];
+    self.ytBtn.bordered   = NO;
+    self.ytBtn.wantsLayer = YES;
+    self.ytBtn.layer.cornerRadius = 6;
+    self.ytBtn.layer.borderWidth  = 0.5;
+    self.ytBtn.target = self;
+    self.ytBtn.action = @selector(ytToggle);
+    [root addSubview:self.ytBtn];
+
+    self.ytListBtn = [self ytIconBtn:@"▾" tip:@"Лучшие стратегии для YouTube"
+                              action:@selector(ytShowMenu)
+                               frame:[self rx:kW-kPAD-kRefW top:273 w:kRefW h:28]];
+    [root addSubview:self.ytListBtn];
+}
+
+// Single place that decides what the three controls look like and whether
+// they are enabled. Safe to call at any time (no-ops before the row exists).
+- (void)ytUIRender {
+    if (!self.ytBtn) return;
+    BOOL avail  = self.dpi.available;
+    BOOL search = self.dpi.searching;
+    BOOL busy   = self.ytBusy;
+    BOOL on     = self.ytActive;
+    NSString *sel = self.dpi.selectedStrategy;
+    NSInteger num = sel.length ? [self.dpi numberForStrategy:sel] : 0;
+    DPIResult *res = num > 0 ? [self.dpi resultForStrategy:sel] : nil;
+
+    NSString *cap;
+    if (!avail)        cap = @"движок не найден";
+    else if (num > 0)  cap = res ? [NSString stringWithFormat:@"№%ld · %ld/%ld",
+                                    (long)num, (long)res.ok, (long)res.total]
+                                 : [NSString stringWithFormat:@"№%ld", (long)num];
+    else               cap = @"стратегия не выбрана";
+    self.ytCaption.stringValue = cap;
+
+    [self ytSetTitle:(on ? [NSString stringWithFormat:@"●  YouTube · №%ld", (long)num]
+                         : @"▶  Смотреть YouTube")
+                  on:self.ytBtn size:13 color:(on ? rkGreen : rkText)];
+    self.ytBtn.layer.borderColor = on ? rkGreen.CGColor : rkBorder.CGColor;
+    self.ytBtn.layer.backgroundColor = on
+        ? [NSColor colorWithRed:0.06 green:0.45 blue:0.18 alpha:0.15].CGColor
+        : rkBtn.CGColor;
+
+    [self ytSetTitle:(search ? @"✕" : @"🔍") on:self.ytSearchBtn size:15 color:rkSub];
+
+    self.ytBtn.enabled       = avail && !self.connected && !busy && !search;
+    self.ytSearchBtn.enabled = avail && !busy;
+    self.ytListBtn.enabled   = avail && !busy && !search;
+    self.ytBtn.alphaValue       = self.ytBtn.enabled       ? 1.0 : 0.45;
+    self.ytSearchBtn.alphaValue = self.ytSearchBtn.enabled ? 1.0 : 0.45;
+    self.ytListBtn.alphaValue   = self.ytListBtn.enabled   ? 1.0 : 0.45;
+    self.ytSearchBtn.toolTip = search ? @"Остановить поиск"
+                                      : @"Обновить список стратегий и найти лучшие для этой сети";
+    self.ytBtn.toolTip = self.connected
+        ? @"Выключите VPN: при включённом VPN YouTube уже идёт через него"
+        : (on ? @"Выключить обход DPI для YouTube" : @"Включить обход DPI для YouTube");
+}
+
+- (void)ytToggle {
+    if (self.ytBusy || self.dpi.searching) return;
+    if (self.ytActive) [self ytStop]; else [self ytStart];
+}
+
+- (void)ytStart {
+    if (self.connected) {
+        [self setStatus:@"⚠  Выключите VPN — YouTube уже идёт через него" color:rkOrange]; return;
+    }
+    if (!self.dpi.available) { [self setStatus:@"DPI-движок не найден в приложении" color:rkRed]; return; }
+
+    // Use the person's choice if it is still in the list; otherwise the best
+    // result of the last search.
+    NSString *s = self.dpi.selectedStrategy;
+    if (!s.length || [self.dpi numberForStrategy:s] == 0) {
+        s = [[self.dpi topResults:1] firstObject].strategy;
+        if (s.length) self.dpi.selectedStrategy = s;
+    }
+    if (!s.length) {
+        // Never searched on this machine: search first, then start by itself.
+        self.ytStartAfterSearch = YES;
+        [self ytRunSearch];
+        return;
+    }
+    self.ytBusy = YES;
+    [self ytUIRender];
+    [self setStatus:@"Запуск обхода DPI..." color:rkSub];
+    [self.dpi startProxyWithStrategy:s completion:^(BOOL ok, NSString *err) {
+        if (!ok) {
+            self.ytBusy = NO;
+            [self setStatus:[NSString stringWithFormat:@"⚠  %@", err ?: @"ошибка запуска"] color:rkRed];
+            [self ytUIRender];
+            return;
+        }
+        [self ytLaunchCore];
+    }];
+}
+
+// Second half of the start: sing-box with the YouTube-only config. Mirrors the
+// privileged launch block of startVPN (same shell recipe, same prompt flow) but
+// is kept separate on purpose so startVPN stays byte-for-byte untouched.
+- (void)ytLaunchCore {
+    NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
+    if (!bin || ![[NSFileManager defaultManager] fileExistsAtPath:bin]) {
+        [self.dpi stopProxy]; self.ytBusy = NO;
+        [self setStatus:@"sing-box не найден в приложении" color:rkRed]; [self ytUIRender]; return;
+    }
+    NSDictionary *cfg = [DPIEngine youtubeOnlyConfigWithInbounds:@[
+        @{@"type":@"mixed",@"tag":@"mixed",
+          @"listen":@"127.0.0.1",@"listen_port":@(kMixedPort)},
+        @{@"type":@"socks",@"tag":@"socks",
+          @"listen":@"127.0.0.1",@"listen_port":@(kSOCKSPort)}]];
+    NSData *cfgData = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
+    if (!cfgData || ![cfgData writeToFile:self.ytConfigPath atomically:YES]) {
+        [self.dpi stopProxy]; self.ytBusy = NO;
+        [self setStatus:@"Ошибка конфига" color:rkRed]; [self ytUIRender]; return;
+    }
+
+    NSString *iface = self.cachedIface;
+    NSString *sh = [NSString stringWithFormat:
+        @"killall -9 sing-box 2>/dev/null||true;"
+        @"sleep 0.3;"
+        @"networksetup -setwebproxy '%@' 127.0.0.1 %ld;"
+        @"networksetup -setsecurewebproxy '%@' 127.0.0.1 %ld;"
+        @"networksetup -setsocksfirewallproxy '%@' 127.0.0.1 %ld;"
+        @"'%@' run -c '%@' > '%@' 2>&1 & echo $!",
+        [self esc:iface],(long)kMixedPort,
+        [self esc:iface],(long)kMixedPort,
+        [self esc:iface],(long)kSOCKSPort,
+        [self esc:bin],[self esc:self.ytConfigPath],[self esc:self.logPath]];
+    NSString *scpt = [NSString stringWithFormat:
+        @"do shell script \"%@\" with administrator privileges "
+        @"with prompt \"Raketa: запуск YouTube\"",
+        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
+
+    NSDictionary *err = nil;
+    NSAppleEventDescriptor *res =
+        [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
+    if (err) {
+        [self.dpi stopProxy]; self.ytBusy = NO;
+        [self setStatus:@"Отменено" color:rkSub];
+        // -128 = the person cancelled the password prompt: nothing ran, so there
+        // is nothing to reset (and a second prompt would just be noise).
+        if ([err[NSAppleScriptErrorNumber] integerValue] != -128) [self forceProxyOff];
+        [self ytUIRender];
+        return;
+    }
+    self.corePID = (pid_t)[[res stringValue] intValue];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        self.ytBusy = NO;
+        if ([self coreAlive]) {
+            self.ytActive = YES;
+            [self startWatchdog];
+            [self setStatus:[NSString stringWithFormat:@"YouTube · обход DPI · №%ld",
+                (long)[self.dpi numberForStrategy:self.dpi.selectedStrategy ?: @""]] color:rkGreen];
+        } else {
+            [self.dpi stopProxy];
+            [self setStatus:@"⚠  Ядро не запустилось — Логи" color:rkRed];
+            [self forceProxyOff];
+        }
+        [self ytUIRender];
+    });
+}
+
+- (void)ytStop {
+    self.ytBusy = YES; [self ytUIRender];
+    [self ytStopSync];                 // on failure stopVPN already set the status
+    self.ytBusy = NO;  [self ytUIRender];
+}
+
+// Privileged teardown (reuses stopVPN: kill core, system proxy off) + stop ciadpi.
+// NO if the person cancelled the password prompt — YouTube mode then stays as it was.
+- (BOOL)ytStopSync {
+    if (![self stopVPN]) return NO;
+    [self.dpi stopProxy];
+    self.ytActive = NO;
+    [self ytUIRender];
+    return YES;
+}
+
+- (void)ytSearchClicked {
+    if (self.dpi.searching) { [self.dpi cancelSearch]; return; }
+    if (self.ytBusy) return;
+    self.ytStartAfterSearch = NO;
+    [self ytRunSearch];
+}
+
+// Order is fixed by design: (1) check the strategy repo for updates,
+// (2) test every strategy on the current network, (3) pick the best.
+- (void)ytRunSearch {
+    if (!self.dpi.available || self.dpi.searching || self.ytBusy) return;
+    [self setStatus:@"Проверяю обновления стратегий..." color:rkSub];
+    [self.dpi searchWithProgress:^(NSString *stage, NSInteger done, NSInteger total, NSInteger best) {
+        if ([stage isEqualToString:@"update"])
+            [self setStatus:@"Проверяю обновления стратегий..." color:rkSub];
+        else
+            [self setStatus:[NSString stringWithFormat:@"Поиск стратегии · %ld/%ld · лучшая %ld",
+                             (long)done, (long)total, (long)best] color:rkSub];
+    } done:^(BOOL ok, NSString *summary) {
+        if (ok) {
+            DPIResult *best = [[self.dpi topResults:1] firstObject];
+            if (best) self.dpi.selectedStrategy = best.strategy;
+            [self setStatus:summary color:rkGreen];
+        } else {
+            [self setStatus:[NSString stringWithFormat:@"⚠  %@", summary] color:rkOrange];
+        }
+        BOOL again = self.ytStartAfterSearch;
+        self.ytStartAfterSearch = NO;
+        [self ytUIRender];
+        if (again && ok) [self ytStart];
+    }];
+    [self ytUIRender];
+}
+
+- (NSMenuItem *)ytMenuNote:(NSString *)t {
+    NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:t action:NULL keyEquivalent:@""];
+    it.enabled = NO;
+    return it;
+}
+
+- (void)ytShowMenu {
+    if (!self.dpi.available || self.ytBusy || self.dpi.searching) return;
+    NSMenu *m = [[NSMenu alloc] initWithTitle:@""];
+    m.autoenablesItems = NO;
+    [m addItem:[self ytMenuNote:[self.dpi resultsSummary]]];
+    NSString *cov = [self.dpi coverageNote];
+    if (cov.length) [m addItem:[self ytMenuNote:cov]];
+    [m addItem:[NSMenuItem separatorItem]];
+
+    NSArray<DPIResult *> *top = [self.dpi topResults:10];
+    NSString *cur = self.dpi.selectedStrategy;
+    if (!top.count) [m addItem:[self ytMenuNote:@"Нет рабочих стратегий — нажмите 🔍"]];
+    for (DPIResult *r in top) {
+        NSString *title = [NSString stringWithFormat:@"№%ld    %ld/%ld    %.1f с",
+                           (long)r.number, (long)r.ok, (long)r.total, r.avgTime];
+        NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:@selector(ytPick:) keyEquivalent:@""];
+        it.target = self;
+        it.representedObject = r.strategy;
+        it.toolTip = r.strategy;
+        it.state = [r.strategy isEqualToString:cur] ? NSOnState : NSOffState;
+        [m addItem:it];
+    }
+    [m popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.ytListBtn];
+}
+
+- (void)ytPick:(NSMenuItem *)it {
+    NSString *s = it.representedObject;
+    if (![s isKindOfClass:[NSString class]] || !s.length) return;
+    self.dpi.selectedStrategy = s;
+    NSInteger num = [self.dpi numberForStrategy:s];
+    [self ytUIRender];
+    if (!self.ytActive) {
+        [self setStatus:[NSString stringWithFormat:@"Выбрана стратегия №%ld", (long)num] color:rkSub];
+        return;
+    }
+    // Active: swap only ciadpi. sing-box keeps pointing at the same local port.
+    self.ytBusy = YES; [self ytUIRender];
+    [self setStatus:@"Переключаю стратегию..." color:rkSub];
+    [self.dpi startProxyWithStrategy:s completion:^(BOOL ok, NSString *err) {
+        self.ytBusy = NO;
+        if (ok) [self setStatus:[NSString stringWithFormat:@"YouTube · обход DPI · №%ld", (long)num] color:rkGreen];
+        else    [self setStatus:[NSString stringWithFormat:@"⚠  %@", err ?: @"ошибка"] color:rkRed];
+        [self ytUIRender];
+    }];
+}
+
+// =============================================================================
 #pragma mark - Watchdog  (kill(pid,0) — near-zero CPU cost)
 // =============================================================================
 - (void)startWatchdog {
@@ -704,7 +1065,10 @@ static dispatch_queue_t sTaskQ;
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.watchdog invalidate]; self.watchdog = nil;
             self.connected = NO; [self uiConnected:NO];
-            [self setStatus:@"⚠  Ядро упало — нажми ВКЛ" color:rkOrange];
+            BOOL wasYT = self.ytActive;      // v0.12.0
+            if (wasYT) { [self.dpi stopProxy]; self.ytActive = NO; [self ytUIRender]; }
+            [self setStatus:(wasYT ? @"⚠  Ядро упало — YouTube выключен"
+                                   : @"⚠  Ядро упало — нажми ВКЛ") color:rkOrange];
             if ([self isProxyOn]) [self forceProxyOff];
         });
     });
@@ -884,6 +1248,7 @@ static dispatch_queue_t sTaskQ;
     self.connectBtn.layer.backgroundColor = on
         ? [NSColor colorWithRed:0.06 green:0.45 blue:0.18 alpha:0.15].CGColor
         : rkBtn.CGColor;
+    [self ytUIRender];                       // v0.12.0
 }
 - (void)setStatus:(NSString *)text color:(NSColor *)color {
     self.statusLabel.stringValue         = text;
@@ -919,10 +1284,16 @@ static dispatch_queue_t sTaskQ;
         [[NSWorkspace sharedWorkspace] openFile:self.logPath withApplication:@"Console"];
     else [self setStatus:@"Логов нет" color:rkSub];
 }
-- (void)quit { if (self.connected) [self stopVPN]; [NSApp terminate:nil]; }
+- (void)quit {
+    if (self.connected) [self stopVPN];
+    else if (self.ytActive) [self ytStopSync];   // v0.12.0
+    [NSApp terminate:nil];
+}
 - (void)onTerminate:(NSNotification *)n {
     [self.watchdog invalidate];
     if (self.connected && !self.stopping) [self stopVPN];
+    else if (self.ytActive && !self.stopping) [self ytStopSync];   // v0.12.0
+    [self.dpi shutdown];                     // ciadpi + any test processes
 }
 
 // =============================================================================

@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.9.7
+**Current version:** v0.12.0
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -61,6 +61,51 @@ architecture uses:
 | 10808 | socks | SOCKS5 — fallback for apps that don't read system proxy (e.g. Telegram) |
 | 10810 | socks | Dedicated listener surfaced to the user as "Telegram MTProxy port" in the UI (in practice it's a plain SOCKS5 listener; Telegram connects to it fine as SOCKS5 despite the labeling) |
 
+### YouTube / DPI bypass mode (v0.12.0)
+Optional second mode, independent of the VPN. The VPN code path (config
+generation, `startVPN`, `stopVPN`, routing rules above) is unchanged.
+
+- **Engine:** `ciadpi` (ByeDPI, MIT) built from source in CI at a pinned commit
+  and bundled in `Resources/`. It is spawned by the app as a *user-level* child
+  process (no root, no TUN, no pf) listening on `127.0.0.1:10811`. Logic lives in
+  `DPIEngine.m` (Foundation only); UI lives in the YOUTUBE section of
+  `ViewController.m`.
+- **Data path:** system proxy → sing-box (`config-yt.json`: inbounds 10809 mixed
+  + 10808 socks; outbound `dpi` = socks → `127.0.0.1:10811`) → YouTube / Google
+  video domain suffixes go to `dpi`, `final` = `direct`. Ordinary browsing never
+  touches the desync proxy.
+- **Exclusive with VPN** at the system-proxy level (one sing-box owns 10808/10809).
+  The YouTube button is disabled while the VPN is on; pressing ВКЛ while YouTube
+  mode is on first runs `ytStopSync` (reuses `stopVPN`), then starts the VPN.
+  Switching strategy while active restarts only `ciadpi` (no password prompt).
+- **Strategies:** bundled snapshot in `dpi/` (`strategies.list`, `youtube.sites`,
+  `googlevideo.sites`, copied from ByeByeDPI `proxytest_*` assets, GPL-3.0 repo —
+  see `dpi/NOTICE.md`). The 🔍 button first re-downloads the three files from
+  `raw.githubusercontent.com/romanvht/ByeByeDPI/master/...` (validated, then saved
+  to `Application Support/Raketa/dpi_*`), then tests every strategy.
+- **Search:** per strategy: start a throw-away `ciadpi` on `127.0.0.1:10820`, probe
+  `www.youtube.com` + `i.ytimg.com` through it with `curl --socks5-hostname`
+  (dead → skip), else run the full battery (13 YouTube hosts + 6 googlevideo hosts,
+  concurrent). Rank = successes desc, mean time asc. Top 10 are shown in the ▾
+  menu; results are cached in `dpi_results.json` with a network signature
+  (primary interface + router).
+- **macOS limitation (important):** upstream `ciadpi` enables the "fake packet"
+  options (`-f -n -S ...`) only on Linux/Windows (`FAKE_SUPPORT`). On macOS they
+  are invalid options and the process exits. Such strategies stay in the list but
+  are skipped by the search (the menu header says "checked X of Y"). In the
+  2026-09-30 snapshot that is 37 of 60.
+- **Safety:** the strategy list comes from a third-party repo, so every line is
+  split into argv tokens (never a shell) and each option is whitelisted; options
+  that touch files, daemonize or change the listen address are rejected.
+- **CPU:** no timers added. The existing watchdog is reused. Search is started only
+  by the 🔍 button.
+- **Failure isolation:** the `ciadpi` CI step is `continue-on-error`; without the
+  binary only the YouTube row is disabled ("движок не найден").
+- **Ports added:** 10811 (ciadpi, runtime), 10820 (ciadpi, search only).
+- **State:** `ytActive`, `ytBusy`, `ytStartAfterSearch`; selected strategy in
+  `NSUserDefaults` key `RaketaDPIStrategy` (raw strategy line is the identity;
+  "№N" is its position in the current list).
+
 ### Routing rules (`route.rules` in the generated sing-box config)
 Direct (bypass VPN): local subnets, `apple.com`/`icloud.com`, `.ru`/`.рф`
 domains. Everything else (including Telegram) routes through the active
@@ -92,11 +137,15 @@ tried and reverted; see §5 history for why.
 Raketa.xcodeproj-less repo (compiled directly via clang in CI)
 ├── main.m                          — trivial NSApplicationMain entry point
 ├── AppDelegate.m / .h              — NSStatusItem + NSPopover host
-├── ViewController.m / .h           — ALL app logic lives here (~800 lines)
+├── ViewController.m / .h           — ALL UI + VPN logic lives here (~1300 lines)
+├── DPIEngine.m / .h                — YouTube DPI engine: ciadpi process, strategy list,
+│                                     search/ranking, YouTube-only sing-box config (v0.12.0)
+├── dpi/                            — bundled ByeByeDPI snapshot: strategies.list,
+│                                     youtube.sites, googlevideo.sites, NOTICE.md
 ├── Info.plist                      — bundle metadata, version string
 ├── AppIcon.svg                     — icon source (white "R" on blue gradient)
 ├── generate_icon.py                — SVG → .icns build-time converter (cairosvg + iconutil)
-└── .github/workflows/build.yml     — CI: builds sing-box, generates icon,
+└── .github/workflows/build.yml     — CI: builds sing-box + ciadpi, generates icon,
                                        compiles app, codesigns ad-hoc, releases .zip
 ```
 
@@ -106,7 +155,7 @@ in CI:
 clang -fobjc-arc -framework Cocoa -framework SystemConfiguration \
   -arch x86_64 -mmacosx-version-min=10.13 \
   -o Raketa.app/Contents/MacOS/Raketa \
-  main.m AppDelegate.m ViewController.m
+  main.m AppDelegate.m ViewController.m DPIEngine.m
 ```
 
 `sing-box` itself is built from source in CI at tag `v1.8.11` with
@@ -215,14 +264,17 @@ custom (non-native-chrome) popover UI:
   connect toggle is a custom 36pt-tall capsule (`cornerRadius = height/2`)
   since it's a primary action, not a standard push button
 
-**Window layout (popover, `kW=300`, `kH=278`, top-down):**
+**Window layout (popover, `kW=300`, `kH=373`, top-down; the map at the top of
+`ViewController.m` is the source of truth):**
 ```
-0–32    header: 🚀 Raketa (left) · version (right)
-32–83   ПОДПИСКА section: [＋ Добавить ключи (224pt)] [↻ (28pt square)]
-83–141  СЕРВЕР section: dropdown of parsed outbound tags
-141–168 status row: colored dot + status text
-168–204 connect toggle: full-width capsule button (○ ВЫКЛ / ● ВКЛ)
-204–278 bottom bar: [Логи] ··· credit line ··· [✈][Выход]
+0–32     header: 🚀 Raketa (left) · version (right)
+46–95    ПОДПИСКА: label, [＋ Добавить ключи (224pt)] [↻ (28pt square)]
+113–160  СЕРВЕР: label, dropdown of parsed outbound tags
+174–188  status row: colored dot + status text
+202–238  connect toggle: full-width capsule (○ ВЫКЛ / ● ВКЛ)
+252–301  YOUTUBE (v0.12.0): label + strategy caption, then
+         [🔍 28pt] [▶ Смотреть YouTube 188pt] [▾ 28pt]
+317–373  bottom bar: [Логи] ··· credit line ··· [✈][Выход]
 ```
 
 The Telegram settings panel is **not** a big always-visible button anymore
@@ -266,33 +318,35 @@ before being added.
 
 ## 7. Build & release process
 
-Every change ships as a single bash script the person runs inside GitHub
-Codespaces from the repo root:
+Every change ships as a single self-contained Python patch script
+(`patch_raketa_<ver>.py`) that the person runs inside GitHub Codespaces from
+the repo root: `python3 patch_raketa_<ver>.py`. The script backs up touched
+files (`cp X X.bak<ver>`), applies anchored edits (each anchor must match
+exactly once), runs its own checks, then `git commit` + `git push origin main`
+and deletes itself after a successful push.
 
-```bash
-bash patch_raketa_XYZ.sh
-git add -A
-git commit -m "..."
-git tag vX.Y.Z
-git push origin main --tags
-```
-
-The tag push triggers `.github/workflows/build.yml`, which:
+Releases are cut by hand: GitHub → Actions → **Build Raketa** → *Run workflow*
+→ type the version. The workflow (`workflow_dispatch`) validates the version and
+creates the tag itself — pushing a tag does **not** start a build, and tagging by
+hand makes the workflow refuse the run. The workflow:
 1. Builds `sing-box` from source (Go 1.20, targets `darwin/amd64`)
-2. Installs `cairosvg` (`pip3 install cairosvg --quiet --break-system-packages`
+2. Builds `ciadpi` (ByeDPI) from source at a pinned commit with
+   `-arch x86_64 -mmacosx-version-min=10.13`. This step is `continue-on-error`:
+   if it fails the app is still built, without the YouTube feature
+3. Installs `cairosvg` (`pip3 install cairosvg --quiet --break-system-packages`
    — the `--break-system-packages` flag is required on macOS CI runners due
    to PEP 668) and runs `generate_icon.py` to produce `AppIcon.icns` from
    `AppIcon.svg`
-3. Compiles the app via raw `clang`
-4. Ad-hoc codesigns (`codesign --force --deep -s -`)
-5. Zips and publishes a GitHub Release with the `.zip` attached
+4. Compiles the app via raw `clang` (bundles `sing-box`, `ciadpi`, `dpi/` data)
+5. Ad-hoc codesigns (`codesign --force --deep -s -`)
+6. Zips and publishes a GitHub Release with the `.zip` attached
 
 **Patch script conventions the person expects:**
-- One complete, self-contained `.sh` file per iteration, runnable start to
-  finish with `bash patch_raketa_XYZ.sh`
+- One complete, self-contained `.py` file per iteration, runnable start to
+  finish with `python3 patch_raketa_<ver>.py`
 - Always backs up touched files first (`cp X X.bakXYZ`)
-- Always ends with a clearly formatted block of the exact git commands to
-  run next
+- Runs its own checks, commits and pushes by itself, then deletes itself;
+  the release is cut afterwards in Actions → Build Raketa → Run workflow
 - Version number bumped consistently across: UI version label string in
   `ViewController.m`, `Info.plist` (`CFBundleVersion` +
   `CFBundleShortVersionString`), and the release notes body in `build.yml`
@@ -350,3 +404,19 @@ project history around v0.9.7 iteration).
   Treat the current architecture and design system as the stable baseline
   — changes should be additive/surgical, not rewrites, unless explicitly
   requested.
+
+---
+
+## 10. Findings from the v0.12.0 source audit
+
+- **Watchdog fast path (not changed, needs a decision):** sing-box is launched
+  via `do shell script ... with administrator privileges`, so it runs as root.
+  `kill(pid, 0)` from the user-level app then returns -1 with `EPERM` even though
+  the process is alive, so by reading the code `coreAlive` never takes its fast
+  path and falls through to `pgrep` on every 12 s tick. A one-line fix would be to
+  treat `errno == EPERM` as alive. Verify on a Mac before relying on this.
+- **Docs drift corrected in v0.12.0:** version (was v0.9.7), window layout
+  (was kH=278), release flow (was "push a tag"; it is `workflow_dispatch`),
+  patch-script conventions (`.py`, self-deleting, commits and pushes itself).
+- **Strategy count:** the ByeByeDPI list had 60 strategies on 2026-09-30 (not 72).
+  The update button picks up growth automatically.

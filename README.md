@@ -17,6 +17,10 @@
 - Отдельная поддержка Telegram: MTProxy-подобный порт (10810) и SOCKS5
   (10808) с deep-link кнопками для одного клика.
 - Автоматически восстанавливает список серверов при перезапуске.
+- **YouTube без VPN (v0.12.0):** кнопка «Смотреть YouTube» включает обход DPI
+  (ByeDPI) только для доменов YouTube — остальной трафик идёт напрямую.
+  Стратегии берутся из репозитория ByeByeDPI; кнопка 🔍 обновляет список и
+  подбирает лучшие для текущей сети, кнопка ▾ — топ-10 для переключения.
 - Watchdog проверяет живость ядра каждые 12 секунд практически бесплатно
   (`kill(pid, 0)`, без форков процессов).
 
@@ -72,7 +76,9 @@
 ```
 ├── main.m                          — точка входа NSApplicationMain
 ├── AppDelegate.m / .h              — NSStatusItem + NSPopover
-├── ViewController.m / .h           — вся логика приложения
+├── ViewController.m / .h           — вся логика интерфейса и VPN
+├── DPIEngine.m / .h                — движок обхода DPI для YouTube (ciadpi, стратегии, поиск)
+├── dpi/                            — снимок списков ByeByeDPI (стратегии, сайты для проверки)
 ├── Info.plist                      — метаданные бандла, версия
 ├── AppIcon.svg                     — исходник иконки (белая «R» на градиенте)
 ├── generate_icon.py                — SVG → .icns при сборке (cairosvg + iconutil)
@@ -87,19 +93,16 @@
 ## Сборка и релиз
 
 ```bash
-# Применить очередной патч-скрипт
-bash patch_raketa_XYZ.sh          # или: python3 patch_raketa_XYZ.py
-
-git add -A
-git commit -m "vX.Y.Z: описание изменений"
-git tag vX.Y.Z
-git push origin main --tags
+# Применить очередной патч-скрипт (сам проверит, закоммитит, запушит и удалит себя)
+python3 patch_raketa_<ver>.py
 ```
 
-Push тега запускает `.github/workflows/build.yml`, который собирает
-`sing-box` из исходников, генерирует иконку, компилирует приложение,
-подписывает ad-hoc (`codesign --force --deep -s -`) и публикует `.zip`
-в GitHub Releases.
+Релиз собирается вручную: GitHub → Actions → **Build Raketa** → *Run workflow* →
+ввести версию. Workflow сам проверяет версию и создаёт тег (пуш тега сборку не
+запускает). Он собирает `sing-box` и `ciadpi` (ByeDPI) из исходников, генерирует
+иконку, компилирует приложение, подписывает ad-hoc (`codesign --force --deep -s -`)
+и публикует `.zip` в GitHub Releases. Если `ciadpi` не собрался — приложение всё
+равно собирается, без функции YouTube.
 
 ---
 

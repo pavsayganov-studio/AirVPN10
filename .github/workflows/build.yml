@@ -65,6 +65,23 @@ jobs:
           -trimpath -ldflags="-s -w" \
           -o ../sing-box ./cmd/sing-box
 
+    - name: Build ByeDPI (ciadpi)
+      # Optional component for the YouTube feature. If this step fails the job
+      # continues and the app is built without it (the YouTube row then shows
+      # "движок не найден"). It must never be able to block a VPN release.
+      continue-on-error: true
+      run: |
+        git clone https://github.com/hufrea/byedpi.git dpi-build
+        cd dpi-build
+        git checkout ba532298de7b28cfe854aea83d061369d13ca290
+        test "$(git rev-parse HEAD)" = "ba532298de7b28cfe854aea83d061369d13ca290"
+        make CC="clang -arch x86_64 -mmacosx-version-min=10.13" \
+          || { make clean; make CC="clang -arch x86_64 -mmacosx-version-min=10.13" \
+                CFLAGS="-I. -O2 -std=gnu99 -w"; }
+        cp ciadpi ../ciadpi
+        file ../ciadpi
+        otool -l ../ciadpi | grep -A3 -E "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION" || true
+
     - name: Generate AppIcon.icns from SVG
       run: |
         pip3 install cairosvg --quiet --break-system-packages
@@ -79,12 +96,21 @@ jobs:
         cp AppIcon.icns Raketa.app/Contents/Resources/AppIcon.icns
         cp sing-box     Raketa.app/Contents/Resources/sing-box
         chmod +x        Raketa.app/Contents/Resources/sing-box
+        if [ -f ciadpi ]; then
+          cp ciadpi Raketa.app/Contents/Resources/ciadpi
+          chmod +x  Raketa.app/Contents/Resources/ciadpi
+        else
+          echo "::warning::ciadpi was not built - the YouTube feature will be disabled"
+        fi
+        mkdir -p Raketa.app/Contents/Resources/dpi
+        cp dpi/strategies.list dpi/youtube.sites dpi/googlevideo.sites \
+           Raketa.app/Contents/Resources/dpi/
         clang -fobjc-arc \
           -framework Cocoa \
           -framework SystemConfiguration \
           -arch x86_64 -mmacosx-version-min=10.13 \
           -o Raketa.app/Contents/MacOS/Raketa \
-          main.m AppDelegate.m ViewController.m
+          main.m AppDelegate.m ViewController.m DPIEngine.m
         codesign --force --deep -s - Raketa.app
         zip -r "Raketa-macOS-10.13-${{ steps.version.outputs.tag }}.zip" Raketa.app
 
@@ -97,6 +123,8 @@ jobs:
           ## 🚀 Raketa ${{ steps.version.outputs.tag }}
 
           Собрано из ветки `main` при ручном запуске workflow.
+
+          Новое: кнопка «Смотреть YouTube» — обход DPI (ByeDPI) без VPN.
         files: Raketa-macOS-10.13-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
