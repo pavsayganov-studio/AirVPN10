@@ -50,10 +50,94 @@ static const CGFloat kAddW   = 224.0;
 // Width of refresh square button
 static const CGFloat kRefW   = 28.0;
 
-// ── Colors — allocated once in +initialize ────────────────────────────────────
+// ── Colors — palette tables, allocated in +initialize and on theme change ───
+// Row order = enum order. Each row: light RGBA, then dark RGBA. The patch
+// script asserts WCAG AA (4.5:1) for every text colour on every surface.
+enum { RK_BG, RK_SURFACE, RK_CARD, RK_BORDER, RK_TEXT, RK_SUB, RK_ACCENT, RK_GREEN,
+       RK_ORANGE, RK_RED, RK_BTN, RK_FIELD, RK_TINT_GREEN, RK_TINT_ACCENT, RK_COUNT };
+static const CGFloat kRKPal[RK_COUNT][8] = {
+    /* BG          */ {0.88, 0.93, 0.98, 1.00,   0.11, 0.13, 0.17, 1.00},
+    /* SURFACE     */ {0.80, 0.89, 0.96, 1.00,   0.08, 0.10, 0.13, 1.00},
+    /* CARD        */ {0.83, 0.91, 0.97, 1.00,   0.14, 0.17, 0.22, 1.00},
+    /* BORDER      */ {0.62, 0.78, 0.92, 1.00,   0.25, 0.31, 0.40, 1.00},
+    /* TEXT        */ {0.10, 0.10, 0.10, 1.00,   0.94, 0.94, 0.94, 1.00},
+    /* SUB         */ {0.34, 0.34, 0.34, 1.00,   0.70, 0.70, 0.70, 1.00},
+    /* ACCENT      */ {0.06, 0.33, 0.68, 1.00,   0.45, 0.70, 1.00, 1.00},
+    /* GREEN       */ {0.03, 0.34, 0.12, 1.00,   0.40, 0.82, 0.50, 1.00},
+    /* ORANGE      */ {0.55, 0.26, 0.02, 1.00,   0.98, 0.68, 0.28, 1.00},
+    /* RED         */ {0.66, 0.06, 0.06, 1.00,   1.00, 0.50, 0.47, 1.00},
+    /* BTN         */ {0.72, 0.84, 0.94, 1.00,   0.18, 0.23, 0.30, 1.00},
+    /* FIELD       */ {1.00, 1.00, 1.00, 1.00,   0.16, 0.20, 0.26, 1.00},
+    /* TINT_GREEN  */ {0.06, 0.45, 0.18, 0.15,   0.40, 0.82, 0.50, 0.10},
+    /* TINT_ACCENT */ {0.10, 0.40, 0.78, 0.15,   0.45, 0.70, 1.00, 0.20},
+};
 static NSColor *rkBG, *rkSurface, *rkCard, *rkBorder,
-               *rkText, *rkSub, *rkAccent, *rkGreen, *rkOrange, *rkRed, *rkBtn;
+               *rkText, *rkSub, *rkAccent, *rkGreen, *rkOrange, *rkRed, *rkBtn,
+               *rkField, *rkTintGreen, *rkTintAccent;
 static dispatch_queue_t sTaskQ;
+static BOOL sDark;
+static NSArray<NSColor *> *sPalPrev, *sPalCur;   // previous / current palette, for rkRecolor:
+
+// Dark detection that works on every target OS:
+//  * 10.14+: the app's effective appearance (also covers "Auto" switching);
+//  * 10.13 and older: the global AppleInterfaceStyle flag ("dark menu bar").
+static BOOL rkSystemIsDark(void) {
+    if ([NSApp respondsToSelector:@selector(effectiveAppearance)]) {
+        NSString *m = [[NSApp effectiveAppearance] bestMatchFromAppearancesWithNames:
+                       @[@"NSAppearanceNameAqua", @"NSAppearanceNameDarkAqua"]];
+        return [m isEqualToString:@"NSAppearanceNameDarkAqua"];
+    }
+    return [[[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"]
+            isEqualToString:@"Dark"];
+}
+// Appearance names as string literals: NSAppearanceNameDarkAqua does not exist
+// on 10.13 and referencing the symbol would crash there. appearanceNamed: just
+// returns nil for an unknown name, and we fall back to the vibrant-dark look.
+static NSAppearance *rkAppearanceFor(BOOL dark) {
+    if (!dark) return [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    return [NSAppearance appearanceNamed:@"NSAppearanceNameDarkAqua"]
+        ?: [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
+}
+static void rkSetPalette(BOOL dark) {
+    NSMutableArray *a = [NSMutableArray arrayWithCapacity:RK_COUNT];
+    for (int i = 0; i < RK_COUNT; i++) {
+        const CGFloat *p = kRKPal[i] + (dark ? 4 : 0);
+        [a addObject:[NSColor colorWithRed:p[0] green:p[1] blue:p[2] alpha:p[3]]];
+    }
+    sPalPrev = sPalCur; sPalCur = a; sDark = dark;
+    rkBG = a[RK_BG]; rkSurface = a[RK_SURFACE]; rkCard = a[RK_CARD]; rkBorder = a[RK_BORDER];
+    rkText = a[RK_TEXT]; rkSub = a[RK_SUB]; rkAccent = a[RK_ACCENT]; rkGreen = a[RK_GREEN];
+    rkOrange = a[RK_ORANGE]; rkRed = a[RK_RED]; rkBtn = a[RK_BTN]; rkField = a[RK_FIELD];
+    rkTintGreen = a[RK_TINT_GREEN]; rkTintAccent = a[RK_TINT_ACCENT];
+}
+// Old-palette colour -> the matching new-palette colour (nil = not a palette colour).
+static NSColor *rkMapCG(CGColorRef cg) {
+    if (!cg || !sPalPrev) return nil;
+    for (NSUInteger i = 0; i < sPalPrev.count; i++)
+        if (CGColorEqualToColor(cg, sPalPrev[i].CGColor)) return sPalCur[i];
+    return nil;
+}
+static BOOL rkSameRGBA(NSColor *a, NSColor *b) {
+    NSColor *x = [a colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    NSColor *y = [b colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!x || !y) return NO;
+    return fabs(x.redComponent - y.redComponent) < 0.003 && fabs(x.greenComponent - y.greenComponent) < 0.003
+        && fabs(x.blueComponent - y.blueComponent) < 0.003 && fabs(x.alphaComponent - y.alphaComponent) < 0.003;
+}
+static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
+    if (!src.length || !sPalPrev) return src;
+    NSMutableAttributedString *m = [src mutableCopy];
+    [src enumerateAttribute:NSForegroundColorAttributeName inRange:NSMakeRange(0, src.length) options:0
+                 usingBlock:^(id val, NSRange r, BOOL *stop) {
+        if (![val isKindOfClass:[NSColor class]]) return;
+        for (NSUInteger i = 0; i < sPalPrev.count; i++)
+            if (rkSameRGBA(val, sPalPrev[i])) {
+                [m addAttribute:NSForegroundColorAttributeName value:sPalCur[i] range:r];
+                *changed = YES; break;
+            }
+    }];
+    return m;
+}
 
 @interface ViewController ()
 @property (strong) NSButton       *addKeysBtn;
@@ -100,17 +184,7 @@ static dispatch_queue_t sTaskQ;
 
 + (void)initialize {
     if (self != [ViewController class]) return;
-    rkBG      = [NSColor colorWithRed:0.88 green:0.93 blue:0.98 alpha:1.0];
-    rkSurface = [NSColor colorWithRed:0.80 green:0.89 blue:0.96 alpha:1.0];
-    rkCard    = [NSColor colorWithRed:0.83 green:0.91 blue:0.97 alpha:1.0];
-    rkBorder  = [NSColor colorWithRed:0.62 green:0.78 blue:0.92 alpha:1.0];
-    rkText    = [NSColor colorWithWhite:0.10 alpha:1.0];
-    rkSub     = [NSColor colorWithWhite:0.40 alpha:1.0];
-    rkAccent  = [NSColor colorWithRed:0.10 green:0.40 blue:0.78 alpha:1.0];
-    rkGreen   = [NSColor colorWithRed:0.08 green:0.55 blue:0.22 alpha:1.0];
-    rkOrange  = [NSColor colorWithRed:0.75 green:0.38 blue:0.04 alpha:1.0];
-    rkRed     = [NSColor colorWithRed:0.72 green:0.08 blue:0.08 alpha:1.0];
-    rkBtn     = [NSColor colorWithRed:0.72 green:0.84 blue:0.94 alpha:1.0];
+    rkSetPalette(rkSystemIsDark());       // v0.13.0: light or dark, per the system
     sTaskQ    = dispatch_queue_create("com.samurai.raketa.tasks", DISPATCH_QUEUE_SERIAL);
 }
 
@@ -122,7 +196,9 @@ static dispatch_queue_t sTaskQ;
 #pragma mark - loadView
 // =============================================================================
 - (void)loadView {
+    if (rkSystemIsDark() != sDark) rkSetPalette(rkSystemIsDark());   // nothing built yet
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, kH)];
+    root.appearance = rkAppearanceFor(sDark);   // system controls must match the palette
     root.wantsLayer = YES;
     root.layer.backgroundColor = rkBG.CGColor;
 
@@ -134,7 +210,8 @@ static dispatch_queue_t sTaskQ;
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                          color:rkText frame:NSMakeRect(kPAD, 7, 180, 18)]];
-    NSTextField *ver = [self lbl:@"v0.12.0"
+    NSTextField *ver = [self lbl:[NSString stringWithFormat:@"v%@", [[NSBundle mainBundle]
+                objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?"]
                             font:[NSFont systemFontOfSize:10]
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
@@ -171,7 +248,7 @@ static dispatch_queue_t sTaskQ;
     self.addKeysBtn.layer.cornerRadius    = 6;
     self.addKeysBtn.layer.borderWidth     = 0.5;
     self.addKeysBtn.layer.borderColor     = rkBorder.CGColor;
-    self.addKeysBtn.layer.backgroundColor = [NSColor whiteColor].CGColor;
+    self.addKeysBtn.layer.backgroundColor = rkField.CGColor;
     self.addKeysBtn.target = self;
     self.addKeysBtn.action = @selector(addKeys);
     [root addSubview:self.addKeysBtn];
@@ -260,21 +337,20 @@ static dispatch_queue_t sTaskQ;
     NSButton *logBtn = [self btn:@"Логи"
                            frame:NSMakeRect(kPAD, 26, 58, 21)
                           action:@selector(openLogs) primary:NO];
-    logBtn.font = [NSFont systemFontOfSize:11];
+    [self styleBtn:logBtn size:11 primary:NO];
     [bar addSubview:logBtn];
 
     NSButton *quitBtn = [self btn:@"Выход"
                             frame:NSMakeRect(kW-kPAD-68, 26, 68, 21)
                            action:@selector(quit) primary:NO];
-    quitBtn.font = [NSFont systemFontOfSize:11];
+    [self styleBtn:quitBtn size:11 primary:NO];
     [bar addSubview:quitBtn];
 
     // ✈ Telegram icon button — 32×21pt, left of Выход with 4pt gap
     self.tgIconBtn = [[NSButton alloc]
                       initWithFrame:NSMakeRect(kW-kPAD-68-4-32, 26, 32, 21)];
     self.tgIconBtn.title      = @"✈";
-    self.tgIconBtn.font       = [NSFont systemFontOfSize:14];
-    self.tgIconBtn.bezelStyle = NSBezelStyleRounded;
+    [self styleBtn:self.tgIconBtn size:14 primary:NO];
     self.tgIconBtn.toolTip    = @"Настройка Telegram";
     self.tgIconBtn.target     = self;
     self.tgIconBtn.action     = @selector(toggleTG);
@@ -340,6 +416,10 @@ static dispatch_queue_t sTaskQ;
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(onTerminate:)
             name:NSApplicationWillTerminateNotification object:nil];
+    // v0.13.0: event-driven theme switch (no polling).
+    [[NSDistributedNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(themeChanged:)
+            name:@"AppleInterfaceThemeChangedNotification" object:nil];
 }
 
 // =============================================================================
@@ -394,10 +474,13 @@ static dispatch_queue_t sTaskQ;
 }
 
 - (void)flashButton:(NSButton *)btn title:(NSString *)newTitle {
-    NSString *orig = btn.title;
-    btn.title = newTitle;
+    // v0.13.0: swap the text but keep font/colour attributes, so the label stays
+    // readable (and themed) instead of falling back to a plain system title.
+    NSAttributedString *orig = btn.attributedTitle;
+    NSDictionary *at = orig.length ? [orig attributesAtIndex:0 effectiveRange:NULL] : @{};
+    btn.attributedTitle = [[NSAttributedString alloc] initWithString:newTitle attributes:at];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ btn.title = orig; });
+                   dispatch_get_main_queue(), ^{ btn.attributedTitle = orig; });
 }
 
 - (void)downloadURL:(NSString *)urlString {
@@ -485,13 +568,13 @@ static dispatch_queue_t sTaskQ;
     NSButton *openMT = [self btn:@"⚡  Добавить в Telegram"
                            frame:NSMakeRect(kPAD, kHTG-87, 148, 21)
                           action:@selector(openMTLink) primary:YES];
-    openMT.font = [NSFont systemFontOfSize:11];
+    [self styleBtn:openMT size:11 primary:YES];
     [self.tgPanel addSubview:openMT];
 
     self.secretCopyBtn = [self btn:@"Копировать секрет"
                              frame:NSMakeRect(kPAD+154, kHTG-87, kW-kPAD*2-154, 21)
                             action:@selector(copySecret) primary:NO];
-    self.secretCopyBtn.font = [NSFont systemFontOfSize:11];
+    [self styleBtn:self.secretCopyBtn size:11 primary:NO];
     [self.tgPanel addSubview:self.secretCopyBtn];
 
     [self.tgPanel addSubview:[self sep:NSMakeRect(kPAD, kHTG-97, kW-kPAD*2, 1)]];
@@ -512,7 +595,7 @@ static dispatch_queue_t sTaskQ;
     NSButton *openSK = [self btn:@"⚡  Добавить SOCKS5 в Telegram"
                            frame:NSMakeRect(kPAD, kHTG-151, kW-kPAD*2, 21)
                           action:@selector(openSOCKSLink) primary:NO];
-    openSK.font = [NSFont systemFontOfSize:11];
+    [self styleBtn:openSK size:11 primary:NO];
     [self.tgPanel addSubview:openSK];
 
     [root addSubview:self.tgPanel];
@@ -528,14 +611,14 @@ static dispatch_queue_t sTaskQ;
                                      v.frame.size.width, v.frame.size.height);
         self.tgIconBtn.wantsLayer = YES;
         self.tgIconBtn.layer.backgroundColor =
-            [NSColor colorWithRed:0.10 green:0.40 blue:0.78 alpha:0.15].CGColor;
+            rkTintAccent.CGColor;
     } else {
         for (NSView *v in self.view.subviews)
             if (v != self.tgPanel)
                 v.frame = NSMakeRect(v.frame.origin.x, v.frame.origin.y - kHTG,
                                      v.frame.size.width, v.frame.size.height);
         self.tgPanel.frame = NSMakeRect(0, -kHTG, kW, kHTG);
-        self.tgIconBtn.layer.backgroundColor = [NSColor clearColor].CGColor;
+        self.tgIconBtn.layer.backgroundColor = rkBtn.CGColor;
     }
     self.preferredContentSize = NSMakeSize(kW, self.tgOpen ? kH + kHTG : kH);
 }
@@ -730,6 +813,129 @@ static dispatch_queue_t sTaskQ;
 }
 
 // =============================================================================
+#pragma mark - Theme (v0.13.0): light / dark follows the system
+// =============================================================================
+// Why a recolor pass instead of dynamic colors: layer colors are CGColor
+// snapshots, and NSColor dynamic providers need macOS 10.15 while the primary
+// target is 10.13. So the palette is two plain tables; on a system theme change
+// every view that still carries an *old palette* color is mapped to the
+// matching *new palette* color (rkRecolor:). Nothing polls: the only trigger
+// is the system's AppleInterfaceThemeChangedNotification (plus a cheap check
+// in viewWillAppear as a safety net).
+//
+// Why root.appearance is set explicitly: bordered system controls (the
+// server dropdown) take their look from the view's appearance. Without this a
+// light palette on a dark system got white text on a light button — the
+// "transparent font" in the bottom row. Now palette and appearance always agree.
+
++ (BOOL)systemIsDark { return rkSystemIsDark(); }
++ (NSAppearance *)appearanceForDark:(BOOL)dark { return rkAppearanceFor(dark); }
+
+- (void)themeChanged:(NSNotification *)n {
+    // The system flips its flags a moment after posting the notification.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [self applyThemeNow]; });
+}
+
+- (void)viewWillAppear {
+    [super viewWillAppear];
+    [self applyThemeNow];
+}
+
+- (void)applyThemeNow {
+    BOOL dark = rkSystemIsDark();
+    if (dark == sDark) return;
+    rkSetPalette(dark);
+    if (!self.isViewLoaded) return;
+    self.view.appearance = rkAppearanceFor(dark);
+    [self rkRecolor:self.view];
+    [self.view setNeedsDisplay:YES];
+}
+
+- (void)rkRecolor:(NSView *)v {
+    CALayer *l = v.layer;
+    if (l) {
+        NSColor *m = rkMapCG(l.backgroundColor); if (m) l.backgroundColor = m.CGColor;
+        m = rkMapCG(l.borderColor);              if (m) l.borderColor     = m.CGColor;
+    }
+    if ([v isKindOfClass:[NSTextField class]]) {
+        NSTextField *t = (NSTextField *)v;
+        BOOL ch = NO;
+        NSAttributedString *a = rkRemapAttr(t.attributedStringValue, &ch);
+        if (ch) {
+            NSTextAlignment al = t.alignment;         // the attributed-string setter resets it
+            t.attributedStringValue = a;
+            t.alignment = al;
+        }
+    } else if ([v isKindOfClass:[NSButton class]] && ![v isKindOfClass:[NSPopUpButton class]]) {
+        NSButton *b = (NSButton *)v;
+        BOOL ch = NO;
+        NSAttributedString *a = rkRemapAttr(b.attributedTitle, &ch);
+        if (ch) b.attributedTitle = a;
+    }
+    for (NSView *s in v.subviews) [self rkRecolor:s];
+}
+
+// Bottom-row / Telegram-panel buttons. Same recipe as ↻ and «Добавить ключи»
+// (gotcha #9: bordered=NO + CALayer + attributedTitle), so they look the same
+// on every macOS and in both themes. System bezels took their text colour from
+// the appearance and could end up invisible on the palette background.
+- (void)styleBtn:(NSButton *)b size:(CGFloat)sz primary:(BOOL)p {
+    NSString *t = b.attributedTitle.length ? b.attributedTitle.string : b.title;
+    NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+    ps.alignment = NSTextAlignmentCenter;
+    b.attributedTitle = [[NSAttributedString alloc] initWithString:t ?: @"" attributes:@{
+        NSFontAttributeName:            [NSFont systemFontOfSize:sz weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: rkText,
+        NSParagraphStyleAttributeName:  ps }];
+    b.bordered   = NO;
+    b.wantsLayer = YES;
+    b.layer.cornerRadius    = 5;
+    b.layer.borderWidth     = 0.5;
+    b.layer.borderColor     = (p ? rkAccent : rkBorder).CGColor;
+    b.layer.backgroundColor = (p ? rkTintAccent : rkBtn).CGColor;
+}
+
+// =============================================================================
+#pragma mark - Quick actions (right-click menu of the menu-bar item, v0.13.0)
+// =============================================================================
+// Used by AppDelegate. None of these touch the VPN code path: they call the
+// same toggle / ytToggle entry points the buttons use.
+
+- (BOOL)vpnOn           { return self.isViewLoaded && self.connected; }
+- (BOOL)youtubeOn       { return self.isViewLoaded && self.ytActive; }
+- (BOOL)quickBusy       { return self.isViewLoaded && (self.ytBusy || self.dpi.searching); }
+- (BOOL)youtubeAvailable{ return self.isViewLoaded ? self.dpi.available : YES; }
+- (BOOL)hasServers      { return self.isViewLoaded && self.proxyTags.count > 0; }
+
+// `needsPerson` runs when the action cannot proceed without the person (no keys yet),
+// so the caller can open the window instead of failing silently. If the UI was never
+// opened, loading it also starts the asynchronous read of the saved servers; wait a
+// moment for that before deciding.
+- (void)quickConnectVPNWithFallback:(void (^)(void))needsPerson {
+    BOOL wasLoaded = self.isViewLoaded;
+    (void)self.view;                                 // load the UI + state if needed
+    void (^go)(void) = ^{
+        if (self.connected) return;
+        if (self.ytBusy || self.proxyTags.count == 0) { if (needsPerson) needsPerson(); return; }
+        [self toggle];
+    };
+    if (wasLoaded) go();
+    else dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), go);
+}
+- (void)quickDisconnectVPN {
+    if (self.isViewLoaded && self.connected) [self toggle];
+}
+- (void)quickToggleYouTube {
+    (void)self.view;
+    [self ytToggle];
+}
+- (void)quickQuit {
+    if (self.isViewLoaded) [self quit]; else [NSApp terminate:nil];
+}
+
+// =============================================================================
 #pragma mark - YouTube / DPI bypass  (v0.12.0)
 // =============================================================================
 // Design rules for this section:
@@ -825,7 +1031,7 @@ static dispatch_queue_t sTaskQ;
                   on:self.ytBtn size:13 color:(on ? rkGreen : rkText)];
     self.ytBtn.layer.borderColor = on ? rkGreen.CGColor : rkBorder.CGColor;
     self.ytBtn.layer.backgroundColor = on
-        ? [NSColor colorWithRed:0.06 green:0.45 blue:0.18 alpha:0.15].CGColor
+        ? rkTintGreen.CGColor
         : rkBtn.CGColor;
 
     [self ytSetTitle:(search ? @"✕" : @"🔍") on:self.ytSearchBtn size:15 color:rkSub];
@@ -1246,7 +1452,7 @@ static dispatch_queue_t sTaskQ;
     [self setConnectTitle:(on ? @"●  ВКЛ" : @"○  ВЫКЛ") color:(on ? rkGreen : rkSub)];
     self.connectBtn.layer.borderColor = on ? rkGreen.CGColor : rkBorder.CGColor;
     self.connectBtn.layer.backgroundColor = on
-        ? [NSColor colorWithRed:0.06 green:0.45 blue:0.18 alpha:0.15].CGColor
+        ? rkTintGreen.CGColor
         : rkBtn.CGColor;
     [self ytUIRender];                       // v0.12.0
 }
@@ -1323,8 +1529,8 @@ static dispatch_queue_t sTaskQ;
 }
 - (NSButton *)btn:(NSString *)t frame:(NSRect)r action:(SEL)a primary:(BOOL)p {
     NSButton *b=[[NSButton alloc] initWithFrame:r];
-    b.title=t; b.font=[NSFont systemFontOfSize:13];
-    b.bezelStyle=NSBezelStyleRounded; b.target=self; b.action=a;
+    b.title=t; b.target=self; b.action=a;
+    [self styleBtn:b size:13 primary:p];      // v0.13.0: callers re-style with their own size
     return b;
 }
 @end

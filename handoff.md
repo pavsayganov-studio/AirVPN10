@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.12.0
+**Current version:** v0.13.0
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -105,6 +105,39 @@ generation, `startVPN`, `stopVPN`, routing rules above) is unchanged.
 - **State:** `ytActive`, `ytBusy`, `ytStartAfterSearch`; selected strategy in
   `NSUserDefaults` key `RaketaDPIStrategy` (raw strategy line is the identity;
   "№N" is its position in the current list).
+
+### Theme: light / dark follows the system (v0.13.0)
+- Two palette tables (`kRKPal` in `ViewController.m`: light RGBA, dark RGBA per colour).
+  `rkSetPalette(dark)` fills the `rk*` globals; `+initialize` picks the palette that
+  matches the system at launch.
+- **Detection:** macOS 10.14+ → `NSApp.effectiveAppearance` (works with Auto);
+  10.13 → global `AppleInterfaceStyle` ("dark menu bar and Dock"). Appearance names
+  are string literals — `NSAppearanceNameDarkAqua` does not exist on 10.13.
+- **Switching is event-driven:** `AppleInterfaceThemeChangedNotification`
+  (`NSDistributedNotificationCenter`) → `applyThemeNow` → `rkRecolor:` walks the
+  view tree and maps every layer/text/button colour from the old palette to the
+  new one. A cheap re-check also runs in `viewWillAppear`. No timers.
+- **`root.appearance` is set explicitly** to match the palette, so system controls
+  (the server dropdown) never disagree with it. The bug it fixes: a light palette on a
+  dark system produced white text on light buttons in the bottom row.
+- The bottom-row / Telegram-panel buttons no longer use system bezels: `styleBtn:`
+  gives them the same flat recipe as ↻ (gotcha #9), so they read the same on every
+  macOS and in both themes. `flashButton:` keeps the button's text attributes.
+- **Contrast is asserted, not eyeballed:** the patch script computes WCAG ratios for
+  every text colour on every surface of both palettes and refuses to commit below 4.5:1.
+  The light palette's grey/blue/green/orange/red were darkened slightly for that
+  (e.g. green on the tinted ВКЛ button was 2.4:1).
+- `NSPopover.appearance` follows the theme too (`AppDelegate syncPopoverAppearance`).
+
+### Menu-bar quick actions (v0.13.0)
+Right-click (or Ctrl-click) on «🚀 Raketa» in the menu bar opens a menu: Подключить VPN,
+Отключить VPN, Обход YouTube (DPI) ✓, Выйти. Left-click still toggles the window.
+- `AppDelegate`: `sendActionOn:` mouse-up of both buttons; on right-click the menu is
+  attached to the status item, `performClick:` is called, then it is detached again.
+- Items are enabled from live state (`ViewController` readonly getters that never load
+  the UI). YouTube is disabled while the VPN is on (mutually exclusive, same as the button).
+- Actions call the same entry points as the buttons (`toggle`, `ytToggle`); the VPN code
+  is untouched. «Подключить VPN» with no saved keys opens the window instead of failing silently.
 
 ### Routing rules (`route.rules` in the generated sing-box config)
 Direct (bypass VPN): local subnets, `apple.com`/`icloud.com`, `.ru`/`.рф`
@@ -230,26 +263,29 @@ these, the bug **will** come back.
 
 ---
 
-## 5. Design system (current, v0.9.7)
+## 5. Design system (current, v0.13.0)
 
 **Theme:** soft blue, light, opaque (explicitly *not* translucent —
 `NSVisualEffectView` was removed early on because it caused the popover to
 look muddy layered over the desktop; every surface now has a solid
 `CALayer.backgroundColor`).
 
-```
-rkBG      #E0EEFA   main background
-rkSurface #CCE3F5   header / bottom bar
-rkCard    #D4E8F8   Telegram panel background
-rkBorder  #9EC7EB   separators, button borders
-rkText    #1A1A1A   primary text (near-black)
-rkSub     #666666   secondary text
-rkAccent  #1A66C7   links, MTProxy details
-rkGreen   #148C38   connected state
-rkOrange  #BF6107   warnings
-rkRed     #B71414   errors
-rkBtn     #B8D6F0   button fill
-```
+| Токен | Светлая | Тёмная | Назначение |
+|---|---|---|---|
+| `rkBG` | `#E0EDFA` | `#1C212B` | фон окна |
+| `rkSurface` | `#CCE3F5` | `#141A21` | хедер, нижняя панель |
+| `rkCard` | `#D4E8F7` | `#242B38` | панель Telegram |
+| `rkBorder` | `#9EC7EB` | `#404F66` | разделители, границы |
+| `rkText` | `#1A1A1A` | `#F0F0F0` | основной текст |
+| `rkSub` | `#575757` | `#B2B2B2` | вторичный текст |
+| `rkAccent` | `#0F54AD` | `#73B2FF` | ссылки, моноширинные данные |
+| `rkGreen` | `#08571F` | `#66D180` | «подключено» |
+| `rkOrange` | `#8C4205` | `#FAAD47` | предупреждение |
+| `rkRed` | `#A80F0F` | `#FF8078` | ошибка |
+| `rkBtn` | `#B8D6F0` | `#2E3B4C` | заливка второстепенных кнопок |
+| `rkField` | `#FFFFFF` | `#293342` | поля ввода (белое / тёмное) |
+| `rkTintGreen` | `#0F732E` α0.15 | `#66D180` α0.10 | подсветка активной кнопки (alpha) |
+| `rkTintAccent` | `#1A66C7` α0.15 | `#73B2FF` α0.20 | подсветка основной кнопки (alpha) |
 
 Typography follows Apple's macOS 10.13 HIG as closely as is practical for a
 custom (non-native-chrome) popover UI:
@@ -260,6 +296,14 @@ custom (non-native-chrome) popover UI:
   the default kerning at 9pt)
 - 20pt outer margins, 12pt between groups, 8pt between related controls
   (all per HIG spacing conventions)
+
+**Fonts and contrast on old vs new macOS (v0.13.0):** system font only (`systemFontOfSize:weight:`
+→ SF on 10.11+); no bundled fonts and no text outlines/strokes — a stroke smears 9–13pt glyphs on
+non-Retina screens, contrast does the job instead. Small text on buttons is *Medium* (light-on-dark
+text looks thinner, and 10.13 renders layer-backed text with grayscale antialiasing). Colours carry
+the legibility: every text colour is ≥ 4.5:1 on every surface in both palettes. Emoji icons (🔍) keep
+their own colours; glyph icons (↻ ▾ ✈) take the palette text colour. The 9pt credit line keeps
+`HelveticaNeue-Light` (approved, untouched).
 - Push buttons: 21pt height where possible (HIG standard); the main
   connect toggle is a custom 36pt-tall capsule (`cornerRadius = height/2`)
   since it's a primary action, not a standard push button
@@ -325,21 +369,28 @@ files (`cp X X.bak<ver>`), applies anchored edits (each anchor must match
 exactly once), runs its own checks, then `git commit` + `git push origin main`
 and deletes itself after a successful push.
 
-Releases are cut by hand: GitHub → Actions → **Build Raketa** → *Run workflow*
-→ type the version. The workflow (`workflow_dispatch`) validates the version and
-creates the tag itself — pushing a tag does **not** start a build, and tagging by
-hand makes the workflow refuse the run. The workflow:
-1. Builds `sing-box` from source (Go 1.20, targets `darwin/amd64`)
-2. Builds `ciadpi` (ByeDPI) from source at a pinned commit with
-   `-arch x86_64 -mmacosx-version-min=10.13`. This step is `continue-on-error`:
-   if it fails the app is still built, without the YouTube feature
-3. Installs `cairosvg` (`pip3 install cairosvg --quiet --break-system-packages`
-   — the `--break-system-packages` flag is required on macOS CI runners due
-   to PEP 668) and runs `generate_icon.py` to produce `AppIcon.icns` from
-   `AppIcon.svg`
-4. Compiles the app via raw `clang` (bundles `sing-box`, `ciadpi`, `dpi/` data)
-5. Ad-hoc codesigns (`codesign --force --deep -s -`)
-6. Zips and publishes a GitHub Release with the `.zip` attached
+Releases are cut by hand: GitHub → Actions → **Build Raketa** → *Run workflow* →
+type the version (optionally tick *dry run* to build and verify without publishing).
+Pushing a tag does **not** start a build. The workflow (rewritten in v0.13.0):
+- **Least privilege:** `permissions: {}` at the top; the `build` job gets `contents: read`,
+  only the `release` job gets `contents: write`. Third-party actions are pinned to full
+  commit SHAs (comment = version); Dependabot (`.github/dependabot.yml`) proposes bumps weekly.
+- **No script injection:** the version input reaches shell only through `env`, never `${{ }}`
+  inside `run:`. Format `X.Y.Z` is validated and an existing tag is rejected *before* building.
+- **`concurrency`** group serialises releases (no cancel); every job has `timeout-minutes`.
+- **Caching:** the built `sing-box` binary (key = version + Go) and `ciadpi` (key = pinned SHA)
+  are cached, so a normal release skips the multi-minute core build.
+- **Build job:** compiles sing-box (Go 1.20, only on cache miss) and `ciadpi` (optional,
+  `continue-on-error`), generates the icon, compiles the app, **stamps the release version
+  into `Info.plist`** (the UI label reads it back from the bundle), ad-hoc codesigns, then
+  *asserts* x86_64 + min macOS 10.13 + a valid signature, zips and writes a SHA-256 file.
+- **Release job:** the tag is created **by `gh release create` only after a successful build**
+  (a failed build no longer leaves a stray tag). Notes = commit subjects since the nearest
+  tag *in this commit's ancestry* (`git describe`), minus `chore:`/`ci:`; the zip and the
+  `.sha256` are attached and the release is marked Latest.
+- Release hygiene tool: `python3 tools/cleanup_releases.py` (dry-run) / `--apply` removes the
+  stray `latest` and v1.x–v11.x tags/releases left by the old auto-bump workflow and
+  rewrites boilerplate release notes into real changelogs.
 
 **Patch script conventions the person expects:**
 - One complete, self-contained `.py` file per iteration, runnable start to
@@ -420,3 +471,22 @@ project history around v0.9.7 iteration).
   patch-script conventions (`.py`, self-deleting, commits and pushes itself).
 - **Strategy count:** the ByeByeDPI list had 60 strategies on 2026-09-30 (not 72).
   The update button picks up growth automatically.
+
+---
+
+## 11. Release hygiene and session state (v0.13.0)
+
+- **Why releases looked "old":** the repo carried ~46 stray tags (`latest`, v1.0 … v11.0,
+  v9.1.3) from the former auto-bump workflow, and every release body was the same
+  boilerplate. The new workflow never auto-bumps; `tools/cleanup_releases.py` removes the
+  strays (dry-run first) and rewrites the notes.
+- **Version source of truth:** the workflow input. `Info.plist` in the repo is bumped by
+  patch scripts and overridden at build time; the UI label reads the bundle value.
+  v0.12.1 was released from a tree whose plist said 0.12.0 — that mismatch is now a CI warning.
+- **Verified on a real artifact (v0.12.1 zip):** `Raketa`, `sing-box` and `ciadpi` are x86_64
+  with minimum macOS 10.13; `ciadpi` and `dpi/` are bundled.
+- **Not verified on a Mac (needs a manual pass on 10.13 and 12):** dark palette rendering,
+  the right-click menu, the strategy ▾ menu inside the popover, 🔍/▾ glyph rendering,
+  and real-world DPI search results.
+- **Next candidates:** roadmap §5 (fake-packet strategies on macOS, YouTube alongside the VPN)
+  and §6 (build provenance attestation, runner pinning).

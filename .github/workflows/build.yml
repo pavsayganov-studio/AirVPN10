@@ -1,130 +1,258 @@
 name: Build Raketa
+run-name: Build Raketa v${{ inputs.version }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Версия релиза, например 0.10.0 (без буквы v)"
+        description: "Версия релиза, например 0.13.0 (без буквы v)"
         required: true
         type: string
-permissions:
-  contents: write
+      dry_run:
+        description: "Только собрать и проверить — без тега и релиза"
+        required: false
+        type: boolean
+        default: false
+
+# Deny everything by default; each job below asks only for what it needs.
+permissions: {}
+
+# One release at a time. Never cancel a run halfway: a half-published release
+# is worse than a queued one.
+concurrency:
+  group: raketa-release
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.20"             # last Go that still targets macOS 10.13
+  SING_BOX_VERSION: v1.8.11
+  BYEDPI_SHA: ba532298de7b28cfe854aea83d061369d13ca290
+
+defaults:
+  run:
+    shell: bash                  # = bash -eo pipefail {0}
 
 jobs:
   build:
+    name: Build (macOS 10.13 target)
     runs-on: macos-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
+      # Actions are pinned to full commit SHAs (supply-chain hardening); the
+      # trailing comment is the human-readable version. Dependabot keeps both
+      # up to date (.github/dependabot.yml).
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    # ── Validate and create the tag from manual input ──────────────────────
-    # No tag-scanning, no auto-bump — the person types the exact version.
-    # This permanently eliminates the class of bug where `sort -V` picked
-    # an unexpected "latest" tag from repo history (root cause of the
-    # v9.1.3 incident).
-    - name: Validate version and create tag
-      id: version
-      run: |
-        RAW="${{ github.event.inputs.version }}"
+      # The person types the exact version; there is no tag scanning or
+      # auto-bump (that was the root cause of the v9.1.3 incident). The input
+      # reaches the shell only through env, never through ${{ }} inside the
+      # script, so it cannot inject commands.
+      - name: Validate version
+        id: version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RAW="${VERSION_INPUT#v}"
+          if ! [[ "$RAW" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Неверный формат версии: '$RAW'. Нужно X.Y.Z, например 0.13.0"
+            exit 1
+          fi
+          TAG="v${RAW}"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Тег ${TAG} уже существует. Выберите другую версию."
+            exit 1
+          fi
+          PLIST_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
+          if [ "$PLIST_VER" != "$RAW" ]; then
+            echo "::warning::Info.plist в репозитории — ${PLIST_VER}, релиз — ${RAW}. В сборку попадёт ${RAW}."
+          fi
+          echo "version=${RAW}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
 
-        # Strip a leading 'v' if the person typed one anyway — forgiving input
-        RAW="${RAW#v}"
+      # ── sing-box core: built once per (version, Go) and cached ─────────────
+      - name: Restore sing-box cache
+        id: cache-sb
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: sing-box
+          key: sing-box-${{ env.SING_BOX_VERSION }}-go${{ env.GO_VERSION }}-darwin-amd64-v1
 
-        if ! [[ "$RAW" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-          echo "::error::Неверный формат версии: '$RAW'. Нужно X.Y.Z, например 0.10.0"
-          exit 1
-        fi
+      - name: Set up Go
+        if: steps.cache-sb.outputs.cache-hit != 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
 
-        NEW_TAG="v${RAW}"
-        echo "Requested version: $NEW_TAG"
+      - name: Build sing-box core
+        if: steps.cache-sb.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 -b "$SING_BOX_VERSION" \
+            https://github.com/SagerNet/sing-box.git core-build
+          cd core-build
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+            go build -tags "with_utls,with_grpc,with_reality" \
+            -trimpath -ldflags="-s -w" \
+            -o ../sing-box ./cmd/sing-box
 
-        if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-          echo "::error::Тег $NEW_TAG уже существует. Выберите другую версию."
-          exit 1
-        fi
+      # ── ByeDPI (optional component for the YouTube feature) ────────────────
+      - name: Restore ciadpi cache
+        id: cache-dpi
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ciadpi
+          key: ciadpi-${{ env.BYEDPI_SHA }}-x86_64-macos10.13-v1
 
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag "$NEW_TAG"
-        git push origin "$NEW_TAG"
+      # If this step fails the job continues and the app is built without it
+      # (the YouTube row then shows "движок не найден"). It must never be able
+      # to block a VPN release.
+      - name: Build ByeDPI (ciadpi)
+        if: steps.cache-dpi.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          git clone https://github.com/hufrea/byedpi.git dpi-build
+          cd dpi-build
+          git checkout "$BYEDPI_SHA"
+          test "$(git rev-parse HEAD)" = "$BYEDPI_SHA"
+          make CC="clang -arch x86_64 -mmacosx-version-min=10.13" \
+            || { make clean; make CC="clang -arch x86_64 -mmacosx-version-min=10.13" \
+                  CFLAGS="-I. -O2 -std=gnu99 -w"; }
+          cp ciadpi ../ciadpi
+          file ../ciadpi
 
-        echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+      - name: Generate AppIcon.icns from SVG
+        run: |
+          # --break-system-packages: required on macOS runners (PEP 668)
+          pip3 install cairosvg --quiet --break-system-packages
+          python3 generate_icon.py
 
-    - name: Set up Go 1.20
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.20'
+      - name: Compile app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p Raketa.app/Contents/MacOS Raketa.app/Contents/Resources
+          echo "APPL????" > Raketa.app/Contents/PkgInfo
+          cp Info.plist   Raketa.app/Contents/Info.plist
+          # The workflow input is the single source of truth for the release
+          # version; the UI label reads it back from the bundle at runtime.
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleVersion ${VERSION}" \
+            -c "Set :CFBundleShortVersionString ${VERSION}" \
+            Raketa.app/Contents/Info.plist
+          cp AppIcon.icns Raketa.app/Contents/Resources/AppIcon.icns
+          cp sing-box     Raketa.app/Contents/Resources/sing-box
+          chmod +x        Raketa.app/Contents/Resources/sing-box
+          if [ -f ciadpi ]; then
+            cp ciadpi Raketa.app/Contents/Resources/ciadpi
+            chmod +x  Raketa.app/Contents/Resources/ciadpi
+          else
+            echo "::warning::ciadpi was not built - the YouTube feature will be disabled"
+          fi
+          mkdir -p Raketa.app/Contents/Resources/dpi
+          cp dpi/strategies.list dpi/youtube.sites dpi/googlevideo.sites \
+             Raketa.app/Contents/Resources/dpi/
+          clang -fobjc-arc \
+            -framework Cocoa \
+            -framework SystemConfiguration \
+            -arch x86_64 -mmacosx-version-min=10.13 \
+            -o Raketa.app/Contents/MacOS/Raketa \
+            main.m AppDelegate.m ViewController.m DPIEngine.m
+          codesign --force --deep -s - Raketa.app
 
-    - name: Build sing-box core
-      run: |
-        git clone --depth=1 -b v1.8.11 \
-          https://github.com/SagerNet/sing-box.git core-build
-        cd core-build
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
-          go build -tags "with_utls,with_grpc,with_reality" \
-          -trimpath -ldflags="-s -w" \
-          -o ../sing-box ./cmd/sing-box
+      # Fail the build, not the user's Mac: the whole point of this project is
+      # to run on old systems, so assert it on every release.
+      - name: Verify bundle
+        run: |
+          EXE=Raketa.app/Contents/MacOS/Raketa
+          test "$(lipo -archs "$EXE")" = "x86_64"
+          otool -l "$EXE" | grep -A3 -E "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION" | tee min-os.txt
+          grep -Eq "(version|minos) 10\.13" min-os.txt
+          codesign --verify --deep --strict Raketa.app
+          for f in sing-box ciadpi; do
+            [ -f "Raketa.app/Contents/Resources/$f" ] && lipo -archs "Raketa.app/Contents/Resources/$f"
+          done || true
 
-    - name: Build ByeDPI (ciadpi)
-      # Optional component for the YouTube feature. If this step fails the job
-      # continues and the app is built without it (the YouTube row then shows
-      # "движок не найден"). It must never be able to block a VPN release.
-      continue-on-error: true
-      run: |
-        git clone https://github.com/hufrea/byedpi.git dpi-build
-        cd dpi-build
-        git checkout ba532298de7b28cfe854aea83d061369d13ca290
-        test "$(git rev-parse HEAD)" = "ba532298de7b28cfe854aea83d061369d13ca290"
-        make CC="clang -arch x86_64 -mmacosx-version-min=10.13" \
-          || { make clean; make CC="clang -arch x86_64 -mmacosx-version-min=10.13" \
-                CFLAGS="-I. -O2 -std=gnu99 -w"; }
-        cp ciadpi ../ciadpi
-        file ../ciadpi
-        otool -l ../ciadpi | grep -A3 -E "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION" || true
+      - name: Package
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir dist
+          zip -qry "dist/Raketa-macOS-10.13-${TAG}.zip" Raketa.app
+          (cd dist && shasum -a 256 "Raketa-macOS-10.13-${TAG}.zip" > "Raketa-macOS-10.13-${TAG}.zip.sha256")
+          cat dist/*.sha256
 
-    - name: Generate AppIcon.icns from SVG
-      run: |
-        pip3 install cairosvg --quiet --break-system-packages
-        python3 generate_icon.py
+      - name: Upload build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: raketa-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
 
-    - name: Compile app
-      run: |
-        mkdir -p Raketa.app/Contents/MacOS \
-                 Raketa.app/Contents/Resources
-        echo "APPL????" > Raketa.app/Contents/PkgInfo
-        cp Info.plist   Raketa.app/Contents/Info.plist
-        cp AppIcon.icns Raketa.app/Contents/Resources/AppIcon.icns
-        cp sing-box     Raketa.app/Contents/Resources/sing-box
-        chmod +x        Raketa.app/Contents/Resources/sing-box
-        if [ -f ciadpi ]; then
-          cp ciadpi Raketa.app/Contents/Resources/ciadpi
-          chmod +x  Raketa.app/Contents/Resources/ciadpi
-        else
-          echo "::warning::ciadpi was not built - the YouTube feature will be disabled"
-        fi
-        mkdir -p Raketa.app/Contents/Resources/dpi
-        cp dpi/strategies.list dpi/youtube.sites dpi/googlevideo.sites \
-           Raketa.app/Contents/Resources/dpi/
-        clang -fobjc-arc \
-          -framework Cocoa \
-          -framework SystemConfiguration \
-          -arch x86_64 -mmacosx-version-min=10.13 \
-          -o Raketa.app/Contents/MacOS/Raketa \
-          main.m AppDelegate.m ViewController.m DPIEngine.m
-        codesign --force --deep -s - Raketa.app
-        zip -r "Raketa-macOS-10.13-${{ steps.version.outputs.tag }}.zip" Raketa.app
+  release:
+    name: Publish release
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write            # creates the tag and the release
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out (full history for the changelog)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
 
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ steps.version.outputs.tag }}
-        name: "🚀 Raketa ${{ steps.version.outputs.tag }}"
-        body: |
-          ## 🚀 Raketa ${{ steps.version.outputs.tag }}
+      - name: Download build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: raketa-dist
+          path: dist
 
-          Собрано из ветки `main` при ручном запуске workflow.
+      # Changelog = commit subjects since the nearest tag in this commit's
+      # history. `git describe` follows ancestry, so stray tags that are not
+      # ancestors of this commit can never be picked as "previous".
+      - name: Write release notes
+        run: |
+          PREV="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then RANGE="${PREV}..HEAD"; else RANGE="HEAD"; fi
+          {
+            echo "## 🚀 Raketa ${TAG}"
+            echo
+            echo "### Что изменилось"
+            # shellcheck disable=SC2016  # the backticks around %h are literal Markdown
+            CHANGES="$(git log --no-merges --pretty='- %s (`%h`)' "$RANGE" | grep -v -E '^- (chore|ci)(\(.+\))?:' || true)"
+            if [ -n "$CHANGES" ]; then echo "$CHANGES"; else echo "- Пересборка без изменений в коде."; fi
+            echo
+            echo "### Установка"
+            echo "macOS 10.13 и новее, Intel (x86_64). Распакуйте архив и перенесите \`Raketa.app\` в «Программы»."
+            echo "При первом запуске: правый клик → «Открыть» (приложение подписано ad-hoc)."
+            echo
+            if [ -n "$PREV" ]; then
+              echo "**Полный список изменений:** ${PREV}...${TAG}"
+            fi
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
-          Новое: кнопка «Смотреть YouTube» — обход DPI (ByeDPI) без VPN.
-        files: Raketa-macOS-10.13-*.zip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create release
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "🚀 Raketa ${TAG}" \
+            --notes-file notes.md \
+            --latest
