@@ -9,7 +9,8 @@
 //   * keeps the ByeByeDPI strategy list (bundled snapshot + optional update
 //     from the ByeByeDPI repo) and finds the strategies that work on the
 //     current network by test-fetching YouTube/googlevideo hosts through
-//     a throw-away ciadpi per strategy;
+//     a throw-away ciadpi per strategy (lines that need options this ciadpi
+//     lacks are adapted, see DPIEngine.m);
 //   * builds the sing-box config used by "Смотреть YouTube" mode.
 //
 // CPU discipline: no timers, no polling. Everything below runs only when the
@@ -20,7 +21,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface DPIResult : NSObject
 @property (copy)   NSString *strategy;   // raw strategy line (its identity)
-@property (assign) NSInteger number;     // 1-based position in the source list
+@property (assign) NSInteger number;     // position of the line in the ByeByeDPI list ("№N")
+@property (assign) BOOL      adapted;    // fake-packet options cut out for macOS (shown as "~")
 @property (assign) NSInteger ok;         // hosts reachable through this strategy
 @property (assign) NSInteger total;      // hosts tested
 @property (assign) double    avgTime;    // mean seconds of the successful requests

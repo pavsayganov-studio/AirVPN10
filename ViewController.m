@@ -1020,8 +1020,9 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
     NSString *cap;
     if (!avail)        cap = @"движок не найден";
-    else if (num > 0)  cap = res ? [NSString stringWithFormat:@"№%ld · %ld/%ld",
-                                    (long)num, (long)res.ok, (long)res.total]
+    else if (num > 0)  cap = res ? [NSString stringWithFormat:@"№%ld%@ · %ld/%ld",
+                                    (long)num, res.adapted ? @"~" : @"",   // "~" = adapted for macOS (v0.13.1)
+                                    (long)res.ok, (long)res.total]
                                  : [NSString stringWithFormat:@"№%ld", (long)num];
     else               cap = @"стратегия не выбрана";
     self.ytCaption.stringValue = cap;
@@ -1224,8 +1225,10 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     NSString *cur = self.dpi.selectedStrategy;
     if (!top.count) [m addItem:[self ytMenuNote:@"Нет рабочих стратегий — нажмите 🔍"]];
     for (DPIResult *r in top) {
-        NSString *title = [NSString stringWithFormat:@"№%ld    %ld/%ld    %.1f с",
-                           (long)r.number, (long)r.ok, (long)r.total, r.avgTime];
+        // "~" marks a line adapted for macOS (fake-packet options cut out, v0.13.1)
+        NSString *title = [NSString stringWithFormat:@"№%ld%@    %ld/%ld    %.1f с",
+                           (long)r.number, r.adapted ? @"~" : @"",
+                           (long)r.ok, (long)r.total, r.avgTime];
         NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:@selector(ytPick:) keyEquivalent:@""];
         it.target = self;
         it.representedObject = r.strategy;

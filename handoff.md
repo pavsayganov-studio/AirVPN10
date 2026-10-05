@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.13.0
+**Current version:** v0.13.1
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -83,17 +83,35 @@ generation, `startVPN`, `stopVPN`, routing rules above) is unchanged.
   see `dpi/NOTICE.md`). The 🔍 button first re-downloads the three files from
   `raw.githubusercontent.com/romanvht/ByeByeDPI/master/...` (validated, then saved
   to `Application Support/Raketa/dpi_*`), then tests every strategy.
-- **Search:** per strategy: start a throw-away `ciadpi` on `127.0.0.1:10820`, probe
-  `www.youtube.com` + `i.ytimg.com` through it with `curl --socks5-hostname`
-  (dead → skip), else run the full battery (13 YouTube hosts + 6 googlevideo hosts,
-  concurrent). Rank = successes desc, mean time asc. Top 10 are shown in the ▾
-  menu; results are cached in `dpi_results.json` with a network signature
-  (primary interface + router).
-- **macOS limitation (important):** upstream `ciadpi` enables the "fake packet"
-  options (`-f -n -S ...`) only on Linux/Windows (`FAKE_SUPPORT`). On macOS they
-  are invalid options and the process exits. Such strategies stay in the list but
-  are skipped by the search (the menu header says "checked X of Y"). In the
-  2026-09-30 snapshot that is 37 of 60.
+- **Search (reworked in v0.13.1):** candidates = the ByeByeDPI lines this `ciadpi` can
+  run as they are ("originals") plus an adapted form of every line that needs options it
+  lacks (next bullet). Per candidate: start a throw-away `ciadpi` on `127.0.0.1:10820`,
+  probe `www.youtube.com` + `i.ytimg.com` through it with `curl --socks5-hostname`
+  (dead -> skip), else run the full battery (13 YouTube hosts + 6 googlevideo hosts,
+  concurrent). A request passes by ByeByeDPI's own rule (`SiteCheckUtils`): an HTTP answer
+  arrived and, if `Content-Length` was declared, the whole body arrived; for chunked pages
+  the body must finish or pass 32 KB (the classic ~16 KB DPI freeze). Timeouts are
+  connect 5 s plus stall detection (`-Y 1 -y 5`), not a hard total: v0.12.x used `-m 4/5`
+  and a clean curl exit, which failed every merely slow strategy (TTL-based disorder waits
+  for a TCP retransmit). Before the loop a control run tests the same hosts with no bypass.
+  Rank = successes desc, mean time asc. Top 10 are shown in the menu; results are cached in
+  `dpi_results.json` with a network signature (primary interface + router).
+- **Search log:** every search overwrites `Application Support/Raketa/dpi_search.log`: the
+  control run, then one line per candidate: `N[~]  ok/total  mean-s  failures  line`.
+  Failures are `curl-exit x count` (28 timeout or stall, 35 TLS, 52 empty reply, 56 reset,
+  97 SOCKS/DNS via the proxy, 1 = body shorter than declared). Read it first when a network
+  gives "no working strategies". It deliberately contains no network signature.
+- **macOS limitation and adaptation (v0.13.1):** upstream `ciadpi` enables the "fake
+  packet" options (`-f -n -S -T -Y`) only on Linux/Windows (`FAKE_SUPPORT`). On macOS they
+  are invalid options and the process exits. 37 of the 60 lines of the 2026-09-30 snapshot
+  use them; v0.12.x skipped those lines, leaving 23 candidates. Now `DPIEngine` asks the
+  binary (`ciadpi --help`) which of those options exist, cuts the missing ones and the
+  fake-only modifiers (`-t -Q -O -l`) out of the line, and keeps the rest (split / disorder /
+  OOB / tlsrec) as an *adapted* candidate shown as `N~`. `N` is always the line's position
+  in the ByeByeDPI file. Adapted lines that collapse into an existing one are dropped
+  (23 originals + 34 adapted = 57 candidates on that snapshot). An adapted line is not
+  assumed to work: it goes through the same live test. Real fake packets on macOS stay
+  open (roadmap 5.1).
 - **Safety:** the strategy list comes from a third-party repo, so every line is
   split into argv tokens (never a shell) and each option is whitelisted; options
   that touch files, daemonize or change the listen address are rejected.
@@ -490,3 +508,28 @@ project history around v0.9.7 iteration).
   and real-world DPI search results.
 - **Next candidates:** roadmap §5 (fake-packet strategies on macOS, YouTube alongside the VPN)
   and §6 (build provenance attestation, runner pinning).
+
+---
+
+## 12. DPI search rework (v0.13.1)
+
+- **Finding:** the bundled `dpi/strategies.list` is line-for-line the ByeByeDPI list
+  (`proxytest_strategies.list`, 60 lines; re-compared with ByeByeDPI `96a3c1f` of 2026-10-02),
+  and `ciadpi` is built from the commit ByeByeDPI itself pins (`ba53229`). "Use the ByeByeDPI
+  strategies" was already true; the search failed for other reasons.
+- **Causes found** (code reading, plus building `ciadpi` without its Linux branch to get the
+  macOS option set): (1) only 23 of the 60 lines can start on macOS; (2) the pass rule was
+  stricter than ByeByeDPI's. Which of the two dominates on a given network is unknown without
+  `dpi_search.log`.
+- **Changes:** adapted candidates for fake-packet lines, ByeByeDPI's pass rule, control run
+  without bypass, `dpi_search.log`. `ViewController.m` only gained the `~` marker. No VPN,
+  routing, layout or colour code was touched.
+- **Search time:** 57 candidates instead of 23; a network where everything is dead takes about
+  5-6 minutes (about 5 s per dead candidate).
+- **Verified off-device** (Linux/GNUstep rig that compiles the real `DPIEngine.m`): candidate list
+  equals an independent reference implementation; curl-output parser unit tests; a full search
+  through the real `ciadpi` against a local TLS server that misbehaves on purpose (truncated
+  body, freeze after 8 KB, hang-up) ranks the originals and adapted lines as expected.
+- **Not verified:** anything on a real Mac or a real DPI network. If a network still yields
+  nothing, `dpi_search.log` shows whether the control run was blocked, whether strategies reset
+  (56/35), stall (28) or never reach the proxy (97).

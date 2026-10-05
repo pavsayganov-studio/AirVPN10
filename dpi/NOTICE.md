@@ -12,3 +12,8 @@
 
 If the licensing of the bundled list matters for how you distribute Raketa,
 check it with someone qualified: this note is a record of provenance, not legal advice.
+
+Update 2026-10-04 (v0.13.1): the bundled `strategies.list` was re-compared with
+ByeByeDPI's `proxytest_strategies.list` at commit 96a3c1f (2026-10-02) and is identical.
+Raketa runs lines that use fake-packet options in an adapted form (those options removed)
+because the macOS build of ciadpi does not have them; the bundled file is not modified.
