@@ -1000,7 +1000,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     self.ytBtn.action = @selector(ytToggle);
     [root addSubview:self.ytBtn];
 
-    self.ytListBtn = [self ytIconBtn:@"▾" tip:@"Лучшие стратегии для YouTube"
+    self.ytListBtn = [self ytIconBtn:@"▾" tip:@"Стратегии для YouTube: лучшие и выбор вручную"
                               action:@selector(ytShowMenu)
                                frame:[self rx:kW-kPAD-kRefW top:273 w:kRefW h:28]];
     [root addSubview:self.ytListBtn];
@@ -1017,17 +1017,18 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     NSString *sel = self.dpi.selectedStrategy;
     NSInteger num = sel.length ? [self.dpi numberForStrategy:sel] : 0;
     DPIResult *res = num > 0 ? [self.dpi resultForStrategy:sel] : nil;
+    // "12", "12~" (adapted for macOS) or "M3" (macOS-first candidate), v0.13.2
+    NSString *lab = num > 0 ? [self.dpi labelForStrategy:sel] : @"";
 
     NSString *cap;
     if (!avail)        cap = @"движок не найден";
-    else if (num > 0)  cap = res ? [NSString stringWithFormat:@"№%ld%@ · %ld/%ld",
-                                    (long)num, res.adapted ? @"~" : @"",   // "~" = adapted for macOS (v0.13.1)
-                                    (long)res.ok, (long)res.total]
-                                 : [NSString stringWithFormat:@"№%ld", (long)num];
+    else if (num > 0)  cap = (res && res.total > 0)
+                             ? [NSString stringWithFormat:@"№%@ · %ld/%ld", lab, (long)res.ok, (long)res.total]
+                             : [NSString stringWithFormat:@"№%@", lab];
     else               cap = @"стратегия не выбрана";
     self.ytCaption.stringValue = cap;
 
-    [self ytSetTitle:(on ? [NSString stringWithFormat:@"●  YouTube · №%ld", (long)num]
+    [self ytSetTitle:(on ? [NSString stringWithFormat:@"●  YouTube · №%@", lab]
                          : @"▶  Смотреть YouTube")
                   on:self.ytBtn size:13 color:(on ? rkGreen : rkText)];
     self.ytBtn.layer.borderColor = on ? rkGreen.CGColor : rkBorder.CGColor;
@@ -1145,8 +1146,8 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         if ([self coreAlive]) {
             self.ytActive = YES;
             [self startWatchdog];
-            [self setStatus:[NSString stringWithFormat:@"YouTube · обход DPI · №%ld",
-                (long)[self.dpi numberForStrategy:self.dpi.selectedStrategy ?: @""]] color:rkGreen];
+            [self setStatus:[NSString stringWithFormat:@"YouTube · обход DPI · №%@",
+                [self.dpi labelForStrategy:self.dpi.selectedStrategy ?: @""]] color:rkGreen];
         } else {
             [self.dpi stopProxy];
             [self setStatus:@"⚠  Ядро не запустилось — Логи" color:rkRed];
@@ -1219,16 +1220,16 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [m addItem:[self ytMenuNote:[self.dpi resultsSummary]]];
     NSString *cov = [self.dpi coverageNote];
     if (cov.length) [m addItem:[self ytMenuNote:cov]];
+    NSString *dg = [self.dpi diagnosisNote];       // what the two control runs saw (v0.13.2)
+    if (dg.length) [m addItem:[self ytMenuNote:dg]];
     [m addItem:[NSMenuItem separatorItem]];
 
     NSArray<DPIResult *> *top = [self.dpi topResults:10];
     NSString *cur = self.dpi.selectedStrategy;
-    if (!top.count) [m addItem:[self ytMenuNote:@"Нет рабочих стратегий — нажмите 🔍"]];
+    if (!top.count) [m addItem:[self ytMenuNote:@"Нет подтверждённых — выберите вручную ниже"]];
     for (DPIResult *r in top) {
-        // "~" marks a line adapted for macOS (fake-packet options cut out, v0.13.1)
-        NSString *title = [NSString stringWithFormat:@"№%ld%@    %ld/%ld    %.1f с",
-                           (long)r.number, r.adapted ? @"~" : @"",
-                           (long)r.ok, (long)r.total, r.avgTime];
+        NSString *title = [NSString stringWithFormat:@"№%@    %ld/%ld    %.1f с",
+                           r.label, (long)r.ok, (long)r.total, r.avgTime];
         NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:@selector(ytPick:) keyEquivalent:@""];
         it.target = self;
         it.representedObject = r.strategy;
@@ -1236,17 +1237,62 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         it.state = [r.strategy isEqualToString:cur] ? NSOnState : NSOffState;
         [m addItem:it];
     }
+
+    // v0.13.2: EVERY candidate can be picked by hand, tested or not. A network where
+    // the search finds nothing must not be a dead end: the person tries them in the
+    // browser. "—" = not tested, "0/19" = tested and failed. "~" = adapted for macOS,
+    // "M" = macOS-first candidate (see DPIEngine.m).
+    NSArray<DPIResult *> *all = [self.dpi allCandidates];
+    [m addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *allIt = [[NSMenuItem alloc]
+        initWithTitle:[NSString stringWithFormat:@"Все стратегии (%lu)", (unsigned long)all.count]
+               action:NULL keyEquivalent:@""];
+    NSMenu *sub = [[NSMenu alloc] initWithTitle:@""];
+    sub.autoenablesItems = NO;
+    NSInteger group = -1;                         // 0 = macOS-first, 1 = ByeByeDPI, 2 = adapted
+    for (DPIResult *r in all) {
+        NSInteger g = [r.label hasPrefix:@"M"] ? 0 : (r.adapted ? 2 : 1);
+        if (g != group) {
+            group = g;
+            if (sub.numberOfItems) [sub addItem:[NSMenuItem separatorItem]];
+            [sub addItem:[self ytMenuNote:(g == 0 ? @"Для macOS (M)"
+                                           : g == 1 ? @"ByeByeDPI" : @"ByeByeDPI, адаптированные (~)")]];
+        }
+        NSString *stat = r.total > 0 ? [NSString stringWithFormat:@"%ld/%ld", (long)r.ok, (long)r.total] : @"—";
+        NSMenuItem *it = [[NSMenuItem alloc]
+            initWithTitle:[NSString stringWithFormat:@"№%@    %@", r.label, stat]
+                   action:@selector(ytPick:) keyEquivalent:@""];
+        it.target = self;
+        it.representedObject = r.strategy;
+        it.toolTip = r.strategy;
+        it.state = [r.strategy isEqualToString:cur] ? NSOnState : NSOffState;
+        [sub addItem:it];
+    }
+    allIt.submenu = sub;
+    [m addItem:allIt];
+    NSMenuItem *logIt = [[NSMenuItem alloc] initWithTitle:@"Журнал поиска…"
+                                                   action:@selector(ytOpenLog:) keyEquivalent:@""];
+    logIt.target = self;
+    [m addItem:logIt];
     [m popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.ytListBtn];
+
+}
+
+// Opens dpi_search.log (Console.app by default): the evidence for why a network gave no result.
+- (void)ytOpenLog:(id)sender {
+    NSString *p = [self.dpi searchLogPath];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:p]) [[NSWorkspace sharedWorkspace] openFile:p];
+    else [self setStatus:@"Журнала ещё нет — запустите поиск 🔍" color:rkSub];
 }
 
 - (void)ytPick:(NSMenuItem *)it {
     NSString *s = it.representedObject;
     if (![s isKindOfClass:[NSString class]] || !s.length) return;
     self.dpi.selectedStrategy = s;
-    NSInteger num = [self.dpi numberForStrategy:s];
+    NSString *lab = [self.dpi labelForStrategy:s];
     [self ytUIRender];
     if (!self.ytActive) {
-        [self setStatus:[NSString stringWithFormat:@"Выбрана стратегия №%ld", (long)num] color:rkSub];
+        [self setStatus:[NSString stringWithFormat:@"Выбрана №%@ · нажмите «Смотреть YouTube»", lab] color:rkSub];
         return;
     }
     // Active: swap only ciadpi. sing-box keeps pointing at the same local port.
@@ -1254,7 +1300,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [self setStatus:@"Переключаю стратегию..." color:rkSub];
     [self.dpi startProxyWithStrategy:s completion:^(BOOL ok, NSString *err) {
         self.ytBusy = NO;
-        if (ok) [self setStatus:[NSString stringWithFormat:@"YouTube · обход DPI · №%ld", (long)num] color:rkGreen];
+        if (ok) [self setStatus:[NSString stringWithFormat:@"YouTube · обход DPI · №%@", lab] color:rkGreen];
         else    [self setStatus:[NSString stringWithFormat:@"⚠  %@", err ?: @"ошибка"] color:rkRed];
         [self ytUIRender];
     }];

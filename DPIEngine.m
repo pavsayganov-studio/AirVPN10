@@ -137,6 +137,8 @@ static BOOL DPIRequestPassed(int http, long long size, long long declared, int c
 @property (copy)   NSString *raw;
 @property (assign) NSInteger src;
 @property (assign) BOOL      adapted;
+@property (assign) BOOL      curated;    // from DPICuratedLines(), not from the ByeByeDPI file
+@property (copy)   NSString *label;      // "12", "12~" (adapted), "M3" (curated)
 @end
 @implementation DPIEntry
 @end
@@ -162,6 +164,9 @@ static BOOL DPIRequestPassed(int http, long long size, long long declared, int c
     NSInteger _lastTested, _lastTotal;
     NSInteger _lastNative, _lastAdapted;   // composition of the list at the last search
     NSInteger _directOK, _directTotal;     // control run: same hosts, no bypass at all
+    NSInteger _passOK, _passTotal;         // control run: same hosts through ciadpi with NO desync
+    NSInteger _lastCurated;
+    NSDictionary<NSString *, DPIResult *> *_tested;   // every candidate tested at the last search, failures included
     NSSet   *_caps;                        // options this ciadpi lists in --help (nil = unknown)
     BOOL     _capsDone;
 }
@@ -405,8 +410,24 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
     return [kept componentsJoinedByString:@" "];
 }
 
-// Two lines that differ only in fake-only modifiers behave identically when
-// fake packets are unavailable; this is the key used to avoid testing both.
+// "--split 1+s" and "-s1+s" are the same option; so are -s1+s and -s 1+s.
+static NSString *DPICanonOpt(NSString *key) {
+    static NSDictionary *map; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{@"--split": @"-s", @"--disorder": @"-d", @"--oob": @"-o", @"--disoob": @"-q",
+                @"--tlsrec": @"-r", @"--fake": @"-f", @"--ttl": @"-t", @"--auto": @"-A",
+                @"--mod-http": @"-M", @"--tlsminor": @"-m", @"--oob-data": @"-e",
+                @"--fake-sni": @"-n", @"--fake-tls-mod": @"-Q", @"--fake-offset": @"-O",
+                @"--fake-data": @"-l", @"--udp-fake": @"-a", @"--md5sig": @"-S",
+                @"--timeout": @"-T", @"--drop-sack": @"-Y", @"--cache-ttl": @"-u",
+                @"--auto-mode": @"-L", @"--def-ttl": @"-g"};
+    });
+    return map[key] ?: key;
+}
+
+// Two lines that behave identically in the search get the same key: fake-only
+// modifiers do nothing without fake packets, `-aN` (UDP fakes) never touches the TCP
+// test, and the long/short spelling of an option is irrelevant.
 - (NSString *)dedupeKey:(NSString *)line {
     NSMutableArray *toks = [NSMutableArray array];
     for (NSString *t in [line componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]])
@@ -414,15 +435,49 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
     BOOL fakeGone = [self optionMissing:@"-f"];
     NSMutableArray *out = [NSMutableArray array];
     for (NSArray *g in DPIOptionGroups(toks)) {
+        NSString *k = DPICanonOpt(DPIOptKey(g[0]));
+        if ([k isEqualToString:@"-a"]) continue;
         if (fakeGone && [DPIFakeOnlyOptions() containsObject:DPIOptKey(g[0])]) continue;
-        [out addObjectsFromArray:g];
+        NSString *first = g[0], *val = @"";
+        if ([first hasPrefix:@"--"]) {
+            NSRange eq = [first rangeOfString:@"="];
+            val = eq.location != NSNotFound ? [first substringFromIndex:eq.location + 1] : (g.count > 1 ? g[1] : @"");
+        } else {
+            val = first.length > 2 ? [first substringFromIndex:2] : (g.count > 1 ? g[1] : @"");
+        }
+        [out addObject:[k stringByAppendingString:val]];
     }
     return [out componentsJoinedByString:@" "];
 }
 
-// Every runnable candidate: original lines first (list order), then adapted
-// ones. A line that fails the safety filter is skipped but still occupies its
-// number, so "№N" always equals the line's position in the ByeByeDPI file.
+// Candidates for a macOS ciadpi, tried FIRST. The ByeByeDPI list is tuned for Android
+// (Linux): its best lines lean on fake packets and on Linux's selective retransmit
+// after a TTL=1 "disorder". Upstream's README says a BSD/Windows-style stack
+// retransmits from the lost position instead and recommends `--split 1+s --disorder 3+s`
+// there; it also recommends putting an OOB byte inside the SNI (`--oob 3+s`) and shows
+// `--disoob 3 --disorder 7`. These lines follow that advice and add TLS-record splitting
+// at the SNI, which does not depend on the OS at all. They are guesses ranked by the
+// live test like every other candidate, nothing more. Lines identical to an entry of
+// the ByeByeDPI list are skipped (the ByeByeDPI number wins).
+static NSArray<NSString *> *DPICuratedLines(void) {
+    return @[@"-s1+s -d3+s",
+             @"-s1+s -d3+s -r1+s",
+             @"-r1+s -s1+s",
+             @"-r3+s -s3+s",
+             @"-o3+s",
+             @"-o3+s -r1+s",
+             @"-q3+s -d7+s",
+             @"-s1 -o3+s",
+             @"-s1+s -s1+sm -s1+se",
+             @"-r1+s -r1+sm -s1+s",
+             @"-d1 -s1+s -d3+s",
+             @"-s1+s -r1+sm -o3+se"];
+}
+
+// Every runnable candidate, in TEST order: the macOS-first lines (M1..), then the
+// original ByeByeDPI lines, then the adapted ones. A ByeByeDPI line that fails the
+// safety filter is skipped but still occupies its number, so "№N" always equals the
+// line's position in the ByeByeDPI file.
 - (NSArray<DPIEntry *> *)entries {
     NSString *txt = [NSString stringWithContentsOfFile:[self effectivePathForList:kDPIListName]
                                               encoding:NSUTF8StringEncoding error:nil];
@@ -438,16 +493,33 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
         if (!run) continue;
         DPIEntry *e = [DPIEntry new];
         e.raw = run; e.src = src; e.adapted = ad;
+        e.label = [NSString stringWithFormat:@"%ld%@", (long)src, ad ? @"~" : @""];
         if (ad) { [adapted addObject:e]; }
         else    { [originals addObject:e]; [seenKey addObject:[self dedupeKey:run]]; }
     }
-    NSMutableArray<DPIEntry *> *out = [NSMutableArray arrayWithArray:originals];
+    NSMutableArray<DPIEntry *> *rest = [NSMutableArray arrayWithArray:originals];
     for (DPIEntry *e in adapted) {
         NSString *k = [self dedupeKey:e.raw];
         if ([seenKey containsObject:k] || ![DPIEngine argsForStrategy:e.raw]) continue;
         [seenKey addObject:k];
+        [rest addObject:e];
+    }
+    NSMutableArray<DPIEntry *> *out = [NSMutableArray array];
+    NSInteger k = 0;
+    for (NSString *l in DPICuratedLines()) {
+        k++;
+        BOOL ad = NO;
+        NSString *run = [DPIEngine argsForStrategy:l] ? [self runnableForm:l adapted:&ad] : nil;
+        if (!run) continue;
+        NSString *key = [self dedupeKey:run];
+        if ([seenKey containsObject:key]) continue;      // already in the list under its own number
+        [seenKey addObject:key];
+        DPIEntry *e = [DPIEntry new];
+        e.raw = run; e.src = 1000 + k; e.adapted = NO; e.curated = YES;
+        e.label = [NSString stringWithFormat:@"M%ld", (long)k];
         [out addObject:e];
     }
+    [out addObjectsFromArray:rest];
     return out;
 }
 
@@ -469,6 +541,25 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
 - (NSInteger)numberForStrategy:(NSString *)raw {
     for (DPIEntry *e in [self entries]) if ([e.raw isEqualToString:raw]) return e.src;
     return 0;
+}
+// "12", "12~" or "M3"; @"" when the line is not a candidate any more.
+- (NSString *)labelForStrategy:(NSString *)raw {
+    for (DPIEntry *e in [self entries]) if ([e.raw isEqualToString:raw]) return e.label;
+    return @"";
+}
+// Every candidate in test order with whatever the last search measured for it
+// (total == 0: not tested). Lets the menu offer ALL of them for manual choice, so a
+// network where the search finds nothing is not a dead end.
+- (NSArray<DPIResult *> *)allCandidates {
+    NSMutableArray *out = [NSMutableArray array];
+    for (DPIEntry *e in [self entries]) {
+        DPIResult *t = _tested[e.raw];
+        DPIResult *r = [DPIResult new];
+        r.strategy = e.raw; r.number = e.src; r.adapted = e.adapted; r.label = e.label;
+        if (t) { r.ok = t.ok; r.total = t.total; r.avgTime = t.avgTime; }
+        [out addObject:r];
+    }
+    return out;
 }
 
 // Returns a human-readable note. Never throws away a good local list on failure.
@@ -525,30 +616,44 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
     NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
     if (![j isKindOfClass:[NSDictionary class]]) return;
     NSMutableArray *a = [NSMutableArray array];
-    for (NSDictionary *r in j[@"results"]) {
-        if (![r isKindOfClass:[NSDictionary class]] || ![r[@"s"] isKindOfClass:[NSString class]]) continue;
-        DPIResult *x = [DPIResult new];
-        x.strategy = r[@"s"]; x.ok = [r[@"ok"] integerValue];
-        x.total = [r[@"n"] integerValue]; x.avgTime = [r[@"t"] doubleValue];
-        [a addObject:x];
+    NSMutableDictionary *all = [NSMutableDictionary dictionary];
+    // "results" = working ones, best first; "all" (v0.13.2) = every candidate tested.
+    for (NSString *key in @[@"all", @"results"]) {
+        id arr = j[key];
+        if (![arr isKindOfClass:[NSArray class]]) continue;
+        for (NSDictionary *r in arr) {
+            if (![r isKindOfClass:[NSDictionary class]] || ![r[@"s"] isKindOfClass:[NSString class]]) continue;
+            DPIResult *x = [DPIResult new];
+            x.strategy = r[@"s"]; x.ok = [r[@"ok"] integerValue];
+            x.total = [r[@"n"] integerValue]; x.avgTime = [r[@"t"] doubleValue];
+            all[x.strategy] = x;
+            if ([key isEqualToString:@"results"]) [a addObject:x];
+        }
     }
     _results = a;
+    _tested = all;
     _resultsSig = j[@"sig"];
     NSNumber *ts = j[@"date"];
     _resultsDate = ts ? [NSDate dateWithTimeIntervalSince1970:ts.doubleValue] : nil;
     _lastTested = [j[@"tested"] integerValue]; _lastTotal = [j[@"listed"] integerValue];
     _lastNative = [j[@"native"] integerValue]; _lastAdapted = [j[@"adapted"] integerValue];
+    _lastCurated = [j[@"curated"] integerValue];
     _directOK = [j[@"direct_ok"] integerValue]; _directTotal = [j[@"direct_n"] integerValue];
+    _passOK = [j[@"pass_ok"] integerValue]; _passTotal = [j[@"pass_n"] integerValue];
 }
 
 - (void)saveResults {
-    NSMutableArray *a = [NSMutableArray array];
+    NSMutableArray *a = [NSMutableArray array], *all = [NSMutableArray array];
     for (DPIResult *r in _results)
         [a addObject:@{@"s": r.strategy, @"ok": @(r.ok), @"n": @(r.total), @"t": @(r.avgTime)}];
+    for (DPIResult *r in [_tested allValues])
+        [all addObject:@{@"s": r.strategy, @"ok": @(r.ok), @"n": @(r.total), @"t": @(r.avgTime)}];
     NSDictionary *j = @{@"sig": _resultsSig ?: @"", @"date": @([_resultsDate timeIntervalSince1970]),
                         @"tested": @(_lastTested), @"listed": @(_lastTotal),
-                        @"native": @(_lastNative), @"adapted": @(_lastAdapted),
-                        @"direct_ok": @(_directOK), @"direct_n": @(_directTotal), @"results": a};
+                        @"native": @(_lastNative), @"adapted": @(_lastAdapted), @"curated": @(_lastCurated),
+                        @"direct_ok": @(_directOK), @"direct_n": @(_directTotal),
+                        @"pass_ok": @(_passOK), @"pass_n": @(_passTotal),
+                        @"results": a, @"all": all};
     NSData *d = [NSJSONSerialization dataWithJSONObject:j options:0 error:nil];
     if (d) [d writeToFile:[self resultsPath] atomically:YES];
 }
@@ -559,19 +664,20 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
     NSMutableArray *a = [NSMutableArray array];
     for (DPIResult *r in _results) {
         DPIEntry *e = byRaw[r.strategy];
-        if (r.ok > 0 && e) { r.number = e.src; r.adapted = e.adapted; [a addObject:r]; }
+        if (r.ok > 0 && e) { r.number = e.src; r.adapted = e.adapted; r.label = e.label; [a addObject:r]; }
         if (a.count >= n) break;
     }
     return a;
 }
+// Includes candidates that FAILED the search: a hand-picked one still shows its "0/19".
 - (DPIResult *)resultForStrategy:(NSString *)raw {
-    for (DPIResult *r in _results) if ([r.strategy isEqualToString:raw]) {
-        for (DPIEntry *e in [self entries]) if ([e.raw isEqualToString:raw]) {
-            r.number = e.src; r.adapted = e.adapted;
-        }
-        return r;
+    DPIResult *r = _tested[raw];
+    if (!r) for (DPIResult *x in _results) if ([x.strategy isEqualToString:raw]) { r = x; break; }
+    if (!r) return nil;
+    for (DPIEntry *e in [self entries]) if ([e.raw isEqualToString:raw]) {
+        r.number = e.src; r.adapted = e.adapted; r.label = e.label;
     }
-    return nil;
+    return r;
 }
 - (NSString *)coverageNote {
     if (!_lastTotal) return @"";
@@ -580,8 +686,27 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
     NSMutableString *s = [NSMutableString stringWithFormat:@"Проверено %ld: %ld ориг.",
                           (long)_lastTested, (long)_lastNative];
     if (_lastAdapted) [s appendFormat:@" + %ld адапт. (~)", (long)_lastAdapted];
-    if (_directTotal) [s appendFormat:@" · без обхода %ld/%ld", (long)_directOK, (long)_directTotal];
+    if (_lastCurated) [s appendFormat:@" + %ld для macOS (M)", (long)_lastCurated];
     return s;
+}
+// One line that says WHICH kind of failure the last search saw, from the two control
+// runs (same hosts: directly, and through ciadpi with no desync at all):
+//   direct fine, proxy broken  -> our proxy chain is at fault, not the strategies
+//   both blocked               -> the network blocks; only a better strategy helps
+//   direct fine, proxy fine    -> nothing visible to bypass
+- (NSString *)diagnosisNote {
+    if (!_directTotal) return @"";
+    NSString *d = [NSString stringWithFormat:@"%ld/%ld", (long)_directOK, (long)_directTotal];
+    BOOL directFine = _directOK * 10 >= _directTotal * 7;
+    if (!_passTotal) return [NSString stringWithFormat:@"Без обхода напрямую: %@", d];
+    NSString *p = [NSString stringWithFormat:@"%ld/%ld", (long)_passOK, (long)_passTotal];
+    if (directFine && _passOK * 2 < _directOK)
+        return [NSString stringWithFormat:@"⚠ напрямую %@, через ciadpi без обхода %@ — сбой прокси", d, p];
+    if (directFine)
+        return [NSString stringWithFormat:@"Без обхода открывается %@ — блокировки не видно", d];
+    if (_passOK * 10 >= _passTotal * 7)      // plain proxy already works where direct does not
+        return [NSString stringWithFormat:@"Через ciadpi без обхода открывается %@ (напрямую %@)", p, d];
+    return [NSString stringWithFormat:@"Сеть блокирует: напрямую %@, через прокси %@", d, p];
 }
 - (BOOL)resultsMatchCurrentNetwork {
     return _resultsSig.length && [_resultsSig isEqualToString:[DPIEngine networkSignature]];
@@ -851,8 +976,8 @@ static NSString *DPIFailText(NSDictionary *f) {
             dispatch_async(cbq, ^{ done(NO, @"нет данных для проверки"); });
             return;
         }
-        NSInteger nNative = 0, nAdapted = 0;
-        for (DPIEntry *e in ents) { if (e.adapted) nAdapted++; else nNative++; }
+        NSInteger nNative = 0, nAdapted = 0, nCurated = 0;
+        for (DPIEntry *e in ents) { if (e.curated) nCurated++; else if (e.adapted) nAdapted++; else nNative++; }
         NSInteger total = (NSInteger)ents.count;
 
         // The log is the way to see WHY a network gave no result: it is the only
@@ -863,11 +988,11 @@ static NSString *DPIFailText(NSDictionary *f) {
         // No network signature here on purpose: the person may paste this log into a chat
         // and the signature contains the router address.
         [log appendFormat:@"# Raketa DPI search %@\n# ciadpi options: %@\n"
-                          @"# list: %ld originals + %ld adapted (~) = %ld candidates; %lu hosts per strategy; lists: %@\n"
+                          @"# list: %ld originals + %ld adapted (~) + %ld macOS-first (M) = %ld candidates; %lu hosts per strategy; lists: %@\n"
                           @"# columns: №  ok/total  mean-s  failures(curl-exit x count; 1 = short body)  line\n",
                           [df stringFromDate:[NSDate date]],
                           [self probedOptions] ? @"probed" : @"probe failed (macOS defaults)",
-                          (long)nNative, (long)nAdapted, (long)total, (unsigned long)hosts.count, updNote];
+                          (long)nNative, (long)nAdapted, (long)nCurated, (long)total, (unsigned long)hosts.count, updNote];
 
         // Control run: the same hosts with NO bypass. Tells "network is open /
         // blocked" apart from "strategy breaks the connection" in the log.
@@ -878,7 +1003,26 @@ static NSString *DPIFailText(NSDictionary *f) {
         [log appendFormat:@"direct (no bypass)  %ld/%lu  failures %@\n", (long)dOK,
                           (unsigned long)hosts.count, DPIFailText(dfail)];
 
+        // Second control: the SAME hosts through ciadpi with no desync option at all. If
+        // "direct" is fine but this is not, the proxy chain itself is broken (not the
+        // strategies); if both are blocked, the network blocks and only a strategy helps.
+        NSInteger pOK = 0;
+        {
+            NSMutableDictionary *pfail = [NSMutableDictionary dictionary];
+            double psum = 0;
+            NSTask *pt = [self launchCiadpiPort:kDPITestPort strategyArgs:@[]];
+            if (pt && !self->_cancel && [self waitReady:pt port:kDPITestPort timeout:1.0]) {
+                pOK = [self batteryHosts:hosts port:kDPITestPort timeout:5 totalTime:&psum failures:pfail];
+                [log appendFormat:@"proxy, no desync    %ld/%lu  failures %@\n", (long)pOK,
+                                  (unsigned long)hosts.count, DPIFailText(pfail)];
+            } else {
+                [log appendString:@"proxy, no desync    could not start ciadpi\n"];
+            }
+            if (pt.isRunning) { [pt terminate]; [pt waitUntilExit]; }
+        }
+
         NSMutableArray<DPIResult *> *found = [NSMutableArray array];
+        NSMutableDictionary<NSString *, DPIResult *> *allTested = [NSMutableDictionary dictionary];
         NSInteger tested = 0, best = 0;
         for (NSInteger i = 0; i < total && !self->_cancel; i++) {
             NSInteger doneN = i, bestN = best, tot = total;
@@ -887,11 +1031,12 @@ static NSString *DPIFailText(NSDictionary *f) {
             NSString *diag = nil;
             DPIResult *r = [self testStrategy:e.raw hosts:hosts probes:probes diag:&diag];
             if (!r) {                          // unsupported by this build
-                [log appendFormat:@"#%ld%@  REJECTED (%@)  %@\n", (long)e.src, e.adapted ? @"~" : @"", diag ?: @"", e.raw];
+                [log appendFormat:@"#%@  REJECTED (%@)  %@\n", e.label, diag ?: @"", e.raw];
                 continue;
             }
             tested++;
-            [log appendFormat:@"#%ld%@  %ld/%ld  %.2f  %@  %@\n", (long)e.src, e.adapted ? @"~" : @"",
+            allTested[e.raw] = r;
+            [log appendFormat:@"#%@  %ld/%ld  %.2f  %@  %@\n", e.label,
                               (long)r.ok, (long)r.total, r.avgTime, r.ok == r.total ? @"-" : (diag ?: @"-"), e.raw];
             if (r.ok > 0) { [found addObject:r]; if (r.ok > best) best = r.ok; }
             usleep(400000);                   // be gentle between strategies
@@ -914,8 +1059,10 @@ static NSString *DPIFailText(NSDictionary *f) {
         self->_resultsSig = [DPIEngine networkSignature];
         self->_resultsDate = [NSDate date];
         self->_lastTested = tested; self->_lastTotal = total;
-        self->_lastNative = nNative; self->_lastAdapted = nAdapted;
+        self->_lastNative = nNative; self->_lastAdapted = nAdapted; self->_lastCurated = nCurated;
         self->_directOK = dOK; self->_directTotal = (NSInteger)hosts.count;
+        self->_passOK = pOK; self->_passTotal = (NSInteger)hosts.count;
+        self->_tested = allTested;
         [self saveResults];
         [log appendFormat:@"# done: %lu working of %ld tested\n", (unsigned long)found.count, (long)tested];
         [log writeToFile:[self searchLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -923,7 +1070,7 @@ static NSString *DPIFailText(NSDictionary *f) {
         NSString *sum = found.count
             ? [NSString stringWithFormat:@"Найдено %lu из %ld · %@",
                (unsigned long)found.count, (long)tested, updNote]
-            : @"Рабочих не найдено · журнал dpi_search.log";
+            : @"Рабочих не найдено · выберите вручную (▾)";
         BOOL okAny = found.count > 0;
         dispatch_async(cbq, ^{ done(okAny, sum); });
     });

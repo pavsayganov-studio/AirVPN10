@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.13.1
+**Current version:** v0.13.2
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -533,3 +533,31 @@ project history around v0.9.7 iteration).
 - **Not verified:** anything on a real Mac or a real DPI network. If a network still yields
   nothing, `dpi_search.log` shows whether the control run was blocked, whether strategies reset
   (56/35), stall (28) or never reach the proxy (97).
+
+---
+
+## 13. Manual choice, macOS-first candidates, diagnosis (v0.13.2)
+
+- **Why:** after v0.13.1 the search still found nothing on the person's Mac, and with no
+  result there was no way to try a strategy by hand.
+- **Manual choice:** the menu behind the down-arrow button now has "Все стратегии (N)": every
+  candidate (macOS-first `M..`, ByeByeDPI `N`, adapted `N~`) with its last ok/total (`—` = not
+  tested), selectable whether or not the search confirmed it. A hand-picked strategy shows its own
+  `№12~ · 0/19` in the caption. "Журнал поиска…" opens `dpi_search.log`. `DPIResult.label` is
+  the text after "№"; `numberForStrategy:` is 1000+k for `M` lines.
+- **macOS-first candidates (`M`, tested first):** `DPICuratedLines()`. Derived from upstream's
+  README, not measured: on a BSD-style stack the retransmit after a TTL=1 "disorder" starts at the
+  lost position (README: "Windows"), so upstream recommends `--split 1+s --disorder 3+s` there;
+  OOB inside the SNI (`--oob 3+s`); `--disoob 3 --disorder 7`; plus TLS-record splits at the SNI,
+  which do not depend on the OS. A line equal to a ByeByeDPI entry is skipped (its number wins).
+- **Two control runs** before the candidates: the 19 hosts directly, and through `ciadpi` with NO
+  desync option. `diagnosisNote` (menu) and the log say which case it is: direct fine + proxy broken
+  = our proxy chain (not the strategies); both blocked = only a better strategy helps; direct fine
+  = nothing visible to bypass.
+- **Dedupe key** is now canonical (`--split 1+s` == `-s1+s`, `-aN` ignored), so equal lines are
+  not tested twice.
+- `dpi_results.json` gained `all` (every tested candidate, failures included), `pass_ok/pass_n`, `curated`.
+- **Still not possible on macOS:** real fake packets (upstream gets them from a zero-copy
+  `sendfile` trick that only exists for Linux/Windows). Hidden `-Z/-W` (wait between parts) is a
+  candidate for a later experiment; not used.
+- **Not verified:** anything on a real Mac or a real DPI network.

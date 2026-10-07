@@ -23,6 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (copy)   NSString *strategy;   // raw strategy line (its identity)
 @property (assign) NSInteger number;     // position of the line in the ByeByeDPI list ("№N")
 @property (assign) BOOL      adapted;    // fake-packet options cut out for macOS (shown as "~")
+@property (copy)   NSString *label;      // what the UI shows after "№": "12", "12~" (adapted), "M3" (macOS-first)
 @property (assign) NSInteger ok;         // hosts reachable through this strategy
 @property (assign) NSInteger total;      // hosts tested
 @property (assign) double    avgTime;    // mean seconds of the successful requests
@@ -52,9 +53,15 @@ typedef void (^DPIStartBlock)(BOOL ok, NSString * _Nullable error);
 - (NSInteger)strategyCount;                                  // valid strategies in the list
 - (NSInteger)numberForStrategy:(NSString *)raw;              // 1-based, 0 if not in list
 - (NSArray<DPIResult *> *)topResults:(NSUInteger)n;          // best first, ok > 0 only
-- (nullable DPIResult *)resultForStrategy:(NSString *)raw;
+- (nullable DPIResult *)resultForStrategy:(NSString *)raw;   // also for candidates that failed the search
+- (NSString *)labelForStrategy:(NSString *)raw;              // "12", "12~", "M3"; @"" if not a candidate
+// Every candidate in test order with the last measurement (total == 0: not tested), so the
+// person can pick any of them by hand even when the search found none.
+- (NSArray<DPIResult *> *)allCandidates;
+- (NSString *)diagnosisNote;                                 // what the two control runs say about the last failure
+- (NSString *)searchLogPath;                                 // dpi_search.log (may not exist yet)
 - (NSString *)resultsSummary;                                // one line for the menu header
-- (NSString *)coverageNote;                                  // "checked X of Y" (fake-packet strategies are skipped on macOS)
+- (NSString *)coverageNote;                                  // "checked X: N original + M adapted + K macOS-first"
 - (BOOL)resultsMatchCurrentNetwork;
 
 // Runtime proxy (user-level child process).
