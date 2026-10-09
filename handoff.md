@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.13.2
+**Current version:** v0.13.3
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -87,6 +87,7 @@ generation, `startVPN`, `stopVPN`, routing rules above) is unchanged.
   run as they are ("originals") plus an adapted form of every line that needs options it
   lacks (next bullet). Per candidate: start a throw-away `ciadpi` on `127.0.0.1:10820`,
   probe `www.youtube.com` + `i.ytimg.com` through it with `curl --socks5-hostname`
+  (since v0.13.3 with DoH addresses: `--resolve` + `--socks4`, see section 14)
   (dead -> skip), else run the full battery (13 YouTube hosts + 6 googlevideo hosts,
   concurrent). A request passes by ByeByeDPI's own rule (`SiteCheckUtils`): an HTTP answer
   arrived and, if `Content-Length` was declared, the whole body arrived; for chunked pages
@@ -558,6 +559,55 @@ project history around v0.9.7 iteration).
   not tested twice.
 - `dpi_results.json` gained `all` (every tested candidate, failures included), `pass_ok/pass_n`, `curated`.
 - **Still not possible on macOS:** real fake packets (upstream gets them from a zero-copy
-  `sendfile` trick that only exists for Linux/Windows). Hidden `-Z/-W` (wait between parts) is a
-  candidate for a later experiment; not used.
+  `sendfile` trick that only exists for Linux/Windows). Hidden `-Z/-W` (wait between parts) is used
+  since v0.13.3 (section 14), and the `M` set described above was replaced there.
 - **Not verified:** anything on a real Mac or a real DPI network.
+
+
+---
+
+## 14. DNS over HTTPS for the YouTube route, paced strategies (v0.13.3)
+
+- **Root cause found in the 2026-10-07 log:** all 67 candidates ended at `probe fail 28x2`, and the
+  two control runs ("direct", "proxy, no desync") were identical at 3/19 with `28x16`. A result
+  that does not depend on the strategy cannot be about the strategy. Since February 2026 Russian
+  networks stop answering (or poison) plain DNS for YouTube names and hijack UDP/53 to public
+  resolvers; `getaddrinfo()` hangs, curl reports 28 "Resolving timed out", and `ciadpi` resolves
+  SOCKS5 domain names with the same `getaddrinfo()`. So no strategy ever got to send a
+  ClientHello. This is a hypothesis built on that evidence, not a measurement: the new log says
+  which it is (see below). Roadmap 5.3 had predicted this.
+- **Search:** a DNS stage runs first. The system resolver is asked for `www.youtube.com` (4 s cap),
+  then literal-IP DoH endpoints (`DPIDoHServers()`: 1.1.1.1, 8.8.4.4, 1.0.0.1, 9.9.9.9, 8.8.8.8,
+  RFC 8484 GET through `curl`) until one answers; all 19 hosts + 2 probes are resolved over it.
+  Every curl then uses `--resolve name:443:ip` and, through the proxy, `--socks4` (a name the DoH
+  did not know counts as failure `6` without a request). No DoH answer = the old behaviour
+  (`--socks5-hostname`, system DNS).
+- **Runtime:** `-[DPIEngine youtubeOnlyConfigWithInbounds:]` (now an instance method) adds, when a
+  validated DoH endpoint is stored (`dpi_results.json` keys `doh`, `dns_bad`): a sing-box `dns`
+  section (`doh` server for the YouTube suffixes, `local` = system resolver for everything else,
+  `final: local`) and makes the `dpi` outbound SOCKS**4**. sing-box's SOCKS4 client resolves the
+  destination itself and sends an IPv4 address, so `ciadpi` never resolves anything. Verified
+  off-device with the real sing-box 1.8.11 and the pinned `ciadpi` against a local TLS server
+  (`ciadpi -x 2` shows `new conn ... addr=127.0.0.1:...`, the SNI cut fires). Not verified on a
+  real Mac or against real DoH.
+- **Search log (`dpi_search.log`)** now starts with `dns:` lines: the system answer (an IP or
+  `timeout`), each DoH endpoint tried, how many names resolved; then three control runs: `direct,
+  system DNS`, `direct, DoH addresses`, `proxy, no desync`. Reading it: system DNS `timeout` and
+  `direct, DoH addresses` much better than `direct, system DNS` = DNS was the blocker;
+  `direct, DoH addresses` still ~3/19 = the filter is on the wire (then the strategies matter,
+  and if every one fails identically the blocker is not the ClientHello).
+- **Menu:** `diagnosisNote` leads with the DNS finding when the system resolver was unusable.
+- **Strategies:** the old `M` set is replaced (see `DPICuratedLines()` for the rationale per line):
+  SpoofDPI's per-byte "sni" split, Xray/v2rayN-style 10-30 B fragments, and paced variants of the
+  upstream README recipes. The new element is pacing: on a non-Linux `ciadpi`
+  `sock_has_notsent()` is a stub, so nothing waits for a part to leave before the TTL is restored
+  or the next part is sent; the hidden `-Z` (wait after each part) with `-W <ms>` does. Both are
+  now in the option whitelist (`-Z` takes no value, `-W` takes one; `--wait-send`, `--await-int`).
+  Line `-r5+s -s25+s -a1 -At,r,s -s50 -r5+s -s50+s -a1` (ByeByeDPI #24) is excluded: `ciadpi`
+  exits at once on it (`REJECTED` in the log). The adapted `~` lines were NOT removed: the
+  2026-10-07 result cannot tell strategies apart, so none is proven dead.
+- **↻ button:** its attributed title was the only icon-button title without a centered paragraph
+  style (`ytSetTitle:` and `styleBtn:` have one); it now has the style and `alignment = center`.
+  The visual cause is not confirmed (no Mac was available) - if it is still off, measure the
+  glyph's real bounds before touching the frame. The «Добавить ключи» button has the same recipe
+  gap and was left alone (not reported).

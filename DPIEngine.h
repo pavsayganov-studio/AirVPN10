@@ -58,7 +58,7 @@ typedef void (^DPIStartBlock)(BOOL ok, NSString * _Nullable error);
 // Every candidate in test order with the last measurement (total == 0: not tested), so the
 // person can pick any of them by hand even when the search found none.
 - (NSArray<DPIResult *> *)allCandidates;
-- (NSString *)diagnosisNote;                                 // what the two control runs say about the last failure
+- (NSString *)diagnosisNote;                                 // DNS check + the control runs: what they say about the last failure
 - (NSString *)searchLogPath;                                 // dpi_search.log (may not exist yet)
 - (NSString *)resultsSummary;                                // one line for the menu header
 - (NSString *)coverageNote;                                  // "checked X: N original + M adapted + K macOS-first"
@@ -77,7 +77,9 @@ typedef void (^DPIStartBlock)(BOOL ok, NSString * _Nullable error);
 - (void)shutdown;
 
 // sing-box config for YouTube-only mode: YouTube domains -> ciadpi, all else direct.
-+ (NSDictionary *)youtubeOnlyConfigWithInbounds:(NSArray *)inbounds;
+// An instance method since v0.13.3: with a DoH endpoint from the last search the YouTube
+// names are resolved by sing-box (DoH) and ciadpi is fed IPv4 addresses over SOCKS4.
+- (NSDictionary *)youtubeOnlyConfigWithInbounds:(NSArray *)inbounds;
 + (int)proxyPort;
 
 @end

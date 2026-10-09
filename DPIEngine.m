@@ -22,6 +22,17 @@
 // curl exit inside a hard 4-5 s total limit instead, which fails any strategy that
 // is merely slow (every TTL-based "disorder" waits for one TCP retransmit) even
 // though it works.
+//
+// WHY names are resolved over DoH (v0.13.3): since February 2026 Russian networks stop
+// answering (or poison) ordinary DNS queries for YouTube names and hijack plain UDP/53
+// sent to public resolvers. getaddrinfo() then hangs, curl exits with 28 ("Resolving
+// timed out") and - because ciadpi resolves SOCKS5 domain names with the same
+// getaddrinfo() - every strategy fails before the first byte of a ClientHello is sent.
+// That is what the search log of 2026-10-07 shows: all 67 candidates at "probe fail 28x2",
+// identical to the "no bypass" control. The search therefore resolves names over DoH to a
+// literal IP (no name to block, no UDP/53 to hijack) and hands them on as IPv4 addresses
+// (curl --resolve + --socks4); at runtime sing-box does the same with a DNS rule and a
+// SOCKS4 outbound, so ciadpi never has to resolve anything.
 #import "DPIEngine.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <libproc.h>
@@ -30,6 +41,7 @@
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
+#import <netdb.h>
 
 static const int kDPIPort     = 10811;   // runtime ciadpi (system proxy -> sing-box -> here)
 static const int kDPITestPort = 10820;   // throw-away ciadpi used by the search
@@ -126,6 +138,118 @@ static BOOL DPIRequestPassed(int http, long long size, long long declared, int c
     return curlStatus == 0 || size >= 32768;
 }
 
+#pragma mark - DNS over HTTPS (v0.13.3)
+
+// Literal-IP DoH endpoints, tried in this order; the first that answers wins. An IP has
+// no name for a filter to match, and DoH is TLS on 443, not UDP/53. 8.8.8.8 is last:
+// its TCP side was reported blocked in July 2026, 8.8.4.4 was not.
+static NSArray<NSString *> *DPIDoHServers(void) {
+    return @[@"https://1.1.1.1/dns-query", @"https://8.8.4.4/dns-query", @"https://1.0.0.1/dns-query",
+             @"https://9.9.9.9/dns-query", @"https://8.8.8.8/dns-query"];
+}
+
+// The stored endpoint ends up in a sing-box config, so only this exact shape is accepted.
+static BOOL DPIValidDoHURL(NSString *u) {
+    static NSRegularExpression *re; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        re = [NSRegularExpression regularExpressionWithPattern:
+              @"^https://[0-9]{1,3}(\\.[0-9]{1,3}){3}/dns-query$" options:0 error:nil];
+    });
+    return [u isKindOfClass:[NSString class]] && u.length < 64
+        && [re numberOfMatchesInString:u options:0 range:NSMakeRange(0, u.length)] == 1;
+}
+
+// RFC 8484 GET parameter: a wire-format A query for `name`, base64url without padding.
+static NSString *DPIDNSQueryParam(NSString *name) {
+    NSMutableData *q = [NSMutableData data];
+    static const uint8_t hdr[12] = {0, 0, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0};   // id 0, RD, 1 question
+    [q appendBytes:hdr length:sizeof hdr];
+    for (NSString *label in [name componentsSeparatedByString:@"."]) {
+        NSData *l = [label dataUsingEncoding:NSASCIIStringEncoding];
+        if (!l.length || l.length > 63) return nil;
+        uint8_t n = (uint8_t)l.length;
+        [q appendBytes:&n length:1];
+        [q appendData:l];
+    }
+    static const uint8_t tail[5] = {0, 0, 1, 0, 1};                              // root, A, IN
+    [q appendBytes:tail length:sizeof tail];
+    NSString *b = [q base64EncodedStringWithOptions:0];
+    b = [b stringByReplacingOccurrencesOfString:@"+" withString:@"-"];
+    b = [b stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    return [b stringByReplacingOccurrencesOfString:@"=" withString:@""];
+}
+
+// Index just past a (possibly compressed) DNS name starting at i, or -1.
+static NSInteger DPISkipDNSName(const uint8_t *p, NSUInteger n, NSUInteger i) {
+    for (int guard = 0; guard < 128 && i < n; guard++) {
+        uint8_t len = p[i];
+        if (len == 0) return (NSInteger)i + 1;
+        if ((len & 0xC0) == 0xC0) return i + 2 <= n ? (NSInteger)i + 2 : -1;
+        if (len & 0xC0) return -1;
+        i += 1 + len;
+    }
+    return -1;
+}
+
+// Not loopback, private, link-local, CGNAT or multicast: what a poisoned answer usually is.
+static BOOL DPIPublicIPv4(unsigned a, unsigned b) {
+    if (a == 0 || a == 10 || a == 127 || a >= 224) return NO;
+    if (a == 169 && b == 254) return NO;
+    if (a == 172 && b >= 16 && b <= 31) return NO;
+    if (a == 192 && b == 168) return NO;
+    if (a == 100 && b >= 64 && b <= 127) return NO;
+    return YES;
+}
+
+// Public IPv4 addresses of the A records in a DNS response; empty on any error or RCODE.
+static NSArray<NSString *> *DPIParseDNSA(NSData *d) {
+    const uint8_t *p = d.bytes; NSUInteger n = d.length;
+    if (n < 12 || (p[3] & 0x0F) != 0) return @[];
+    NSUInteger qd = ((NSUInteger)p[4] << 8) | p[5], an = ((NSUInteger)p[6] << 8) | p[7];
+    NSInteger i = 12;
+    for (NSUInteger q = 0; q < qd; q++) {
+        i = DPISkipDNSName(p, n, (NSUInteger)i);
+        if (i < 0 || (NSUInteger)i + 4 > n) return @[];
+        i += 4;
+    }
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSUInteger a = 0; a < an; a++) {
+        i = DPISkipDNSName(p, n, (NSUInteger)i);
+        if (i < 0 || (NSUInteger)i + 10 > n) break;
+        unsigned type = ((unsigned)p[i] << 8) | p[i + 1];
+        NSUInteger rdlen = ((NSUInteger)p[i + 8] << 8) | p[i + 9];
+        i += 10;
+        if ((NSUInteger)i + rdlen > n) break;
+        if (type == 1 && rdlen == 4 && DPIPublicIPv4(p[i], p[i + 1]))
+            [out addObject:[NSString stringWithFormat:@"%u.%u.%u.%u", p[i], p[i + 1], p[i + 2], p[i + 3]]];
+        i += (NSInteger)rdlen;
+    }
+    return out;
+}
+
+// What the system resolver says: an IPv4 string, "timeout" or "error N". getaddrinfo()
+// cannot be interrupted, so it runs on its own thread and is abandoned on timeout.
+static NSString *DPISystemResolve(NSString *host, NSTimeInterval within) {
+    __block NSString *ans = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [NSThread detachNewThreadWithBlock:^{
+        struct addrinfo hints; memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo *res = NULL;
+        int rc = getaddrinfo(host.UTF8String, NULL, &hints, &res);
+        char buf[INET_ADDRSTRLEN];
+        if (rc == 0 && res && inet_ntop(AF_INET, &((struct sockaddr_in *)res->ai_addr)->sin_addr, buf, sizeof buf))
+            ans = [NSString stringWithUTF8String:buf];
+        else
+            ans = [NSString stringWithFormat:@"error %d", rc];
+        if (res) freeaddrinfo(res);
+        dispatch_semaphore_signal(sem);
+    }];
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(within * NSEC_PER_SEC))) != 0)
+        return @"timeout";
+    return ans ?: @"error";
+}
+
 #pragma mark - DPIResult
 
 @implementation DPIResult
@@ -166,6 +290,8 @@ static BOOL DPIRequestPassed(int http, long long size, long long declared, int c
     NSInteger _directOK, _directTotal;     // control run: same hosts, no bypass at all
     NSInteger _passOK, _passTotal;         // control run: same hosts through ciadpi with NO desync
     NSInteger _lastCurated;
+    NSString *_dohURL;                     // DoH endpoint the last search used (nil = system DNS)
+    BOOL     _dnsSysBad;                   // the system resolver gave no usable answer for YouTube
     NSDictionary<NSString *, DPIResult *> *_tested;   // every candidate tested at the last search, failures included
     NSSet   *_caps;                        // options this ciadpi lists in --help (nil = unknown)
     BOOL     _capsDone;
@@ -230,12 +356,13 @@ static BOOL DPIRequestPassed(int http, long long size, long long declared, int c
         if (t.length) [toks addObject:t];
     if (!toks.count || toks.count > 80) return nil;
 
-    NSString *withVal  = @"sdoqftnmeMrOQaALuTgRK";   // short options that take a value
-    NSString *noVal    = @"S";                       // md5sig
+    NSString *withVal  = @"sdoqftnmeMrOQaALuTgRKW";  // short options that take a value (-W: ms between parts)
+    NSString *noVal    = @"SZ";                      // md5sig, wait-send
     NSSet *longWith = [NSSet setWithArray:@[@"split",@"disorder",@"oob",@"disoob",@"fake",@"ttl",
         @"fake-sni",@"fake-offset",@"fake-tls-mod",@"oob-data",@"mod-http",@"tlsrec",@"tlsminor",
-        @"udp-fake",@"auto",@"auto-mode",@"cache-ttl",@"timeout",@"round",@"proto",@"def-ttl"]];
-    NSSet *longNo = [NSSet setWithArray:@[@"md5sig"]];
+        @"udp-fake",@"auto",@"auto-mode",@"cache-ttl",@"timeout",@"round",@"proto",@"def-ttl",
+        @"await-int"]];
+    NSSet *longNo = [NSSet setWithArray:@[@"md5sig",@"wait-send"]];
 
     for (NSUInteger i = 0; i < toks.count; i++) {
         NSString *t = toks[i];
@@ -330,8 +457,8 @@ static NSArray<NSArray<NSString *> *> *DPIOptionGroups(NSArray<NSString *> *toks
         NSMutableArray *g = [NSMutableArray arrayWithObject:t];
         if ([t hasPrefix:@"--"]) {
             BOOL hasEq = [t rangeOfString:@"="].location != NSNotFound;
-            if (![t isEqualToString:@"--md5sig"] && !hasEq && i + 1 < toks.count) [g addObject:toks[++i]];
-        } else if (t.length == 2 && ![t isEqualToString:@"-S"] && i + 1 < toks.count) {
+            if (![t isEqualToString:@"--md5sig"] && ![t isEqualToString:@"--wait-send"] && !hasEq && i + 1 < toks.count) [g addObject:toks[++i]];
+        } else if (t.length == 2 && ![t isEqualToString:@"-S"] && ![t isEqualToString:@"-Z"] && i + 1 < toks.count) {
             [g addObject:toks[++i]];
         }
         [groups addObject:g];
@@ -420,7 +547,8 @@ static NSString *DPICanonOpt(NSString *key) {
                 @"--fake-sni": @"-n", @"--fake-tls-mod": @"-Q", @"--fake-offset": @"-O",
                 @"--fake-data": @"-l", @"--udp-fake": @"-a", @"--md5sig": @"-S",
                 @"--timeout": @"-T", @"--drop-sack": @"-Y", @"--cache-ttl": @"-u",
-                @"--auto-mode": @"-L", @"--def-ttl": @"-g"};
+                @"--auto-mode": @"-L", @"--def-ttl": @"-g",
+                @"--wait-send": @"-Z", @"--await-int": @"-W"};
     });
     return map[key] ?: key;
 }
@@ -451,27 +579,48 @@ static NSString *DPICanonOpt(NSString *key) {
 }
 
 // Candidates for a macOS ciadpi, tried FIRST. The ByeByeDPI list is tuned for Android
-// (Linux): its best lines lean on fake packets and on Linux's selective retransmit
-// after a TTL=1 "disorder". Upstream's README says a BSD/Windows-style stack
-// retransmits from the lost position instead and recommends `--split 1+s --disorder 3+s`
-// there; it also recommends putting an OOB byte inside the SNI (`--oob 3+s`) and shows
-// `--disoob 3 --disorder 7`. These lines follow that advice and add TLS-record splitting
-// at the SNI, which does not depend on the OS at all. They are guesses ranked by the
-// live test like every other candidate, nothing more. Lines identical to an entry of
-// the ByeByeDPI list are skipped (the ByeByeDPI number wins).
+// (Linux): its best lines lean on fake packets and on Linux's selective retransmit after a
+// TTL=1 "disorder". What a macOS ciadpi can do is cut the stream (split / disorder / OOB /
+// TLS-record split), and the one thing that differs from Linux is pacing: on a non-Linux
+// build ciadpi never waits for a part to leave the machine (sock_has_notsent() is a stub
+// there) before it sends the next one or restores the TTL, so the hidden `-Z` (wait between
+// parts) with `-W <ms>` is the only way to make disorder reliable and to keep the cuts
+// apart in time. These lines, written 2026-10-08 after the DNS finding:
+//   M1/M2   SpoofDPI's default "sni" mode: cut before the SNI, then 1-byte pieces over it
+//   M3      1-byte pieces from byte 1: no TLS record / handshake header ever arrives whole
+//   M4/M5   Xray/v2rayN "fragment tlshello" (10-30 B pieces, 10-20 ms apart) over the first 200 B
+//   M6      one cut inside the SNI, the second piece held back 20 ms (reassembly timeout probe)
+//   M7      upstream's BSD/Windows recipe (--split 1+s --disorder 3+s), now paced
+//   M8      TLS-record cut + TCP cut at the SNI, paced
+//   M9/M10  OOB byte inside the SNI; --disoob 3 --disorder 7 (upstream README), paced
+//   M11     alternating TTL=1 pieces over the SNI (SpoofDPI's "disorder" idea; ciadpi flips the
+//           TTL on every other repeat of a disorder part)
+//   M12     a bare OOB byte after the first byte (reported working on Russian ISPs in 2025)
+// Guesses ranked by the live test like every other candidate, nothing more. Lines identical
+// to an entry of the ByeByeDPI list are skipped (the ByeByeDPI number wins).
 static NSArray<NSString *> *DPICuratedLines(void) {
-    return @[@"-s1+s -d3+s",
-             @"-s1+s -d3+s -r1+s",
-             @"-r1+s -s1+s",
-             @"-r3+s -s3+s",
-             @"-o3+s",
-             @"-o3+s -r1+s",
-             @"-q3+s -d7+s",
-             @"-s1 -o3+s",
-             @"-s1+s -s1+sm -s1+se",
-             @"-r1+s -r1+sm -s1+s",
-             @"-d1 -s1+s -d3+s",
-             @"-s1+s -r1+sm -o3+se"];
+    return @[@"-s0+s -s1:12:1+s",
+             @"-s0+s -s1:12:1+s -Z -W 8",
+             @"-s1:8:1 -Z -W 8",
+             @"-s20:10:20 -Z -W 12",
+             @"-s10:20:10 -Z -W 8",
+             @"-s1+s -Z -W 20",
+             @"-s1+s -d3+s -Z -W 10",
+             @"-r1+s -s1+s -Z -W 10",
+             @"-o3+s -Z -W 10",
+             @"-q3+s -d7+s -Z -W 10",
+             @"-d0:6:1+s -Z -W 10",
+             @"-o1"];
+}
+
+// ByeByeDPI lines this ciadpi cannot even start: it exits at once (REJECTED in the search
+// log of 2026-10-07), so they could only waste a search slot. They keep their number.
+static NSSet *DPIDeadLines(void) {
+    static NSSet *s; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        s = [NSSet setWithArray:@[@"-r5+s -s25+s -a1 -At,r,s -s50 -r5+s -s50+s -a1"]];
+    });
+    return s;
 }
 
 // Every runnable candidate, in TEST order: the macOS-first lines (M1..), then the
@@ -486,7 +635,8 @@ static NSArray<NSString *> *DPICuratedLines(void) {
     NSInteger src = 0;
     for (NSString *l in [self linesOf:txt ?: @""]) {
         src++;
-        if (![DPIEngine argsForStrategy:l] || [seenRaw containsObject:l]) continue;
+        if (![DPIEngine argsForStrategy:l] || [seenRaw containsObject:l]
+            || [DPIDeadLines() containsObject:l]) continue;
         [seenRaw addObject:l];
         BOOL ad = NO;
         NSString *run = [self runnableForm:l adapted:&ad];
@@ -640,6 +790,8 @@ static NSArray<NSString *> *DPICuratedLines(void) {
     _lastCurated = [j[@"curated"] integerValue];
     _directOK = [j[@"direct_ok"] integerValue]; _directTotal = [j[@"direct_n"] integerValue];
     _passOK = [j[@"pass_ok"] integerValue]; _passTotal = [j[@"pass_n"] integerValue];
+    _dohURL = DPIValidDoHURL(j[@"doh"]) ? j[@"doh"] : nil;      // validated: it goes into a config
+    _dnsSysBad = [j[@"dns_bad"] boolValue];
 }
 
 - (void)saveResults {
@@ -653,6 +805,7 @@ static NSArray<NSString *> *DPICuratedLines(void) {
                         @"native": @(_lastNative), @"adapted": @(_lastAdapted), @"curated": @(_lastCurated),
                         @"direct_ok": @(_directOK), @"direct_n": @(_directTotal),
                         @"pass_ok": @(_passOK), @"pass_n": @(_passTotal),
+                        @"doh": _dohURL ?: @"", @"dns_bad": @(_dnsSysBad),
                         @"results": a, @"all": all};
     NSData *d = [NSJSONSerialization dataWithJSONObject:j options:0 error:nil];
     if (d) [d writeToFile:[self resultsPath] atomically:YES];
@@ -689,12 +842,22 @@ static NSArray<NSString *> *DPICuratedLines(void) {
     if (_lastCurated) [s appendFormat:@" + %ld для macOS (M)", (long)_lastCurated];
     return s;
 }
+// DNS first (v0.13.3), then the two control runs.
+- (NSString *)diagnosisNote {
+    NSString *ctl = [self controlNote] ?: @"";
+    if (_dnsSysBad && _dohURL.length)
+        return [NSString stringWithFormat:@"DNS провайдера не отдаёт YouTube — имена через DoH %@. %@",
+                [[NSURL URLWithString:_dohURL] host] ?: @"", ctl];
+    if (_dnsSysBad && _directTotal)
+        return [@"⚠ DNS провайдера не отвечает, DoH недоступен. " stringByAppendingString:ctl];
+    return ctl;
+}
 // One line that says WHICH kind of failure the last search saw, from the two control
 // runs (same hosts: directly, and through ciadpi with no desync at all):
 //   direct fine, proxy broken  -> our proxy chain is at fault, not the strategies
 //   both blocked               -> the network blocks; only a better strategy helps
 //   direct fine, proxy fine    -> nothing visible to bypass
-- (NSString *)diagnosisNote {
+- (NSString *)controlNote {
     if (!_directTotal) return @"";
     NSString *d = [NSString stringWithFormat:@"%ld/%ld", (long)_directOK, (long)_directTotal];
     BOOL directFine = _directOK * 10 >= _directTotal * 7;
@@ -835,7 +998,55 @@ static NSArray<NSString *> *DPICuratedLines(void) {
     }
 }
 
-// One HTTPS request. port > 0: through the SOCKS5 proxy there; port == 0: direct
+// One DoH A lookup through curl (same binary and network stack as the rest of the search,
+// and it ignores the system proxy). Empty array = no usable answer.
+- (NSArray<NSString *> *)dohLookup:(NSString *)host server:(NSString *)base seconds:(double *)secs {
+    NSString *param = DPIDNSQueryParam(host);
+    if (!param) return @[];
+    NSTask *t = [[NSTask alloc] init];
+    t.launchPath = @"/usr/bin/curl";
+    t.arguments = @[@"-q", @"-sS", @"--http1.1", @"-m", @"4", @"-H", @"accept: application/dns-message",
+                    [NSString stringWithFormat:@"%@?dns=%@", base, param]];
+    NSPipe *p = [NSPipe pipe];
+    t.standardOutput = p;
+    t.standardError  = [NSFileHandle fileHandleWithNullDevice];
+    t.standardInput  = [NSFileHandle fileHandleWithNullDevice];
+    @synchronized (_testTasks) { [_testTasks addObject:t]; }
+    NSDate *t0 = [NSDate date];
+    NSArray *ips = @[];
+    @try {
+        [t launch];
+        NSData *out = [[p fileHandleForReading] readDataToEndOfFile];
+        [t waitUntilExit];
+        ips = DPIParseDNSA(out);
+    } @catch (NSException *e) { ips = @[]; }
+    @synchronized (_testTasks) { [_testTasks removeObject:t]; }
+    if (secs) *secs = -[t0 timeIntervalSinceNow];
+    return ips;
+}
+
+// name -> first public IPv4 over DoH, all names concurrently (one short-lived thread each,
+// for the same reason as batteryHosts). Names without an answer are left out.
+- (NSDictionary<NSString *, NSString *> *)dohResolveNames:(NSArray<NSString *> *)names server:(NSString *)base {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    dispatch_group_t g = dispatch_group_create();
+    NSObject *lock = [NSObject new];
+    for (NSString *n in names) {
+        dispatch_group_enter(g);
+        [NSThread detachNewThreadWithBlock:^{
+            if (!self->_cancel) {
+                NSArray *a = [self dohLookup:n server:base seconds:NULL];
+                if (a.count) @synchronized (lock) { out[n] = a[0]; }
+            }
+            dispatch_group_leave(g);
+        }];
+    }
+    dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
+    return out;
+}
+
+// One HTTPS request. port > 0: through the proxy there (SOCKS5 with the host name, or
+// SOCKS4 with the DoH address when `ips` is given); port == 0: direct
 // (the control run). YES when it passes ByeByeDPI's rule (DPIRequestPassed).
 // *code is 0 on success, else curl's exit status, or 1 when curl was content but
 // the body fell short (declared length not reached / stalled under 32 KB).
@@ -843,16 +1054,22 @@ static NSArray<NSString *> *DPICuratedLines(void) {
 // Timeouts: --connect-timeout covers TCP + SOCKS + TLS handshake; -Y/-y aborts a
 // transfer that stalls (the DPI freeze), -m is only a backstop for huge pages.
 // None of them punishes a strategy for being slow but alive.
-- (BOOL)curlHost:(NSString *)host port:(int)port timeout:(int)to
-         seconds:(double *)secs code:(int *)code {
+- (BOOL)curlHost:(NSString *)host port:(int)port ips:(NSDictionary<NSString *, NSString *> *)ips
+          timeout:(int)to seconds:(double *)secs code:(int *)code {
     NSMutableArray *args = [NSMutableArray arrayWithObjects:
         @"-q", @"-sS", @"-o", @"/dev/null", @"-D", @"-", @"--http1.1",
         @"-L", @"--max-redirs", @"3",
         @"--connect-timeout", [NSString stringWithFormat:@"%d", to],
         @"-m", [NSString stringWithFormat:@"%d", to * 3],
         @"-Y", @"1", @"-y", [NSString stringWithFormat:@"%d", to], nil];
+    // DoH addresses (v0.13.3): curl connects to the IP it is given for every name this run
+    // knows (redirects between them included), so the system resolver is never asked; the
+    // proxy request then carries the IPv4 address, as sing-box's SOCKS4 outbound does.
+    for (NSString *n in ips)
+        [args addObjectsFromArray:@[@"--resolve", [NSString stringWithFormat:@"%@:443:%@", n, ips[n]]]];
     if (port > 0)
-        [args addObjectsFromArray:@[@"--socks5-hostname", [NSString stringWithFormat:@"127.0.0.1:%d", port]]];
+        [args addObjectsFromArray:@[ips.count ? @"--socks4" : @"--socks5-hostname",
+                                    [NSString stringWithFormat:@"127.0.0.1:%d", port]]];
     [args addObjectsFromArray:@[@"-w", @"\n@@RK %{http_code} %{size_download} %{time_total}\n",
                                 [NSString stringWithFormat:@"https://%@/", host]]];
     NSTask *t = [[NSTask alloc] init];
@@ -887,7 +1104,8 @@ static NSArray<NSString *> *DPICuratedLines(void) {
 // One short-lived NSThread per host (not a GCD global queue): the workers
 // block on the child process, and GCD may throttle blocked workers on small
 // (old) Macs, which would serialize the battery and stretch the search.
-- (NSInteger)batteryHosts:(NSArray<NSString *> *)hosts port:(int)port timeout:(int)to
+- (NSInteger)batteryHosts:(NSArray<NSString *> *)hosts port:(int)port
+                      ips:(NSDictionary<NSString *, NSString *> *)ips timeout:(int)to
                 totalTime:(double *)sum failures:(NSMutableDictionary *)fails {
     __block NSInteger okc = 0; __block double tsum = 0;
     dispatch_group_t g = dispatch_group_create();
@@ -896,8 +1114,9 @@ static NSArray<NSString *> *DPICuratedLines(void) {
         dispatch_group_enter(g);
         [NSThread detachNewThreadWithBlock:^{
             if (!self->_cancel) {
-                double secs = 0; int code = 0;
-                BOOL ok = [self curlHost:h port:port timeout:to seconds:&secs code:&code];
+                double secs = 0; int code = 0; BOOL ok = NO;
+                if (ips.count && !ips[h]) code = 6;      // DoH had no address: counted, no curl
+                else ok = [self curlHost:h port:port ips:ips timeout:to seconds:&secs code:&code];
                 @synchronized (lock) {
                     if (ok) { okc++; tsum += secs; }
                     else if (fails) {
@@ -926,7 +1145,7 @@ static NSString *DPIFailText(NSDictionary *f) {
 // nil = this ciadpi build rejected the strategy (not counted as "tested").
 // *diag gets a short note for the search log.
 - (DPIResult *)testStrategy:(NSString *)raw hosts:(NSArray *)hosts probes:(NSArray *)probes
-                       diag:(NSString **)diag {
+                       ips:(NSDictionary<NSString *, NSString *> *)ips diag:(NSString **)diag {
     NSArray *sargs = [DPIEngine argsForStrategy:raw];
     NSTask *t = sargs ? [self launchCiadpiPort:kDPITestPort strategyArgs:sargs] : nil;
     if (!t) { if (diag) *diag = @"launch failed"; return nil; }
@@ -938,11 +1157,11 @@ static NSString *DPIFailText(NSDictionary *f) {
         // through is dead; skip the full battery (saves ~5 s and a pile of curls).
         NSMutableDictionary *f1 = [NSMutableDictionary dictionary];
         double s1 = 0;
-        NSInteger p1 = [self batteryHosts:probes port:kDPITestPort timeout:5 totalTime:&s1 failures:f1];
+        NSInteger p1 = [self batteryHosts:probes port:kDPITestPort ips:ips timeout:5 totalTime:&s1 failures:f1];
         if (p1 > 0 && !_cancel) {
             NSMutableDictionary *f2 = [NSMutableDictionary dictionary];
             double sum = 0;
-            r.ok = [self batteryHosts:hosts port:kDPITestPort timeout:5 totalTime:&sum failures:f2];
+            r.ok = [self batteryHosts:hosts port:kDPITestPort ips:ips timeout:5 totalTime:&sum failures:f2];
             r.avgTime = r.ok ? sum / r.ok : 0;
             if (diag) *diag = [NSString stringWithFormat:@"fail %@", DPIFailText(f2)];
         } else if (diag) {
@@ -994,16 +1213,56 @@ static NSString *DPIFailText(NSDictionary *f) {
                           [self probedOptions] ? @"probed" : @"probe failed (macOS defaults)",
                           (long)nNative, (long)nAdapted, (long)nCurated, (long)total, (unsigned long)hosts.count, updNote];
 
-        // Control run: the same hosts with NO bypass. Tells "network is open /
-        // blocked" apart from "strategy breaks the connection" in the log.
+        // DNS stage (v0.13.3). Everything below depends on names resolving, and on a network
+        // that filters YouTube they often do not: see the header comment.
         dispatch_async(cbq, ^{ progress(@"search", 0, total, 0); });
+        NSMutableArray<NSString *> *names = [NSMutableArray arrayWithArray:hosts];
+        [names addObjectsFromArray:probes];
+        NSString *sysAns = DPISystemResolve(@"www.youtube.com", 4);
+        unsigned oa = 0, ob = 0, oc = 0, od = 0;
+        BOOL sysOK = sscanf(sysAns.UTF8String, "%u.%u.%u.%u", &oa, &ob, &oc, &od) == 4 && DPIPublicIPv4(oa, ob);
+        [log appendFormat:@"dns: system resolver  www.youtube.com -> %@%@\n", sysAns, sysOK ? @"" : @"  (unusable)"];
+        NSString *doh = nil;
+        for (NSString *base in DPIDoHServers()) {
+            if (self->_cancel) break;
+            double ds = 0;
+            NSArray *a = [self dohLookup:@"www.youtube.com" server:base seconds:&ds];
+            [log appendFormat:@"dns: DoH %@  %@  %.1fs\n", base, a.count ? a[0] : @"no answer", ds];
+            if (a.count) { doh = base; break; }
+        }
+        NSDictionary<NSString *, NSString *> *ips = nil;
+        if (doh) {
+            NSDictionary *got = [self dohResolveNames:names server:doh];
+            NSMutableArray *miss = [NSMutableArray array];
+            for (NSString *n in names) if (!got[n]) [miss addObject:n];
+            NSString *missNote = miss.count
+                ? [@"; no answer: " stringByAppendingString:[[miss subarrayWithRange:
+                      NSMakeRange(0, MIN((NSUInteger)4, miss.count))] componentsJoinedByString:@" "]]
+                : @"";
+            [log appendFormat:@"dns: DoH resolved %lu/%lu names%@\n",
+                              (unsigned long)got.count, (unsigned long)names.count, missNote];
+            if (got.count) ips = got;
+        } else {
+            [log appendString:@"dns: no DoH server answered; names go through the proxy as before\n"];
+        }
+        if (!ips) doh = nil;
+
+        // Control runs: the same hosts with NO bypass. They tell "network is open / blocked"
+        // apart from "strategy breaks the connection" in the log. With DoH addresses the
+        // second one isolates DPI from DNS: if it still fails, the filter is on the wire.
         NSMutableDictionary *dfail = [NSMutableDictionary dictionary];
         double dsum = 0;
-        NSInteger dOK = [self batteryHosts:hosts port:0 timeout:5 totalTime:&dsum failures:dfail];
-        [log appendFormat:@"direct (no bypass)  %ld/%lu  failures %@\n", (long)dOK,
+        NSInteger dOK = [self batteryHosts:hosts port:0 ips:nil timeout:5 totalTime:&dsum failures:dfail];
+        [log appendFormat:@"direct, system DNS    %ld/%lu  failures %@\n", (long)dOK,
                           (unsigned long)hosts.count, DPIFailText(dfail)];
+        if (ips) {
+            NSMutableDictionary *dfail2 = [NSMutableDictionary dictionary];
+            dOK = [self batteryHosts:hosts port:0 ips:ips timeout:5 totalTime:&dsum failures:dfail2];
+            [log appendFormat:@"direct, DoH addresses %ld/%lu  failures %@\n", (long)dOK,
+                              (unsigned long)hosts.count, DPIFailText(dfail2)];
+        }
 
-        // Second control: the SAME hosts through ciadpi with no desync option at all. If
+        // Third control: the SAME hosts through ciadpi with no desync option at all. If
         // "direct" is fine but this is not, the proxy chain itself is broken (not the
         // strategies); if both are blocked, the network blocks and only a strategy helps.
         NSInteger pOK = 0;
@@ -1012,7 +1271,7 @@ static NSString *DPIFailText(NSDictionary *f) {
             double psum = 0;
             NSTask *pt = [self launchCiadpiPort:kDPITestPort strategyArgs:@[]];
             if (pt && !self->_cancel && [self waitReady:pt port:kDPITestPort timeout:1.0]) {
-                pOK = [self batteryHosts:hosts port:kDPITestPort timeout:5 totalTime:&psum failures:pfail];
+                pOK = [self batteryHosts:hosts port:kDPITestPort ips:ips timeout:5 totalTime:&psum failures:pfail];
                 [log appendFormat:@"proxy, no desync    %ld/%lu  failures %@\n", (long)pOK,
                                   (unsigned long)hosts.count, DPIFailText(pfail)];
             } else {
@@ -1029,7 +1288,7 @@ static NSString *DPIFailText(NSDictionary *f) {
             dispatch_async(cbq, ^{ progress(@"search", doneN, tot, bestN); });
             DPIEntry *e = ents[(NSUInteger)i];
             NSString *diag = nil;
-            DPIResult *r = [self testStrategy:e.raw hosts:hosts probes:probes diag:&diag];
+            DPIResult *r = [self testStrategy:e.raw hosts:hosts probes:probes ips:ips diag:&diag];
             if (!r) {                          // unsupported by this build
                 [log appendFormat:@"#%@  REJECTED (%@)  %@\n", e.label, diag ?: @"", e.raw];
                 continue;
@@ -1062,6 +1321,7 @@ static NSString *DPIFailText(NSDictionary *f) {
         self->_lastNative = nNative; self->_lastAdapted = nAdapted; self->_lastCurated = nCurated;
         self->_directOK = dOK; self->_directTotal = (NSInteger)hosts.count;
         self->_passOK = pOK; self->_passTotal = (NSInteger)hosts.count;
+        self->_dohURL = doh; self->_dnsSysBad = !sysOK;
         self->_tested = allTested;
         [self saveResults];
         [log appendFormat:@"# done: %lu working of %ld tested\n", (unsigned long)found.count, (long)tested];
@@ -1086,26 +1346,41 @@ static NSString *DPIFailText(NSDictionary *f) {
 // YouTube-only mode: only YouTube/Google-video domains go to ciadpi; everything
 // else is `direct`, so ordinary browsing never touches the desync proxy.
 // (Suffix match covers subdomains: "youtube.com" matches www.youtube.com.)
-+ (NSDictionary *)youtubeOnlyConfigWithInbounds:(NSArray *)inbounds {
-    return @{
+//
+// With a DoH endpoint from the last search (v0.13.3) the YouTube names are resolved by
+// sing-box over DoH and the `dpi` outbound speaks SOCKS4: sing-box's SOCKS4 client
+// resolves the destination itself and sends ciadpi an IPv4 address, so ciadpi never calls
+// getaddrinfo() (the call that hangs on a network that filters DNS). Everything that is
+// not a YouTube name keeps using the system resolver (`final: local`), so local names and
+// the rest of the browsing behave exactly as before. Without an endpoint the config is the
+// old one (SOCKS5, no dns section).
+- (NSDictionary *)youtubeOnlyConfigWithInbounds:(NSArray *)inbounds {
+    NSArray *suffixes = @[@"youtube.com", @"youtu.be", @"youtube-nocookie.com",
+                          @"googlevideo.com", @"ytimg.com", @"ggpht.com",
+                          @"googleusercontent.com",
+                          @"youtubei.googleapis.com", @"jnn-pa.googleapis.com"];
+    NSString *doh = DPIValidDoHURL(_dohURL) ? _dohURL : nil;
+    NSMutableDictionary *cfg = [@{
         @"log": @{@"level": @"warn"},
         @"inbounds": inbounds,
         @"outbounds": @[
             @{@"type": @"direct", @"tag": @"direct"},
-            @{@"type": @"socks", @"tag": @"dpi", @"version": @"5",
+            @{@"type": @"socks", @"tag": @"dpi", @"version": doh ? @"4" : @"5",
               @"server": @"127.0.0.1", @"server_port": @(kDPIPort)}
         ],
         @"route": @{
-            @"rules": @[
-                @{@"domain_suffix": @[@"youtube.com", @"youtu.be", @"youtube-nocookie.com",
-                                      @"googlevideo.com", @"ytimg.com", @"ggpht.com",
-                                      @"googleusercontent.com",
-                                      @"youtubei.googleapis.com", @"jnn-pa.googleapis.com"],
-                  @"outbound": @"dpi"}
-            ],
+            @"rules": @[@{@"domain_suffix": suffixes, @"outbound": @"dpi"}],
             @"final": @"direct"
         }
-    };
+    } mutableCopy];
+    if (doh)
+        cfg[@"dns"] = @{
+            @"servers": @[@{@"tag": @"doh", @"address": doh, @"strategy": @"ipv4_only"},
+                          @{@"tag": @"local", @"address": @"local"}],
+            @"rules": @[@{@"domain_suffix": suffixes, @"server": @"doh"}],
+            @"final": @"local"
+        };
+    return cfg;
 }
 
 @end

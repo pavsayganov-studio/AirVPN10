@@ -261,14 +261,20 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                            initWithFrame:[self rx:refX top:67 w:kRefW h:28]];
     // attributedTitle + bordered=NO: NSBezelStyleRounded clips/hides the ↻
     // glyph at small button sizes on macOS 10.13. This renders reliably.
+    // Same recipe as every other icon button (ytSetTitle:, styleBtn:): a centered paragraph
+    // style inside the attributed title. This was the only one without it (v0.13.3).
+    NSMutableParagraphStyle *refPS = [[NSMutableParagraphStyle alloc] init];
+    refPS.alignment = NSTextAlignmentCenter;
     NSDictionary *iconAttrs = @{
         NSFontAttributeName:            [NSFont systemFontOfSize:16
                                                          weight:NSFontWeightRegular],
-        NSForegroundColorAttributeName: rkSub
+        NSForegroundColorAttributeName: rkSub,
+        NSParagraphStyleAttributeName:  refPS
     };
     self.refreshIconBtn.attributedTitle =
         [[NSAttributedString alloc] initWithString:@"↻" attributes:iconAttrs];
     self.refreshIconBtn.bordered    = NO;
+    self.refreshIconBtn.alignment   = NSTextAlignmentCenter;
     self.refreshIconBtn.wantsLayer  = YES;
     self.refreshIconBtn.layer.cornerRadius    = 6;
     self.refreshIconBtn.layer.borderWidth     = 0.5;
@@ -1098,7 +1104,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         [self.dpi stopProxy]; self.ytBusy = NO;
         [self setStatus:@"sing-box не найден в приложении" color:rkRed]; [self ytUIRender]; return;
     }
-    NSDictionary *cfg = [DPIEngine youtubeOnlyConfigWithInbounds:@[
+    NSDictionary *cfg = [self.dpi youtubeOnlyConfigWithInbounds:@[
         @{@"type":@"mixed",@"tag":@"mixed",
           @"listen":@"127.0.0.1",@"listen_port":@(kMixedPort)},
         @{@"type":@"socks",@"tag":@"socks",
