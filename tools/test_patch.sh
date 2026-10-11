@@ -20,6 +20,7 @@ python3 "$(basename "$PATCH")"
 echo "--- origin/main now:";            git -C "$T/origin.git" log --oneline -2
 echo "--- patch script deleted itself: $([ -e "$(basename "$PATCH")" ] && echo NO || echo yes)"
 echo "--- tracked files left modified: $(git status --porcelain --untracked-files=no | wc -l)"
+echo "--- leftover backup files (*.bak*): $(find . -path ./.git -prune -o -name '*.bak*' -print | wc -l)  (must be 0)"
 echo "--- off-device syntax check vs the commit before the patch:"
 "$DIR/objc_diffcheck.sh" HEAD~1 || true
 echo "scratch clone kept at: $T/work"

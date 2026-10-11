@@ -60,7 +60,8 @@ Established deliberately across many iterations. Do not revisit unless asked:
 - **Surgical over broad:** fix the thing asked; say what was left untouched.
 - **Comments in generated Objective-C explain *why*** (especially the platform gotchas).
 - **Verify before delivering:** `python3 -m py_compile` / `bash -n`; brace balance; run the
-  patch end-to-end with `tools/test_patch.sh`, not just a syntax check. If a reported "error"
+  patch end-to-end with `tools/test_patch.sh`, not just a syntax check; it must report 0 leftover
+  `.bak*` files. If a reported "error"
   is a false positive of the patch script's own check, say so plainly instead of re-patching.
 - **Be honest about evidence:** label what was measured in the person's log, what was read in
   source, what is a secondary summary, what is inference. Do not present a hypothesis as a
@@ -74,8 +75,9 @@ Established deliberately across many iterations. Do not revisit unless asked:
 `*.bak*` is gitignored), applies anchored edits (each anchor must match exactly once), runs its
 own checks (bracket balance, forbidden/required strings, version bump consistent in
 `Info.plist`), restores the backups and stops if a check fails, then `git add` of exact paths,
-`git commit` (Russian message, one line), `git push origin main`, and deletes itself after a
-successful push. No tags — releases are cut by hand: Actions → Build Raketa → Run workflow.
+`git commit` (Russian message, one line), `git push origin main`, and after a successful push
+deletes its own backups (every `X.bak<ver>` it made) and itself, so no `.bak*` file stays in the
+repo (after a failed check or push the backups stay for recovery). No tags — releases are cut by hand: Actions → Build Raketa → Run workflow.
 Version bump consistently: `Info.plist` (`CFBundleVersion` + `CFBundleShortVersionString`).
 
 ## Language

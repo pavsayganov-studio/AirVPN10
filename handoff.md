@@ -388,7 +388,8 @@ Every change ships as a single self-contained Python patch script
 the repo root: `python3 patch_raketa_<ver>.py`. The script backs up touched
 files (`cp X X.bak<ver>`), applies anchored edits (each anchor must match
 exactly once), runs its own checks, then `git commit` + `git push origin main`
-and deletes itself after a successful push.
+and, after a successful push, deletes its own backups and itself - no `.bak*` file is ever
+left in the repo (after a failed check or push the backups stay for recovery).
 
 Releases are cut by hand: GitHub → Actions → **Build Raketa** → *Run workflow* →
 type the version (optionally tick *dry run* to build and verify without publishing).
@@ -416,7 +417,8 @@ Pushing a tag does **not** start a build. The workflow (rewritten in v0.13.0):
 **Patch script conventions the person expects:**
 - One complete, self-contained `.py` file per iteration, runnable start to
   finish with `python3 patch_raketa_<ver>.py`
-- Always backs up touched files first (`cp X X.bakXYZ`)
+- Always backs up touched files first (`cp X X.bakXYZ`) and removes those backups after a
+  successful push, together with the script itself (nothing is left to clean up by hand)
 - Runs its own checks, commits and pushes by itself, then deletes itself;
   the release is cut afterwards in Actions → Build Raketa → Run workflow
 - Version number bumped consistently across: UI version label string in
