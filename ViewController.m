@@ -1023,7 +1023,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     NSString *sel = self.dpi.selectedStrategy;
     NSInteger num = sel.length ? [self.dpi numberForStrategy:sel] : 0;
     DPIResult *res = num > 0 ? [self.dpi resultForStrategy:sel] : nil;
-    // "12", "12~" (adapted for macOS) or "M3" (macOS-first candidate), v0.13.2
+    // "M3": the candidate's label (v0.13.4: every candidate is a stream-cutting line for macOS)
     NSString *lab = num > 0 ? [self.dpi labelForStrategy:sel] : @"";
 
     NSString *cap;
@@ -1246,8 +1246,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
     // v0.13.2: EVERY candidate can be picked by hand, tested or not. A network where
     // the search finds nothing must not be a dead end: the person tries them in the
-    // browser. "—" = not tested, "0/19" = tested and failed. "~" = adapted for macOS,
-    // "M" = macOS-first candidate (see DPIEngine.m).
+    // browser. "—" = not tested, "0/19" = tested and failed. "M" = candidate (see DPIEngine.m).
     NSArray<DPIResult *> *all = [self.dpi allCandidates];
     [m addItem:[NSMenuItem separatorItem]];
     NSMenuItem *allIt = [[NSMenuItem alloc]
@@ -1255,15 +1254,8 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                action:NULL keyEquivalent:@""];
     NSMenu *sub = [[NSMenu alloc] initWithTitle:@""];
     sub.autoenablesItems = NO;
-    NSInteger group = -1;                         // 0 = macOS-first, 1 = ByeByeDPI, 2 = adapted
+    [sub addItem:[self ytMenuNote:@"Разрезание потока (M)"]];
     for (DPIResult *r in all) {
-        NSInteger g = [r.label hasPrefix:@"M"] ? 0 : (r.adapted ? 2 : 1);
-        if (g != group) {
-            group = g;
-            if (sub.numberOfItems) [sub addItem:[NSMenuItem separatorItem]];
-            [sub addItem:[self ytMenuNote:(g == 0 ? @"Для macOS (M)"
-                                           : g == 1 ? @"ByeByeDPI" : @"ByeByeDPI, адаптированные (~)")]];
-        }
         NSString *stat = r.total > 0 ? [NSString stringWithFormat:@"%ld/%ld", (long)r.ok, (long)r.total] : @"—";
         NSMenuItem *it = [[NSMenuItem alloc]
             initWithTitle:[NSString stringWithFormat:@"№%@    %@", r.label, stat]

@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.13.3
+**Current version:** v0.13.4
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -78,12 +78,14 @@ generation, `startVPN`, `stopVPN`, routing rules above) is unchanged.
   The YouTube button is disabled while the VPN is on; pressing ВКЛ while YouTube
   mode is on first runs `ytStopSync` (reuses `stopVPN`), then starts the VPN.
   Switching strategy while active restarts only `ciadpi` (no password prompt).
-- **Strategies:** bundled snapshot in `dpi/` (`strategies.list`, `youtube.sites`,
+- **Strategies (superseded in v0.13.4, section 15: the ByeByeDPI list is no longer bundled or
+  tested, only the two host lists remain):** bundled snapshot in `dpi/` (`strategies.list`, `youtube.sites`,
   `googlevideo.sites`, copied from ByeByeDPI `proxytest_*` assets, GPL-3.0 repo —
   see `dpi/NOTICE.md`). The 🔍 button first re-downloads the three files from
   `raw.githubusercontent.com/romanvht/ByeByeDPI/master/...` (validated, then saved
   to `Application Support/Raketa/dpi_*`), then tests every strategy.
-- **Search (reworked in v0.13.1):** candidates = the ByeByeDPI lines this `ciadpi` can
+- **Search (reworked in v0.13.1; candidate set and DNS policy replaced in v0.13.4, section 15):**
+  candidates = the ByeByeDPI lines this `ciadpi` can
   run as they are ("originals") plus an adapted form of every line that needs options it
   lacks (next bullet). Per candidate: start a throw-away `ciadpi` on `127.0.0.1:10820`,
   probe `www.youtube.com` + `i.ytimg.com` through it with `curl --socks5-hostname`
@@ -192,7 +194,7 @@ Raketa.xcodeproj-less repo (compiled directly via clang in CI)
 ├── ViewController.m / .h           — ALL UI + VPN logic lives here (~1300 lines)
 ├── DPIEngine.m / .h                — YouTube DPI engine: ciadpi process, strategy list,
 │                                     search/ranking, YouTube-only sing-box config (v0.12.0)
-├── dpi/                            — bundled ByeByeDPI snapshot: strategies.list,
+├── dpi/                            — bundled ByeByeDPI snapshot (v0.13.4: host lists only; was: strategies.list,
 │                                     youtube.sites, googlevideo.sites, NOTICE.md
 ├── Info.plist                      — bundle metadata, version string
 ├── AppIcon.svg                     — icon source (white "R" on blue gradient)
@@ -611,3 +613,63 @@ project history around v0.9.7 iteration).
   The visual cause is not confirmed (no Mac was available) - if it is still off, measure the
   glyph's real bounds before touching the frame. The «Добавить ключи» button has the same recipe
   gap and was left alone (not reported).
+
+
+---
+
+## 15. Evidence-driven cleanup: wire probe, 10 candidates, DoH as fallback (v0.13.4)
+
+- **Log of 2026-10-09 (v0.13.3, 68 candidates):** `dns: system resolver www.youtube.com -> <Google
+  address>` (it answers), DoH 1.1.1.1 no answer in 0.3 s, DoH 8.8.4.4 answers, `direct, system DNS`
+  3/19 (15 x curl 28, 1 x 6), `direct, DoH addresses` 3/19 (16 x 28), `proxy, no desync` 3/19, and
+  every candidate `probe fail 28x2`. **Correction of section 14:** the DNS hypothesis was wrong on
+  this network. With the system resolver working, DoH addresses changed nothing; the filter is on
+  the wire. The three controls being identical means the log cannot tell strategies apart - and
+  the reason is not the harness: the same three hosts pass through ciadpi with no desync, so the
+  chain works.
+- **Why every candidate is dead (strong evidence, not a measurement on the person's network):**
+  (1) all 68 lines are plain cuts of the ClientHello - the macOS ciadpi has no fake packets
+  (`FAKE_SUPPORT` is `__linux__ || _WIN32`; Linux sends the fake with `vmsplice`+`splice`, Windows
+  with `TransmitFile`, both zero-copy so the retransmit carries the real bytes); (2) the zapret
+  community list "zapret-discord-youtube" (Flowseal, 528 commits, last change 2026-10-01) has 21
+  TCP/443 rules for the YouTube host list, all with `fake`, `seqovl` (TCP sequence overlap) or
+  `hostfakesplit`, none a plain split/disorder (the last `split2` rule went in 2025; every rule
+  also sets `--ip-id=zero`; the default `general` uses `multisplit` + `seqovl=681` with a
+  google.com ClientHello as the overlap pattern); (3) FOCI 2025 (Niere et al.) found TSPU now
+  reassembles TCP: TCP segmentation alone or TLS-record fragmentation alone no longer beat its ECH
+  block, both together still did; a net4people report of June 2026 says Iran's DPI reassembles
+  too and defeats 10-30 B fragments with 10-20 ms pauses (secondary summaries of both were used;
+  re-read the originals before quoting them). The GFW is different: 2026 lab tests still saw it
+  beaten by 1-5 B fragments, and not by anything for an IP that is on its blocklist.
+- **What SpoofDPI does on macOS (v1.5.4, read in source):** its fake ClientHello is a *raw packet*
+  written through pcap/BPF (needs root) with the learned hop-count TTL and a random sequence
+  number, sent before the real hello; the per-byte SNI split and the TTL=1 "disorder" are only
+  the second half. That is why "SpoofDPI works on macOS" and "plain ciadpi cuts do not" can both be
+  true. It is Go 1.2x, so it cannot run on macOS 10.13 - the primary target.
+- **DNS (what the sources say):** since 2026-02 YouTube names are gone from Russia's national DNS
+  (NSDI) and YouTube is blocked, but foreign public resolvers stayed reachable (Mediazona,
+  2026-04); on 2026-07-03 8.8.8.8 stopped answering over TCP (DoH, DoT, TCP/53) while 8.8.4.4 kept
+  answering everything; plain UDP/53 to public resolvers is unreliable. No resolver "bypasses"
+  an SNI filter: DNS only matters when the system answer is unusable.
+- **Changes:** (1) *Wire probe* - after the DNS stage the search asks the same address with SNI
+  `www.youtube.com` and `www.google.com` (direct curl, `--resolve`) and logs where each dies:
+  `no TCP handshake` / `TCP up, TLS never finished (stall)` / `reset during TLS` / `TLS completed`,
+  then `wire verdict:` (SNI filter / address or route blocked / not name-based / no filter). It is
+  direct on purpose: through the proxy the SOCKS reply hides TCP-vs-TLS. The verdict is kept in
+  `dpi_results.json` (`wire`, `wire_sni`) and leads `diagnosisNote`. (2) *Candidates* - 10
+  hand-written stream-cutting lines (`DPICuratedLines()`, rationale per line in the comment);
+  the ByeByeDPI lines and the adapted `~` forms are no longer tested, `dpi/strategies.list` is
+  deleted, `updateListsSync` refreshes only the two host lists, `DPIResult.adapted` is gone,
+  `coverageNote` flags results of the old 68-line format. A search takes about a minute.
+  (3) *DNS policy* - DoH is tried only when the system answer is unusable; DoH order is 8.8.4.4,
+  1.0.0.1, 9.9.9.9, 1.1.1.1, 8.8.8.8; the runtime config uses DoH + SOCKS4 only when the last
+  search recorded `dns_bad` (before, a stored DoH endpoint was used even when system DNS worked).
+- **Untouched:** VPN path, VLESS/Reality/routing, credit line, layout, colours, ciadpi build step.
+- **Not verified:** anything on a real Mac or a real DPI network. Verified off-device: the patch
+  applied to a scratch clone, brace balance, a differential clang syntax check of `DPIEngine.m`
+  against the unmodified file (legacy GNUstep runtime, so a baseline of platform errors remains),
+  and the curl `-w` timing fields against local servers.
+- **Reading the next log:** `wire verdict: SNI filter` + all candidates 0/19 = the filter reads the
+  name and reassembles; only fake packets can help (macOS: raw injection as root, roadmap 5.1).
+  `wire verdict: address or route blocked` = no desync of any kind helps, route YouTube through
+  the VPN instead. `TLS completed` for YouTube = the filter is not on this network right now.

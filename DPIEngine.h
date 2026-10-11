@@ -6,11 +6,10 @@
 // What it does:
 //   * runs the bundled `ciadpi` (ByeDPI, MIT) as a *user-level* local SOCKS5
 //     proxy on 127.0.0.1:10811 — no root, no TUN, no pf rules;
-//   * keeps the ByeByeDPI strategy list (bundled snapshot + optional update
-//     from the ByeByeDPI repo) and finds the strategies that work on the
-//     current network by test-fetching YouTube/googlevideo hosts through
-//     a throw-away ciadpi per strategy (lines that need options this ciadpi
-//     lacks are adapted, see DPIEngine.m);
+//   * tests a short list of stream-cutting strategies (v0.13.4, see DPIEngine.m) on
+//     the current network by test-fetching YouTube/googlevideo hosts through a
+//     throw-away ciadpi per strategy, after a wire probe that says where the
+//     filter acts (the host lists still come from the ByeByeDPI repo);
 //   * builds the sing-box config used by "Смотреть YouTube" mode.
 //
 // CPU discipline: no timers, no polling. Everything below runs only when the
@@ -21,9 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface DPIResult : NSObject
 @property (copy)   NSString *strategy;   // raw strategy line (its identity)
-@property (assign) NSInteger number;     // position of the line in the ByeByeDPI list ("№N")
-@property (assign) BOOL      adapted;    // fake-packet options cut out for macOS (shown as "~")
-@property (copy)   NSString *label;      // what the UI shows after "№": "12", "12~" (adapted), "M3" (macOS-first)
+@property (assign) NSInteger number;     // 1000 + position in the candidate list ("M" + position)
+@property (copy)   NSString *label;      // what the UI shows after "№": "M3"
 @property (assign) NSInteger ok;         // hosts reachable through this strategy
 @property (assign) NSInteger total;      // hosts tested
 @property (assign) double    avgTime;    // mean seconds of the successful requests
@@ -54,14 +52,14 @@ typedef void (^DPIStartBlock)(BOOL ok, NSString * _Nullable error);
 - (NSInteger)numberForStrategy:(NSString *)raw;              // 1-based, 0 if not in list
 - (NSArray<DPIResult *> *)topResults:(NSUInteger)n;          // best first, ok > 0 only
 - (nullable DPIResult *)resultForStrategy:(NSString *)raw;   // also for candidates that failed the search
-- (NSString *)labelForStrategy:(NSString *)raw;              // "12", "12~", "M3"; @"" if not a candidate
+- (NSString *)labelForStrategy:(NSString *)raw;              // "M3"; @"" if not a candidate
 // Every candidate in test order with the last measurement (total == 0: not tested), so the
 // person can pick any of them by hand even when the search found none.
 - (NSArray<DPIResult *> *)allCandidates;
-- (NSString *)diagnosisNote;                                 // DNS check + the control runs: what they say about the last failure
+- (NSString *)diagnosisNote;                                 // wire probe + DNS check + control runs: what they say about the last failure
 - (NSString *)searchLogPath;                                 // dpi_search.log (may not exist yet)
 - (NSString *)resultsSummary;                                // one line for the menu header
-- (NSString *)coverageNote;                                  // "checked X: N original + M adapted + K macOS-first"
+- (NSString *)coverageNote;                                  // "checked N: stream cutting only"
 - (BOOL)resultsMatchCurrentNetwork;
 
 // Runtime proxy (user-level child process).
@@ -77,8 +75,9 @@ typedef void (^DPIStartBlock)(BOOL ok, NSString * _Nullable error);
 - (void)shutdown;
 
 // sing-box config for YouTube-only mode: YouTube domains -> ciadpi, all else direct.
-// An instance method since v0.13.3: with a DoH endpoint from the last search the YouTube
-// names are resolved by sing-box (DoH) and ciadpi is fed IPv4 addresses over SOCKS4.
+// An instance method since v0.13.3: when the last search found the system resolver unusable
+// (v0.13.4: only then) the YouTube names are resolved by sing-box over DoH and ciadpi is fed
+// IPv4 addresses over SOCKS4.
 - (NSDictionary *)youtubeOnlyConfigWithInbounds:(NSArray *)inbounds;
 + (int)proxyPort;
 

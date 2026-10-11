@@ -158,7 +158,7 @@ jobs:
             echo "::warning::ciadpi was not built - the YouTube feature will be disabled"
           fi
           mkdir -p Raketa.app/Contents/Resources/dpi
-          cp dpi/strategies.list dpi/youtube.sites dpi/googlevideo.sites \
+          cp dpi/youtube.sites dpi/googlevideo.sites \
              Raketa.app/Contents/Resources/dpi/
           clang -fobjc-arc \
             -framework Cocoa \
