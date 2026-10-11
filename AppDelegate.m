@@ -1,6 +1,73 @@
 #import "AppDelegate.h"
 #import "ViewController.h"
 
+// Menu-bar glyph (v0.13.5): the rocket of AppIcon.svg as a TEMPLATE image - black on a
+// transparent background; macOS tints it for the light/dark menu bar like every other status
+// icon, so no colour is chosen here. The shapes are those of AppIcon.svg (viewBox 100, nose up);
+// the matrix below is the SVG transform "translate(9 9) scale(16/75.1) translate(-45.75 -55.25)
+// rotate(45 50 51)" written out, so the order of operations cannot be misread: rocket 16 of the
+// 18 pt canvas, nose to the upper right. A drawing handler, not a bitmap: sharp on every scale
+// factor, drawn only when the menu bar repaints. Flipped (y down) so the numbers are the SVG's.
+// The porthole is cut with the even-odd rule (windingRule 1 == NSEvenOddWindingRule; the raw
+// value avoids the enum's renamed constant).
+static NSImage *RKRocketGlyph(void) {
+    NSImage *img = [NSImage imageWithSize:NSMakeSize(18, 18) flipped:YES
+                          drawingHandler:^BOOL(NSRect dst) {
+        NSAffineTransformStruct m = {0.150649, 0.150649, -0.150649, 0.150649, 10.056108, -7.120966};
+        NSAffineTransform *t = [NSAffineTransform transform];
+        [t setTransformStruct:m];
+        [t concat];
+        [[NSColor blackColor] set];
+        {
+            NSBezierPath *hull = [NSBezierPath bezierPath];
+            [hull moveToPoint:NSMakePoint(50, 4)];
+            [hull curveToPoint:NSMakePoint(65, 62) controlPoint1:NSMakePoint(63, 16) controlPoint2:NSMakePoint(67, 34)];
+            [hull lineToPoint:NSMakePoint(35, 62)];
+            [hull curveToPoint:NSMakePoint(50, 4) controlPoint1:NSMakePoint(33, 34) controlPoint2:NSMakePoint(37, 16)];
+            [hull closePath];
+            [hull appendBezierPathWithOvalInRect:NSMakeRect(42, 28, 16, 16)];
+            hull.windingRule = (NSWindingRule)1;
+            [hull fill];
+        }
+        {
+            NSBezierPath *p = [NSBezierPath bezierPath];
+            [p moveToPoint:NSMakePoint(62, 44)];
+            [p curveToPoint:NSMakePoint(80, 80) controlPoint1:NSMakePoint(72, 52) controlPoint2:NSMakePoint(79, 62)];
+            [p lineToPoint:NSMakePoint(62, 70)];
+            [p closePath];
+            [p fill];
+        }
+        {
+            NSBezierPath *p = [NSBezierPath bezierPath];
+            [p moveToPoint:NSMakePoint(38, 44)];
+            [p curveToPoint:NSMakePoint(20, 80) controlPoint1:NSMakePoint(28, 52) controlPoint2:NSMakePoint(21, 62)];
+            [p lineToPoint:NSMakePoint(38, 70)];
+            [p closePath];
+            [p fill];
+        }
+        {
+            NSBezierPath *p = [NSBezierPath bezierPath];
+            [p moveToPoint:NSMakePoint(40, 59)];
+            [p lineToPoint:NSMakePoint(60, 59)];
+            [p lineToPoint:NSMakePoint(57, 70)];
+            [p lineToPoint:NSMakePoint(43, 70)];
+            [p closePath];
+            [p fill];
+        }
+        {
+            NSBezierPath *p = [NSBezierPath bezierPath];
+            [p moveToPoint:NSMakePoint(43, 73)];
+            [p curveToPoint:NSMakePoint(50, 98) controlPoint1:NSMakePoint(42, 83) controlPoint2:NSMakePoint(47, 92)];
+            [p curveToPoint:NSMakePoint(57, 73) controlPoint1:NSMakePoint(53, 92) controlPoint2:NSMakePoint(58, 83)];
+            [p closePath];
+            [p fill];
+        }
+        return YES;
+    }];
+    [img setTemplate:YES];
+    return img;
+}
+
 @interface AppDelegate () <NSMenuDelegate>
 @property (strong) NSStatusItem   *statusItem;
 @property (strong) NSPopover      *popover;
@@ -23,7 +90,11 @@
 
     self.statusItem = [[NSStatusBar systemStatusBar]
                         statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.title  = @"🚀 Raketa";
+    // v0.13.5: only a monochrome rocket (template image) - same look as the other status icons,
+    // no text taking menu-bar space. The tooltip is the only label left, so keep it.
+    self.statusItem.button.image         = RKRocketGlyph();
+    self.statusItem.button.imagePosition = NSImageOnly;
+    self.statusItem.button.toolTip       = @"Raketa";
     self.statusItem.button.action = @selector(statusItemClicked:);
     self.statusItem.button.target = self;
     // v0.13.0: react on mouse-up of BOTH buttons so a right-click can open the

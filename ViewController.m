@@ -98,6 +98,38 @@ static NSAppearance *rkAppearanceFor(BOOL dark) {
     return [NSAppearance appearanceNamed:@"NSAppearanceNameDarkAqua"]
         ?: [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark];
 }
+// Paper-plane icon of the Telegram button (v0.13.5), replacing the airplane character that read
+// as "airplane mode". Same recipe as the menu-bar rocket: a drawing handler with the transform
+// written out as a matrix ("translate(8 8) scale(15/20) translate(-12 -12)", 24-unit box, y down).
+// Not a template image on purpose: the button is a layer-backed, unbordered custom button whose
+// colours come from the palette, so the glyph is drawn in `color` and -rkRecolor: swaps the image
+// on a theme change. The fold is cut out with the Clear operator, so it shows whatever is
+// behind the button (normal or "panel open" tint).
+static NSImage *RKPaperPlaneImage(NSColor *color) {
+    NSColor *c = [color copy];
+    return [NSImage imageWithSize:NSMakeSize(16, 16) flipped:YES
+                   drawingHandler:^BOOL(NSRect dst) {
+        NSAffineTransformStruct m = {0.750000, 0.000000, 0.000000, 0.750000, -1.000000, -1.000000};
+        NSAffineTransform *t = [NSAffineTransform transform];
+        [t setTransformStruct:m];
+        [t concat];
+        NSBezierPath *p = [NSBezierPath bezierPath];
+        [p moveToPoint:NSMakePoint(22, 2)];
+        [p lineToPoint:NSMakePoint(15, 22)];
+        [p lineToPoint:NSMakePoint(11, 13)];
+        [p lineToPoint:NSMakePoint(2, 9)];
+        [p closePath];
+        [c setFill];
+        [p fill];
+        NSBezierPath *fold = [NSBezierPath bezierPath];
+        [fold moveToPoint:NSMakePoint(22, 2)];
+        [fold lineToPoint:NSMakePoint(11, 13)];
+        fold.lineWidth = 1.6;
+        [NSGraphicsContext currentContext].compositingOperation = NSCompositingOperationClear;
+        [fold stroke];
+        return YES;
+    }];
+}
 static void rkSetPalette(BOOL dark) {
     NSMutableArray *a = [NSMutableArray arrayWithCapacity:RK_COUNT];
     for (int i = 0; i < RK_COUNT; i++) {
@@ -352,11 +384,14 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [self styleBtn:quitBtn size:11 primary:NO];
     [bar addSubview:quitBtn];
 
-    // ✈ Telegram icon button — 32×21pt, left of Выход with 4pt gap
+    // Paper-plane Telegram icon button — 32×21pt, left of Выход with 4pt gap (v0.13.5: a drawn
+    // paper plane instead of the ✈ airplane character, which read as "airplane mode")
     self.tgIconBtn = [[NSButton alloc]
                       initWithFrame:NSMakeRect(kW-kPAD-68-4-32, 26, 32, 21)];
-    self.tgIconBtn.title      = @"✈";
+    self.tgIconBtn.title      = @"";
     [self styleBtn:self.tgIconBtn size:14 primary:NO];
+    self.tgIconBtn.image         = RKPaperPlaneImage(rkText);
+    self.tgIconBtn.imagePosition = NSImageOnly;
     self.tgIconBtn.toolTip    = @"Настройка Telegram";
     self.tgIconBtn.target     = self;
     self.tgIconBtn.action     = @selector(toggleTG);
@@ -878,6 +913,8 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         BOOL ch = NO;
         NSAttributedString *a = rkRemapAttr(b.attributedTitle, &ch);
         if (ch) b.attributedTitle = a;
+        // The paper plane is an image with the colour baked in: redraw it in the new palette.
+        if (b == self.tgIconBtn) b.image = RKPaperPlaneImage(rkText);
     }
     for (NSView *s in v.subviews) [self rkRecolor:s];
 }

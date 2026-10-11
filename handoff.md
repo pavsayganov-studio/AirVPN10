@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.13.4
+**Current version:** v0.13.5
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -151,7 +151,7 @@ generation, `startVPN`, `stopVPN`, routing rules above) is unchanged.
 - `NSPopover.appearance` follows the theme too (`AppDelegate syncPopoverAppearance`).
 
 ### Menu-bar quick actions (v0.13.0)
-Right-click (or Ctrl-click) on «🚀 Raketa» in the menu bar opens a menu: Подключить VPN,
+Right-click (or Ctrl-click) on the rocket icon in the menu bar opens a menu: Подключить VPN,
 Отключить VPN, Обход YouTube (DPI) ✓, Выйти. Left-click still toggles the window.
 - `AppDelegate`: `sendActionOn:` mouse-up of both buttons; on right-click the menu is
   attached to the status item, `performClick:` is called, then it is detached again.
@@ -197,7 +197,7 @@ Raketa.xcodeproj-less repo (compiled directly via clang in CI)
 ├── dpi/                            — bundled ByeByeDPI snapshot (v0.13.4: host lists only; was: strategies.list,
 │                                     youtube.sites, googlevideo.sites, NOTICE.md
 ├── Info.plist                      — bundle metadata, version string
-├── AppIcon.svg                     — icon source (white "R" on blue gradient)
+├── AppIcon.svg                     — icon source (rocket on the blue gradient, body on the macOS icon grid)
 ├── generate_icon.py                — SVG → .icns build-time converter (cairosvg + iconutil)
 └── .github/workflows/build.yml     — CI: builds sing-box + ciadpi, generates icon,
                                        compiles app, codesigns ad-hoc, releases .zip
@@ -323,7 +323,7 @@ custom (non-native-chrome) popover UI:
 non-Retina screens, contrast does the job instead. Small text on buttons is *Medium* (light-on-dark
 text looks thinner, and 10.13 renders layer-backed text with grayscale antialiasing). Colours carry
 the legibility: every text colour is ≥ 4.5:1 on every surface in both palettes. Emoji icons (🔍) keep
-their own colours; glyph icons (↻ ▾ ✈) take the palette text colour. The 9pt credit line keeps
+their own colours; glyph icons (↻ ▾ and the drawn paper plane) take the palette text colour. The 9pt credit line keeps
 `HelveticaNeue-Light` (approved, untouched).
 - Push buttons: 21pt height where possible (HIG standard); the main
   connect toggle is a custom 36pt-tall capsule (`cornerRadius = height/2`)
@@ -339,11 +339,11 @@ their own colours; glyph icons (↻ ▾ ✈) take the palette text colour. The 9
 202–238  connect toggle: full-width capsule (○ ВЫКЛ / ● ВКЛ)
 252–301  YOUTUBE (v0.12.0): label + strategy caption, then
          [🔍 28pt] [▶ Смотреть YouTube 188pt] [▾ 28pt]
-317–373  bottom bar: [Логи] ··· credit line ··· [✈][Выход]
+317–373  bottom bar: [Логи] ··· credit line ··· [paper plane][Выход]
 ```
 
 The Telegram settings panel is **not** a big always-visible button anymore
-(removed in v0.9.4). It's a small square `✈` icon (U+2708) in the bottom
+(removed in v0.9.4). It's a small square paper-plane icon (drawn, `RKPaperPlaneImage`; was the `✈` character until v0.13.4) in the bottom
 bar, `toolTip = "Настройка Telegram"`, which slides open a 170pt panel
 below the main view and resizes the popover via
 `self.preferredContentSize`. Contains two methods: MTProxy-style details
@@ -693,3 +693,39 @@ project history around v0.9.7 iteration).
   whether a ServerHello comes back; nothing touches ciadpi or the app until it shows a working
   variant. Gate: the `wire verdict:` line of the v0.13.4 search log. Fallback path B (YouTube
   through the VLESS outbound) only with the owner's explicit OK. Full spec: `dpi-research.md` section 5.
+
+
+---
+
+## 17. UI polish: menu-bar glyph, app icon, Telegram icon (v0.13.5)
+
+- **Menu bar:** the status item shows only a monochrome rocket, no "Raketa" text. It is a
+  *template* image drawn by `RKRocketGlyph()` in `AppDelegate.m` (18 pt canvas, rocket 16 pt,
+  black on transparent; macOS tints it for the light/dark menu bar like the other status icons).
+  Tooltip "Raketa" is the only remaining label. The popover header keeps «🚀  Raketa».
+- **App icon (Dock / Finder / Launchpad):** `AppIcon.svg` redrawn - the same rocket (colour: white
+  hull, red nose and fins, blue porthole, orange flame) on the same blue gradient. The body is now
+  824/1024 of the canvas (macOS icon grid, corner radius 22.4% of the body); before, the rounded
+  square filled the whole canvas, which is why the icon looked bigger than every other one. The CI
+  pipeline is unchanged (`generate_icon.py` + cairosvg render the new SVG). To change the size,
+  edit `width/height/x/y/rx` of the background `rect` (and the `scale` of the rocket group).
+  The rocket is hand-drawn vector art after the 🚀 emoji, not the Apple emoji itself: baking the
+  emoji into an icon was neither testable off-device nor clearly licensed. One shape set serves
+  both the SVG and `RKRocketGlyph()` (the transform is written out as a matrix in the code).
+- **Telegram button:** the `✈` character (read as "airplane mode") is replaced by a drawn paper
+  plane, `RKPaperPlaneImage(color)` in `ViewController.m` (16 pt image, colour baked in, fold cut
+  with the Clear operator). It is not a template image: the button is layer-backed and
+  unbordered, colours come from the palette, so `-rkRecolor:` swaps the image on a theme change.
+- **Telegram "only works with an in-app proxy" - investigated, no code change.** `git diff
+  v0.11.3..v0.13.3` of `ViewController.m` shows no change in the VPN path: the inbounds (mixed
+  10809, socks 10808, tg 10810), the three `networksetup` system-proxy commands and the routing
+  rules are textually identical; every proxy-related line added since belongs to the YouTube
+  mode (v0.12.0+). By design (section 5, item 4; port table) Telegram never relied on the system
+  proxy - it needs `127.0.0.1:10808` (SOCKS5) or `:10810` set in its own settings, which is what
+  the Telegram panel's links do. So a change in behaviour comes from the Telegram client (an update,
+  or a reset proxy setting). Quick check that Raketa still sets the system proxy while the VPN is on:
+  `scutil --proxy | grep -E "SOCKS|HTTP"` shows `SOCKSEnable : 1`, port 10808.
+- **Not verified on a Mac:** how the glyphs look at 1x/2x and in both themes (the geometry was
+  rendered and inspected off-device with cairosvg, and the ObjC matrix geometry was compared with
+  the SVG silhouette: IoU 0.97), the Dock size next to other icons, and the CI icon step. Verified
+  off-device: patch applied in a scratch clone, brackets, differential clang check of the three sources.
