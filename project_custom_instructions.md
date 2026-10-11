@@ -1,73 +1,92 @@
 ## What this project is
 
-Raketa — a menu-bar VPN client for macOS (Objective-C + AppKit, no Xcode
-project file, compiled via raw `clang` in GitHub Actions CI). Wraps sing-box
-v1.8.11 with VLESS+Reality+uTLS. Full technical history, architecture
-rationale, and design system live in `handoff.md` — read it at the start of
-any new conversation before proposing changes; it documents nine
-platform-specific bugs already fixed that must not be reintroduced.
+Raketa — a menu-bar VPN client for macOS (Objective-C + AppKit, no Xcode project file,
+compiled via raw `clang` in GitHub Actions). Wraps sing-box v1.8.11 with VLESS+Reality+uTLS.
+A second mode, "Смотреть YouTube", sends only YouTube domains through a user-level `ciadpi`
+(DPI bypass) instead of the VPN. Repo: https://github.com/pavsayganov-studio/AirVPN10 (public).
+Full history, architecture and design system live in `handoff.md`; everything learned about DPI
+bypass lives in `dpi-research.md`. Current state: v0.13.5 — the DPI search works and logs where
+the filter acts, but no strategy that a macOS `ciadpi` can run beats the current Russian filter;
+the UI got a vector rocket in the menu bar (template image), the same rocket as the app icon (on the
+macOS icon grid) and a drawn paper plane on the Telegram button (handoff §17, design.md §6).
+
+## First actions in every new conversation (token economy)
+
+1. **Code source of truth = the repo, not an attachment.** In the sandbox run
+   `git clone --depth 50 https://github.com/pavsayganov-studio/AirVPN10` (github.com is reachable).
+   If a repomix/zip is attached, first check it is Raketa (contains `DPIEngine.m`, `Info.plist`
+   with `com.samurai.raketa`); a repomix of a different project was once uploaded by mistake —
+   if it is not Raketa, say so in one line and use the clone. If the clone fails, ask for a
+   repomix of THIS repo.
+2. Compare `Info.plist` version with `handoff.md`; if they differ, the repo wins.
+3. Read `dpi-research.md` before any DPI work and `handoff.md` §4 (platform gotchas) before any
+   code change; read other sections only when needed, with grep/ranges, not whole files.
+   Do not re-research what `dpi-research.md` already holds — research only what is newer.
+4. Dev tools in the repo (do not recreate them): `tools/test_patch.sh PATCH.py [SOURCE]` runs a
+   patch script end-to-end in a scratch clone with a local bare origin; `tools/objc_diffcheck.sh
+   [BASE_REF] [FILE]` is an off-device clang syntax check (FILE = DPIEngine.m by default, also
+   AppDelegate.m / ViewController.m) on the legacy GNUstep runtime: a baseline of platform errors
+   always remains, pass = no NEW error class. macOS-only API names GNUstep lacks (e.g.
+   `NSCompositingOperationClear`, `NSButton.imageScaling`) show up as NEW CLASS — check them against
+   Apple docs before calling them bugs. Neither tool proves the code compiles on macOS — say
+   "verified off-device: X; not verified on a Mac".
 
 ## Non-negotiable constraints
 
-These were established deliberately across many iterations. Do not revisit
-them unless the person explicitly asks to:
+Established deliberately across many iterations. Do not revisit unless asked:
 
-- **macOS 10.13 (High Sierra) is the primary target.** macOS 12.x is
-  confirmed working. Any shell command run via `do shell script ... with
-  administrator privileges` executes with no controlling terminal —
-  assume this and verify against both OS versions in reasoning, especially
-  for anything involving `nohup`-like terminal/TTY behavior.
-- **CPU/resource load is the top-level priority — above visual polish.**
-  Before adding any timer, polling loop, animation, or background
-  `NSTask` spawn, check whether it's actually necessary. The watchdog
-  pattern (`kill(pid, 0)` over `pgrep`, cached interface name, one-shot
-  detection) is the model to follow for anything similar.
-- **System Proxy architecture, not TUN.** This was tried and abandoned
-  early (double password prompts, unrecoverable hangs on crash). Don't
-  suggest switching back without being asked.
-- **Delivery format: one complete Python patch script per change**
-  (`patch_raketa_<ver>.py`), self-contained: it backs up touched files
-  (`cp X X.bakVERSION`), applies anchored edits, verifies, then runs
-  `git commit` + `git push origin main` itself and deletes itself. No tag —
-  releases are cut by hand in Actions → Build Raketa → Run workflow. The
-  person works exclusively through GitHub Codespaces — no local Xcode, no
-  diffs, no "edit line N" instructions.
-- **Source of truth is the code** (repomix of the repo). When docs and code
-  disagree, the code wins; every patch updates the affected docs
-  (`handoff.md`, `README.md`, `design.md`, `roadmap.md`).
-- Never touch the underlying VLESS/Reality/routing logic, the credit line
-  in the UI, or the overall visual style without being asked — these are
-  finished, approved, and explicitly praised by the person as correct.
+- **macOS 10.13 (High Sierra) is the primary target.** macOS 12.x is confirmed working. A
+  command run via `do shell script ... with administrator privileges` has no controlling
+  terminal — verify against both OS versions in reasoning (anything `nohup`/TTY-like).
+- **CPU/resource load is the top priority — above visual polish.** Before adding any timer,
+  polling loop, animation or background `NSTask`, check it is necessary. Model: the watchdog
+  (`kill(pid, 0)`, cached interface name, one-shot detection).
+- **System Proxy architecture, not TUN.** Tried and abandoned (double password prompts,
+  unrecoverable hangs on crash). Do not suggest it unasked.
+- **Delivery: one complete, self-contained `.py` patch script per change** (see below). The
+  person works only through GitHub Codespaces — no local Xcode, no diffs, no "edit line N".
+- Never touch the VLESS/Reality/routing logic, the credit line in the UI or the overall visual
+  style unasked — finished and approved. Changing routing (e.g. YouTube through the VLESS
+  outbound) needs the person's explicit OK.
 
-## Working style that has earned trust here
+## Known, by design (not regressions)
 
-- **Diagnose before patching.** For any bug report, work out the root
-  cause first and state it plainly — one or two sentences, in plain
-  language, before showing code. This has mattered more than speed in
-  every prior exchange in this project.
-- **Surgical over broad.** When asked to fix something specific, fix that
-  thing. Don't refactor adjacent code "while in there" unless asked.
-  Several past patches explicitly note what was left untouched — keep
-  doing that.
-- Comments in generated Objective-C should explain *why* a fix exists,
-  not just what it does — especially for the nine platform gotchas in
-  `handoff.md`. This is what has prevented regressions across versions.
-- **Verify before delivering.** Check brace balance and run `bash -n` /
-  `python3 -m py_compile` on any generated script before presenting it.
-  A truncated heredoc or quoting collision has broken a delivered patch
-  before in this project (the git-ref and nested-heredoc incidents) —
-  always test-run patch scripts end-to-end in a scratch directory when
-  the change is non-trivial, not just syntax-check them.
-- When a person-reported "error" in build output turns out to be a false
-  positive in the patch script's own verification logic (this has
-  happened — e.g. `grep -c` matching a comment and taking the wrong
-  branch), say so plainly and explain why, rather than re-patching
-  working code.
+- Telegram needs its in-app proxy (`127.0.0.1:10808` SOCKS5 or `:10810`) — it never read the system
+  proxy (handoff §5 item 4, §17). The VPN proxy path is textually unchanged since v0.11.3.
 
-## When starting a new conversation in this project
+## Working style that has earned trust
 
-If `handoff.md` isn't already in context, treat the first message as a
-signal to read it (via search_past_chats or an uploaded copy) before
-proposing any code change — it contains the full list of what's already
-fixed, the exact port map, routing rules, and file layout. Don't
-re-derive architecture decisions that are already documented there.
+- **Diagnose before patching:** state the root cause in one or two plain sentences before code.
+- **Surgical over broad:** fix the thing asked; say what was left untouched.
+- **Comments in generated Objective-C explain *why*** (especially the platform gotchas).
+- **Verify before delivering:** `python3 -m py_compile` / `bash -n`; brace balance; run the
+  patch end-to-end with `tools/test_patch.sh`, not just a syntax check. If a reported "error"
+  is a false positive of the patch script's own check, say so plainly instead of re-patching.
+- **Be honest about evidence:** label what was measured in the person's log, what was read in
+  source, what is a secondary summary, what is inference. Do not present a hypothesis as a
+  finding (v0.13.3's DNS hypothesis was wrong; the log disproved it).
+- Answers are short and lead with the result; long material goes to a file. If you must stop
+  for a decision, give a recommendation and ask once.
+
+## Patch-script conventions
+
+`patch_raketa_<ver>.py`, run from the repo root: backs up touched files (`cp X X.bak<ver>`;
+`*.bak*` is gitignored), applies anchored edits (each anchor must match exactly once), runs its
+own checks (bracket balance, forbidden/required strings, version bump consistent in
+`Info.plist`), restores the backups and stops if a check fails, then `git add` of exact paths,
+`git commit` (Russian message, one line), `git push origin main`, and deletes itself after a
+successful push. No tags — releases are cut by hand: Actions → Build Raketa → Run workflow.
+Version bump consistently: `Info.plist` (`CFBundleVersion` + `CFBundleShortVersionString`).
+
+## Language
+
+Reply in Russian (the person writes Russian). Code, comments, identifiers, log lines, docs in
+the repo: English. UI strings, status messages, commit messages: Russian. Reasoning, searching
+and analysis: English.
+
+## DPI work — current decision
+
+Path A, experiment first: fake packets on macOS by raw injection as root (SpoofDPI's way), proven
+by a standalone lab tool before anything touches ciadpi or the app. Gate on the `wire verdict:`
+line of the v0.13.4 search log (`dpi_search.log`); fallback path B (YouTube through the VLESS
+outbound) only with the person's OK. Details, specs and what not to do: `dpi-research.md` §5–6.

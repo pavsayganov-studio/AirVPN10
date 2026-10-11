@@ -673,3 +673,23 @@ project history around v0.9.7 iteration).
   name and reassembles; only fake packets can help (macOS: raw injection as root, roadmap 5.1).
   `wire verdict: address or route blocked` = no desync of any kind helps, route YouTube through
   the VPN instead. `TLS completed` for YouTube = the filter is not on this network right now.
+
+
+---
+
+## 16. Dev tooling and the next step (after v0.13.4)
+
+- `tools/test_patch.sh PATCH.py [SOURCE]` runs a patch script end-to-end (apply, checks, commit,
+  push, self-delete) in a scratch clone with a local bare origin, then runs the syntax check.
+  `tools/objc_diffcheck.sh [BASE_REF]` compiles `DPIEngine.m` and the base revision with clang on
+  the legacy GNUstep runtime (Linux) and reports only NEW error classes; a baseline of platform
+  errors (no ARC, no object subscripting, no NSURLSession/SystemConfiguration) always remains, so
+  a pass means "no new class", not "compiles on macOS". Installs its toolchain on first use.
+- `dpi-research.md` is the digest of everything learned about DPI bypass (evidence labelled
+  measured / source / summary / inferred); `project_custom_instructions.md` is the project's
+  instruction text (the repo is the code source of truth: clone it, do not ask for a repomix).
+- **Next step (decided):** path A, experiment first - a standalone lab tool (`tools/rkfake-lab.c`,
+  root, raw socket) that injects fake ClientHellos before the real one and prints, per variant,
+  whether a ServerHello comes back; nothing touches ciadpi or the app until it shows a working
+  variant. Gate: the `wire verdict:` line of the v0.13.4 search log. Fallback path B (YouTube
+  through the VLESS outbound) only with the owner's explicit OK. Full spec: `dpi-research.md` section 5.
