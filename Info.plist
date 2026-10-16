@@ -7,8 +7,9 @@
     <key>CFBundleIdentifier</key>          <string>com.samurai.raketa</string>
     <key>CFBundleName</key>                <string>Raketa</string>
     <key>CFBundleDisplayName</key>         <string>Raketa</string>
-    <key>CFBundleVersion</key>             <string>0.13.5</string>
-    <key>CFBundleShortVersionString</key>  <string>0.13.5</string>
+    <key>CFBundleVersion</key>             <string>0.14.0</string>
+    <key>CFBundleShortVersionString</key>  <string>0.14.0</string>
+    <key>RaketaCoreVersion</key>           <string>1.14.3</string>
     <key>CFBundlePackageType</key>         <string>APPL</string>
     <key>LSMinimumSystemVersion</key>      <string>10.10.0</string>
     <key>LSUIElement</key>                 <true/>

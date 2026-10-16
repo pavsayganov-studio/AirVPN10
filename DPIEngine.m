@@ -1421,13 +1421,24 @@ static NSString *DPIFailText(NSDictionary *f) {
             @"final": @"direct"
         }
     } mutableCopy];
-    if (doh)
+    if (doh) {
+        // sing-box 1.14 removed the legacy DNS server format (`address` URLs, deprecated in
+        // 1.12): servers are typed now and the strategy moved into the rule. `sing-box check`
+        // 1.14.3 rejects the old shape, and also asks for default_domain_resolver as soon as
+        // there is a DNS section. Same behaviour as before: DoH only for the YouTube names.
+        NSURL *du = [NSURL URLWithString:doh];
         cfg[@"dns"] = @{
-            @"servers": @[@{@"tag": @"doh", @"address": doh, @"strategy": @"ipv4_only"},
-                          @{@"tag": @"local", @"address": @"local"}],
-            @"rules": @[@{@"domain_suffix": suffixes, @"server": @"doh"}],
+            @"servers": @[@{@"tag": @"doh", @"type": @"https", @"server": du.host ?: @"",
+                            @"server_port": du.port ?: @443,
+                            @"path": du.path.length ? du.path : @"/dns-query"},
+                          @{@"tag": @"local", @"type": @"local"}],
+            @"rules": @[@{@"domain_suffix": suffixes, @"server": @"doh", @"strategy": @"ipv4_only"}],
             @"final": @"local"
         };
+        NSMutableDictionary *rt = [cfg[@"route"] mutableCopy];
+        rt[@"default_domain_resolver"] = @"local";
+        cfg[@"route"] = rt;
+    }
     return cfg;
 }
 

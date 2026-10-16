@@ -1,6 +1,8 @@
 #import "ViewController.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #import "DPIEngine.h"
+#import "CoreUpdater.h"
+#import "RKSubscription.h"
 
 // ── Ports ─────────────────────────────────────────────────────────────────────
 static const NSInteger kSOCKSPort = 10808;
@@ -9,6 +11,7 @@ static const NSInteger kTGPort    = 10810;
 static NSString *const kTGSecret  = @"dd000000000000000000000000000000";
 static NSString *const kSubKey    = @"RaketaSubscriptionURL";
 static NSString *const kSubFile   = @"subscription.json";
+static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 100 ГБ · до 01.12.2026"
 
 // ── Layout (v0.11.0 GUI refresh) ───────────────────────────────────────────────
 // This map is regenerated from scratch, not patched incrementally — previous
@@ -210,6 +213,12 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 @property (assign) BOOL            ytActive;      // YouTube mode running
 @property (assign) BOOL            ytBusy;        // start/stop/switch in flight
 @property (assign) BOOL            ytStartAfterSearch;
+// ── Cores & subscription (v0.14.0) ──
+@property (strong) CoreUpdater    *cores;          // which sing-box to run, and the in-app updater
+@property (strong) NSButton       *coresBtn;       // «Ядра» — updater menu
+@property (strong) NSTextField    *subInfoLabel;   // traffic / expiry reported by the panel
+@property (assign) NSUInteger      subSkipped;     // links sing-box has no transport for (see rawText:)
+@property (copy)   NSString       *subSkipWhy;
 @end
 
 @implementation ViewController
@@ -256,6 +265,12 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
     // ── ПОДПИСКА (46–95) — one row: wide add button + square refresh ──────────
     [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:46]];
+    // v0.14.0: traffic / expiry the panel reports (Subscription-Userinfo), right-aligned on the label row
+    self.subInfoLabel = [self lbl:[[NSUserDefaults standardUserDefaults] stringForKey:kSubInfoKey] ?: @""
+                             font:[NSFont systemFontOfSize:10] color:rkSub
+                            frame:[self rx:kW-kPAD-190 top:46 w:190 h:13]];
+    self.subInfoLabel.alignment = NSTextAlignmentRight;
+    [root addSubview:self.subInfoLabel];
 
     // "Добавить ключи" — primary, wide
     // BUGFIX: previously used the system NSBezelStyleRounded bezel. That
@@ -378,6 +393,13 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [self styleBtn:logBtn size:11 primary:NO];
     [bar addSubview:logBtn];
 
+    // v0.14.0: core updater menu (active sing-box version, check for update, back to the bundled core)
+    self.coresBtn = [self btn:@"Ядра"
+                        frame:NSMakeRect(kPAD+58+6, 26, 52, 21)
+                       action:@selector(coresMenu) primary:NO];
+    [self styleBtn:self.coresBtn size:11 primary:NO];
+    [bar addSubview:self.coresBtn];
+
     NSButton *quitBtn = [self btn:@"Выход"
                             frame:NSMakeRect(kW-kPAD-68, 26, 68, 21)
                            action:@selector(quit) primary:NO];
@@ -427,6 +449,9 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     self.logPath    = [[sup URLByAppendingPathComponent:@"raketa.log"]  path];
     self.subPath    = [[sup URLByAppendingPathComponent:kSubFile] path];
     self.ytConfigPath = [[sup URLByAppendingPathComponent:@"config-yt.json"] path];
+    // v0.14.0: the sing-box to run is chosen here: the bundled one, or the one the in-app updater installed
+    self.cores = [[CoreUpdater alloc] initWithSupportDir:sup.path
+                     bundledPath:[[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil]];
 
     // DPI engine (v0.12.0). A missing ciadpi only disables the YouTube row;
     // it can never affect the VPN.
@@ -546,6 +571,11 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // from other network failures.
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.timeoutInterval = 10.0;
+    // v0.14.0: say who we are (User-Agent + device headers, like INCY / Happ). Panels with a device
+    // limit send nothing to a client without x-hwid; see RKSubscription.h.
+    [RKSubscription decorateRequest:req
+        appVersion:[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]
+        coreVersion:[self.cores activeVersion]];
 
     [[[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
@@ -559,6 +589,13 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                 [self setStatus:msg color:rkRed];
                 return;
             }
+            // v0.14.0: a refused request says why (HTTP status, device limit) instead of "no servers"
+            NSHTTPURLResponse *http = [r isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)r : nil;
+            NSDictionary *hdr = http.allHeaderFields;
+            NSString *problem = [RKSubscription problemForStatus:http.statusCode headers:hdr];
+            if (problem && http.statusCode >= 400) { [self setStatus:problem color:rkRed]; return; }
+            [self showSubInfo:[RKSubscription userinfoSummary:
+                               [RKSubscription headerNamed:@"subscription-userinfo" in:hdr]]];
             NSMutableDictionary *j = [NSJSONSerialization
                 JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
             if (j[@"outbounds"]) {
@@ -568,6 +605,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                                                     encoding:NSUTF8StringEncoding];
                 t ? [self rawText:t] : [self setStatus:@"Неверный формат" color:rkRed];
             }
+            if (problem && !self.proxyTags.count) [self setStatus:problem color:rkRed];   // 200 + x-hwid-limit
         });
     }] resume];
 }
@@ -727,7 +765,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
     // FIX (roadmap.md #2.6): see note above OLD_STARTVPN_HEAD in the patch
     // script for why this check exists and what it prevents.
-    NSString *singBoxBin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
+    NSString *singBoxBin = [self.cores activeCorePath];   // v0.14.0: bundled, or the updated core
     if (!singBoxBin || ![[NSFileManager defaultManager] fileExistsAtPath:singBoxBin]) {
         [self setStatus:@"sing-box не найден в приложении" color:rkRed];
         return;
@@ -1136,7 +1174,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 // privileged launch block of startVPN (same shell recipe, same prompt flow) but
 // is kept separate on purpose so startVPN stays byte-for-byte untouched.
 - (void)ytLaunchCore {
-    NSString *bin = [[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil];
+    NSString *bin = [self.cores activeCorePath];          // v0.14.0: bundled, or the updated core
     if (!bin || ![[NSFileManager defaultManager] fileExistsAtPath:bin]) {
         [self.dpi stopProxy]; self.ytBusy = NO;
         [self setStatus:@"sing-box не найден в приложении" color:rkRed]; [self ytUIRender]; return;
@@ -1419,16 +1457,31 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         if (ds) s = ds;
     }
     NSMutableArray *arr = [NSMutableArray array];
+    // v0.14.0: a link sing-box has no transport for (XHTTP, VLESS Encryption) is counted and
+    // reported, not silently dropped - this is the usual reason INCY works where Raketa does not.
+    NSUInteger skipped = 0;
+    NSString *why = nil;
     for (NSString *line in [s componentsSeparatedByCharactersInSet:
                              [NSCharacterSet newlineCharacterSet]])
         if ([line hasPrefix:@"vless://"]) {
+            NSString *bad = [RKSubscription unsupportedReasonForVless:line];
+            if (bad) { skipped++; why = bad; continue; }
             NSDictionary *o = [self parseVless:line]; if (o) [arr addObject:o];
         }
-    if (!arr.count) { [self setStatus:@"Серверы не найдены" color:rkOrange]; return; }
+    if (!arr.count) {
+        [self setStatus:skipped
+            ? [NSString stringWithFormat:@"⚠  %@ не поддерживается (%lu)", why, (unsigned long)skipped]
+            : @"Серверы не найдены" color:rkOrange];
+        return;
+    }
+    self.subSkipped = skipped; self.subSkipWhy = why;
     [self parsedJSON:[@{@"outbounds": arr} mutableCopy]];
 }
 
 - (void)parsedJSON:(NSMutableDictionary *)j {
+    NSUInteger skipped = self.subSkipped;              // set by rawText:, consumed here
+    NSString *why = self.subSkipWhy;
+    self.subSkipped = 0; self.subSkipWhy = nil;
     self.proxyTags = [NSMutableArray array];
     self.proxyOutbounds = [NSMutableArray array];
     NSArray *srv = @[@"vless",@"vmess",@"trojan",@"shadowsocks",
@@ -1445,8 +1498,10 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     if (self.proxyTags.count) {
         [self.dropdown addItemsWithTitles:self.proxyTags];
         [self.dropdown setEnabled:YES];
-        [self setStatus:[NSString stringWithFormat:@"Серверов: %lu",
-                         (unsigned long)self.proxyTags.count] color:rkGreen];
+        NSString *st = [NSString stringWithFormat:@"Серверов: %lu", (unsigned long)self.proxyTags.count];
+        if (skipped)
+            st = [st stringByAppendingFormat:@" · пропущено %lu (%@)", (unsigned long)skipped, why ?: @""];
+        [self setStatus:st color:skipped ? rkOrange : rkGreen];
         [self persistOutbounds:self.proxyOutbounds];
     } else {
         [self setStatus:@"Серверы не найдены" color:rkOrange];
@@ -1542,6 +1597,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 }
 - (void)setStatus:(NSString *)text color:(NSColor *)color {
     self.statusLabel.stringValue         = text;
+    self.statusLabel.toolTip             = text;     // v0.14.0: long messages are cut off in the label
     self.statusLabel.textColor           = color;
     self.statusDot.layer.backgroundColor = color.CGColor;
 }
@@ -1569,6 +1625,65 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
             NSParagraphStyleAttributeName:  ps
         }];
 }
+// =============================================================================
+#pragma mark - Cores (v0.14.0)
+// =============================================================================
+- (void)showSubInfo:(NSString *)s {
+    self.subInfoLabel.stringValue = s ?: @"";
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (s.length) [d setObject:s forKey:kSubInfoKey]; else [d removeObjectForKey:kSubInfoKey];
+}
+
+- (void)coresMenu {
+    if (self.cores.busy) return;
+    NSMenu *m = [[NSMenu alloc] initWithTitle:@""];
+    m.autoenablesItems = NO;
+    NSString *v = [self.cores activeVersion];
+    [m addItem:[self ytMenuNote:[NSString stringWithFormat:@"sing-box %@ · %@", v.length ? v : @"?",
+                                 self.cores.usingUpdatedCore ? @"обновлённое" : @"встроенное"]]];
+    NSMenuItem *up = [[NSMenuItem alloc] initWithTitle:@"Проверить обновление"
+                                                action:@selector(coresUpdate) keyEquivalent:@""];
+    up.target = self;
+    [m addItem:up];
+    if (self.cores.usingUpdatedCore) {
+        NSMenuItem *rs = [[NSMenuItem alloc] initWithTitle:@"Вернуть встроенное ядро"
+                                                    action:@selector(coresReset) keyEquivalent:@""];
+        rs.target = self;
+        [m addItem:rs];
+    }
+    [m addItem:[NSMenuItem separatorItem]];
+    [m addItem:[self ytMenuNote:@"ciadpi (DPI) — обновляется вместе с приложением"]];
+    [m popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.coresBtn];
+}
+
+// The new core is installed beside the old one and only after it started and accepted the app's
+// own configs (see CoreUpdater). A running core is never touched: the new one is used from the
+// next connect.
+- (void)coresUpdate {
+    if (self.cores.busy) return;
+    [self setStatus:@"Проверка обновлений ядра…" color:rkSub];
+    self.coresBtn.enabled = NO;
+    [self.cores checkAndUpdateWithConfigPaths:@[self.configPath ?: @"", self.ytConfigPath ?: @""]
+        status:^(NSString *t) { [self setStatus:t color:rkSub]; }
+        completion:^(BOOL ok, NSString *summary) {
+            self.coresBtn.enabled = YES;
+            if (!ok) { [self setStatus:[@"⚠  " stringByAppendingString:summary] color:rkRed]; return; }
+            BOOL installed = [summary containsString:@"установлен"];
+            BOOL running = self.connected || self.ytActive;
+            [self setStatus:(installed && running)
+                ? [NSString stringWithFormat:@"sing-box %@ — со следующего подключения", [self.cores activeVersion]]
+                : summary
+                      color:rkGreen];
+        }];
+}
+
+- (void)coresReset {
+    [self.cores resetToBundled];
+    [self setStatus:[NSString stringWithFormat:@"Встроенное ядро %@%@", [self.cores activeVersion],
+                     (self.connected || self.ytActive) ? @" — со следующего подключения" : @""]
+              color:rkGreen];
+}
+
 - (void)openLogs {
     if ([[NSFileManager defaultManager] fileExistsAtPath:self.logPath])
         [[NSWorkspace sharedWorkspace] openFile:self.logPath withApplication:@"Console"];

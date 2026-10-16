@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.13.5
+**Current version:** v0.14.0
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -9,7 +9,7 @@
 ## 1. What this is
 
 Raketa is a minimalist menu-bar VPN client for macOS, purpose-built for users in
-Russia who need to bypass DPI-based blocking. It wraps **sing-box v1.8.11** as
+Russia who need to bypass DPI-based blocking. It wraps **sing-box v1.14.3** as
 the core proxy engine, using **VLESS + Reality + uTLS** to disguise traffic as
 legitimate TLS connections to real sites (Chrome fingerprint impersonation).
 
@@ -192,6 +192,8 @@ Raketa.xcodeproj-less repo (compiled directly via clang in CI)
 ├── main.m                          — trivial NSApplicationMain entry point
 ├── AppDelegate.m / .h              — NSStatusItem + NSPopover host
 ├── ViewController.m / .h           — ALL UI + VPN logic lives here (~1300 lines)
+├── CoreUpdater.m / .h              — in-app sing-box core updater (v0.14.0, Foundation only)
+├── RKSubscription.m / .h           — subscription request headers (UA, HWID), Userinfo, error texts (v0.14.0)
 ├── DPIEngine.m / .h                — YouTube DPI engine: ciadpi process, strategy list,
 │                                     search/ranking, YouTube-only sing-box config (v0.12.0)
 ├── dpi/                            — bundled ByeByeDPI snapshot (v0.13.4: host lists only; was: strategies.list,
@@ -209,12 +211,12 @@ in CI:
 clang -fobjc-arc -framework Cocoa -framework SystemConfiguration \
   -arch x86_64 -mmacosx-version-min=10.13 \
   -o Raketa.app/Contents/MacOS/Raketa \
-  main.m AppDelegate.m ViewController.m DPIEngine.m
+  main.m AppDelegate.m ViewController.m DPIEngine.m CoreUpdater.m RKSubscription.m
 ```
 
-`sing-box` itself is built from source in CI at tag `v1.8.11` with
-`-tags "with_utls,with_grpc,with_reality"`, Go 1.20 (last version that
-targets 10.13 successfully).
+`sing-box` is not built any more (v0.14.0): CI downloads the official release asset
+`sing-box-<ver>-darwin-amd64-legacy-macos-10.13.tar.gz` and checks it against the SHA-256 pinned in
+`build.yml` (`SING_BOX_SHA256`); section 18 has the details. `ciadpi` is still built from source.
 
 ---
 
@@ -731,3 +733,58 @@ project history around v0.9.7 iteration).
   rendered and inspected off-device with cairosvg, and the ObjC matrix geometry was compared with
   the SVG silhouette: IoU 0.97), the Dock size next to other icons, and the CI icon step. Verified
   off-device: patch applied in a scratch clone, brackets, differential clang check of the three sources.
+
+
+## 18. Cores and subscription client (v0.14.0)
+
+Why: VPN problems started on the owner's network while INCY (an Xray-core client) kept working, and
+sing-box was six minors behind (1.8.11 vs stable 1.14.3 on 2026-10-14). Raketa has two cores only,
+sing-box and `ciadpi`; there is no Xray or Happ inside it (INCY and Happ are the Xray-based clients).
+
+- **sing-box 1.8.11 -> 1.14.3, downloaded, not built.** SagerNet publishes
+  `sing-box-<ver>-darwin-amd64-legacy-macos-10.13.tar.gz` (patched Go, cgo, deployment target 10.13).
+  **[source]** its Mach-O header says `LC_VERSION_MIN_MACOSX 10.13`, x86_64, 78 MB, read in this session;
+  CI now asserts both on every build ("Verify bundle"), pins the archive by SHA-256
+  (`SING_BOX_SHA256` in `build.yml`; hash of the 1.14.3 archive: 5deb29ed...d112) and no longer needs Go
+  or a cache for the core. **Not run on a Mac yet** - first thing to check after the build: connect,
+  and `Ядра` shows `sing-box 1.14.3 · встроенное`.
+- **Config compatibility, [measured] with the Linux 1.14.3 `sing-box check`:** the VPN config (mixed +
+  two socks inbounds, VLESS/Reality/uTLS outbound, direct, route rules) and the plain YouTube config are
+  accepted unchanged. The legacy DNS format (`"address": "https://..."`) is a FATAL error since 1.14.0
+  (deprecated in 1.12): the DoH branch of `youtubeOnlyConfigWithInbounds:` was rewritten to typed
+  servers (`type: https`, `server`, `server_port`, `path`), the strategy moved into the DNS rule and
+  `route.default_domain_resolver: local` was added (without it `check` fails). Transports ws, grpc,
+  httpupgrade, http check fine. **`xhttp` is rejected** (`unknown transport type: xhttp`), as is
+  VLESS Encryption - a server that needs them works in INCY/Happ (Xray) and cannot work in sing-box.
+- **In-app updater, `CoreUpdater.m`** (button `Ядра` in the bottom bar, menu: active version, check
+  for update, back to the bundled core). Flow, on a background queue, only on a click: latest stable tag
+  from the GitHub API -> the same legacy-10.13 asset by a URL built from the tag (strict `vX.Y.Z`) ->
+  SHA-256 against the digest GitHub publishes (when there is one) -> `tar` to a staging dir ->
+  `sing-box version` must run (a dyld error on 10.13 shows up here) -> `sing-box check -c` on a trivial
+  config and on the real `config.json` / `config-yt.json` when they exist (a release that dropped a field
+  the app still writes is refused) -> install to `~/Library/Application Support/Raketa/cores/sing-box-<ver>/`
+  and flip `cores.json` (atomic). The bundle is never modified (ad-hoc signature); the bundled core is
+  always the fallback; one previous version stays on disk. A running core is not touched - the new one
+  is used from the next connect. `startVPN` and `ytLaunchCore` ask `self.cores activeCorePath`; only
+  files under `cores/` are honoured. Trust model = the app's own: HTTPS from github.com, hash when
+  published, must run and accept the app's configs; the installed core is user-writable (like the app
+  in /Applications). `ciadpi` has no macOS binary upstream and is built in CI, so it updates with the app.
+- **Subscription client, `RKSubscription.m`** (what INCY/Happ do and Raketa did not): the request now
+  carries `User-Agent: Raketa/<ver> sing-box/<core> (macOS <ver>)` (the `sing-box` token makes panels
+  that pick the format by User-Agent answer with something sing-box can run) and `x-hwid` (random
+  per-install id kept in NSUserDefaults, not hardware-derived), `x-device-os`, `x-ver-os`,
+  `x-device-model`. **[source]** Remnawave docs (HWID device limit): with the limit on, a client that sends
+  no `x-hwid` gets no subscription. The response is read: `Subscription-Userinfo` -> a right-aligned
+  caption on the ПОДПИСКА row (used / total · expiry, cached in NSUserDefaults), HTTP 401/403/404/429/5xx
+  and `x-hwid-limit: true` -> a specific `⚠` message instead of "Серверы не найдены". vless:// links with
+  `type=xhttp|splithttp` or `encryption` other than `none` are counted and shown as "пропущено N (XHTTP)"
+  (all skipped: "⚠ XHTTP не поддерживается (N)"). `parseVless:` itself is unchanged. The status label
+  now also carries its text as a tooltip (long messages are cut off).
+  Side effect to know: the Mac registers as one more device at a provider with a device limit.
+- **Verified off-device:** configs with the real 1.14.3 `check`; the three sources with the differential
+  clang check; the patch applied end to end in a scratch clone. **Not verified on a Mac:** the downloaded
+  core on 10.13, the updater flow, the new User-Agent against the real provider, the layout of the new
+  button and caption.
+- **Backlog, not done on purpose:** Xray-core as a second engine for XHTTP servers (needs its own config
+  writer, ports and a patched-Go build for 10.13; decide after seeing which `type=`/`encryption=` the
+  INCY-working link has); trojan/ss/hysteria2/vmess links (only vless:// is parsed from link lists).
