@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.14.1
+**Current version:** v0.14.2
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -816,3 +816,30 @@ credit line and every action are unchanged; CPU cost is zero (no shadows, blur, 
   plus the double-chevron; if it shows none, the field still opens the menu - add a chevron then), the
   look of the dock and the capsules at 1x/2x in both themes. Verified off-device: patch applied in a
   scratch clone, brackets, differential clang check.
+
+
+## 20. DPI: new S strategies, M recorded as not working (v0.14.2)
+
+Full reasoning, sources and the candidate table: `dpi-research.md` section 8. Code summary:
+
+- `DPIEngine`: `DPISpoofLines()` (S1-S8, raw `sb:key=value;...`), `DPISBOptions()` (whitelist -> route-options
+  fields, nil if invalid; also the check behind `+isSingBoxStrategy:`), entries list = S first, then M
+  (`DPIEntry.src` 2000+k / 1000+k, label "S3" / "M3"). `startProxyWithStrategy:` for an S line starts nothing
+  (no ciadpi). `youtubeOnlyConfigWithInbounds:` builds, for an S strategy, ONE rule
+  (`domain_suffix` + `action: route-options` + the options), no `dpi` outbound, `final: direct`.
+- Search: `startSBSearchFor:` writes `dpi_sb_search.json` (a SOCKS inbound `s<i>` on 10830+i per S candidate,
+  rule `inbound` + route-options) and asks the app for a root start (`privStart` block); `testSB:` = the usual
+  two-stage battery through that port; the process is stopped (`privStop`) after the loop and its log is
+  excerpted into `dpi_search.log` (`sb log:`). A candidate whose sing-box did not start is logged
+  `REJECTED (<reason>)`; the M candidates still run.
+- App: `dpiPrivilegedStart:/Stop:` (same AppleScript recipe as `ytLaunchCore`; no `killall`; the process
+  destroys itself after 10 minutes if its pid is still a sing-box). `ytPick:` going to/from an S strategy
+  while YouTube is on = `ytStopSync` + `ytStart` (two prompts, cached by macOS); M -> M is unchanged.
+  The strategy list menu shows two groups (S sing-box / M ciadpi). Old saved results (10 lines) show "Результаты
+  старого формата - повторите поиск" because the candidate count changed.
+- **[measured] with `sing-box check` 1.14.3:** all eight candidates and the 8-inbound search config are valid;
+  `tls_fragment` + `tls_record_fragment` together are refused; `wrong-timestamp` is refused by the check only
+  on platforms without it (not relevant on macOS, where it is simply not offered).
+- **Not verified on a Mac:** everything runtime - the root launch and its prompt text, the port wait, the
+  raw injection on 10.13 and 12, whether any S passes. Verified off-device: the patch end to end, brackets,
+  the differential clang check, the configs above.

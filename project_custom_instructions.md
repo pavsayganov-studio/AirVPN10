@@ -5,7 +5,7 @@ compiled via raw `clang` in GitHub Actions). Wraps sing-box v1.14.3 with VLESS+R
 A second mode, "Смотреть YouTube", sends only YouTube domains through a user-level `ciadpi`
 (DPI bypass) instead of the VPN. Repo: https://github.com/pavsayganov-studio/AirVPN10 (public).
 Full history, architecture and design system live in `handoff.md`; everything learned about DPI
-bypass lives in `dpi-research.md`. Current state: v0.14.1 — the DPI search works and logs where
+bypass lives in `dpi-research.md`. Current state: v0.14.2 — the DPI search works and logs where
 the filter acts, but no strategy that a macOS `ciadpi` can run beats the current Russian filter;
 the UI got a vector rocket in the menu bar (template image), the same rocket as the app icon (on the
 macOS icon grid) and a drawn paper plane on the Telegram button (handoff §17, design.md §6).
@@ -88,7 +88,9 @@ and analysis: English.
 
 ## DPI work — current decision
 
-Path A, experiment first: fake packets on macOS by raw injection as root (SpoofDPI's way), proven
-by a standalone lab tool before anything touches ciadpi or the app. Gate on the `wire verdict:`
-line of the v0.13.4 search log (`dpi_search.log`); fallback path B (YouTube through the VLESS
-outbound) only with the person's OK. Details, specs and what not to do: `dpi-research.md` §5–6.
+v0.14.2: the ciadpi stream-cutting strategies (M) are recorded as NOT working on macOS and frozen.
+Fake-ClientHello injection is now done by sing-box 1.14 itself (`tls_spoof`, root; candidates S1–S8,
+found in sing-box's source on 2026-10-14) - the planned lab tool and ciadpi patch are not needed.
+Next gate: the `#S…` lines and the `sb log:` block of the search log (`dpi_search.log`). If no S
+passes, fallback path B (YouTube through the VLESS outbound) only with the person's OK.
+Details, specs and what not to do: `dpi-research.md` §5–8.

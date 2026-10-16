@@ -31,6 +31,11 @@ NS_ASSUME_NONNULL_BEGIN
 typedef void (^DPIProgressBlock)(NSString *stage, NSInteger done, NSInteger total, NSInteger best);
 typedef void (^DPIDoneBlock)(BOOL ok, NSString *summary);
 typedef void (^DPIStartBlock)(BOOL ok, NSString * _Nullable error);
+// v0.14.2: root launch of a sing-box for the "S" strategies' search; supplied by the app (the engine
+// has no UI). done(pid, nil) on success, done(0, reason) otherwise. Called off the main queue.
+typedef void (^DPIPrivStartBlock)(NSString *binary, NSString *config, NSString *log,
+                                  void (^done)(int pid, NSString * _Nullable error));
+typedef void (^DPIPrivStopBlock)(int pid);
 
 @interface DPIEngine : NSObject
 
@@ -47,6 +52,11 @@ typedef void (^DPIStartBlock)(BOOL ok, NSString * _Nullable error);
 @property (copy, nullable) NSString *selectedStrategy;   // persisted in NSUserDefaults
 // Called (callback queue) when ciadpi died and auto-restart gave up.
 @property (copy, nullable) void (^onProxyGaveUp)(void);
+// v0.14.2 - strategies run by sing-box itself ("S": tls_spoof / tls_fragment route options)
+@property (copy, nullable) NSString * _Nullable (^coreBinary)(void);   // the sing-box to run
+@property (copy, nullable) DPIPrivStartBlock privStart;
+@property (copy, nullable) DPIPrivStopBlock  privStop;
++ (BOOL)isSingBoxStrategy:(NSString *)raw;                  // "sb:..." line (S1...S8)
 
 - (NSInteger)strategyCount;                                  // valid strategies in the list
 - (NSInteger)numberForStrategy:(NSString *)raw;              // 1-based, 0 if not in list

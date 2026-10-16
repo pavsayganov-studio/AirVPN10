@@ -31,6 +31,19 @@
 // networks where the system answer really is unusable: the search uses it only then, and at
 // runtime sing-box resolves the YouTube names over it (and speaks SOCKS4 to ciadpi, which then
 // never resolves anything) only when the last search recorded an unusable system resolver.
+// v0.14.2 — WHAT CHANGED AND WHY. Every ciadpi stream-cutting line ("M") is recorded as NOT
+// working on macOS: 0 of 68 in the v0.13.3 log, none in the v0.13.4/0.13.5 runs, and ciadpi has
+// no fake packets here (FAKE_SUPPORT is Linux/Windows only, dpi-research.md section 2). The M lines
+// stay in the list as tripwires and for manual choice; nothing more is added to them.
+// What replaces them: sing-box 1.14 ships the fake-ClientHello injection this file's planned
+// "lab" was going to write by hand - the route option `tls_spoof` (+ `tls_spoof_method`) and the
+// TCP / TLS-record fragmentation options. Read in its source on 2026-10-14: raw sockets with
+// IP_HDRINCL, sequence numbers from the kernel's pcblist_n, ROOT required, applied to the direct
+// connection after the dial, the fake goes out with the first write of the real ClientHello.
+// These are the "S" candidates. They need no ciadpi at all: in YouTube mode the matching rule only
+// sets the options and the connection stays `direct`; in the search ONE root sing-box carries an
+// inbound per candidate (a password prompt per candidate would be unusable), and the same probes,
+// success rule and ranking are applied to it.
 #import "DPIEngine.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <libproc.h>
@@ -43,6 +56,7 @@
 
 static const int kDPIPort     = 10811;   // runtime ciadpi (system proxy -> sing-box -> here)
 static const int kDPITestPort = 10820;   // throw-away ciadpi used by the search
+static const int kDPISBBase   = 10830;   // search: first SOCKS inbound of the root sing-box (one per "S" candidate)
 static NSString *const kDPIRepoRaw  = @"https://raw.githubusercontent.com/romanvht/ByeByeDPI/master/app/src/main/assets/";
 static NSString *const kDPISelKey   = @"RaketaDPIStrategy";
 static NSString *const kDPIYTName   = @"youtube.sites";
@@ -616,6 +630,50 @@ static NSArray<NSString *> *DPICuratedLines(void) {
              @"-o1"];
 }
 
+// ── Strategies run by sing-box itself ("S", v0.14.2) ───────────────────────────────────────
+// raw = "sb:key=value;key=value": spoof=<fake SNI> method=<wrong-sequence|wrong-checksum|wrong-ack|
+// wrong-md5> rec=1 (TLS record fragmentation) frag=1 (TCP fragmentation). The two fragmentation
+// options are mutually exclusive in sing-box ("sing-box check" refuses both together). The strategy
+// is stored in NSUserDefaults and ends up in a config, so DPISBOptions() is a whitelist: anything
+// else is nil. Mapping to the zapret catalogue (dpi-research.md section 2): wrong-sequence ~ badseq,
+// wrong-md5 ~ md5sig, wrong-checksum ~ badsum, wrong-ack ~ badack; `ts` (TCP timestamp) has no
+// macOS method in sing-box. www.google.com is the fake the maintained community lists use.
+//   S1 fake, badseq            S2 fake + TLS records      S3 fake + TCP fragments
+//   S4 fake, md5sig            S5 fake, bad checksum      S6 fake, bad ack
+//   S7 fake with another allowed name (ya.ru)             S8 fragments only, no fake
+static NSArray<NSString *> *DPISpoofLines(void) {
+    return @[@"sb:spoof=www.google.com;method=wrong-sequence",
+             @"sb:spoof=www.google.com;method=wrong-sequence;rec=1",
+             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1",
+             @"sb:spoof=www.google.com;method=wrong-md5",
+             @"sb:spoof=www.google.com;method=wrong-checksum",
+             @"sb:spoof=www.google.com;method=wrong-ack",
+             @"sb:spoof=ya.ru;method=wrong-sequence",
+             @"sb:frag=1"];
+}
+
+// The route-options fields for an "sb:" line; nil when the line is not a valid one.
+static NSDictionary *DPISBOptions(NSString *raw) {
+    if (![raw isKindOfClass:[NSString class]] || ![raw hasPrefix:@"sb:"]) return nil;
+    NSSet *methods = [NSSet setWithObjects:@"wrong-sequence", @"wrong-checksum", @"wrong-ack", @"wrong-md5", nil];
+    NSMutableDictionary *o = [NSMutableDictionary dictionary];
+    for (NSString *kv in [[raw substringFromIndex:3] componentsSeparatedByString:@";"]) {
+        NSArray *p = [kv componentsSeparatedByString:@"="];
+        if (p.count != 2) return nil;
+        NSString *k = p[0], *v = p[1];
+        if ([k isEqualToString:@"spoof"])       { if (!DPIValidHost(v)) return nil; o[@"tls_spoof"] = v; }
+        else if ([k isEqualToString:@"method"]) { if (![methods containsObject:v]) return nil; o[@"tls_spoof_method"] = v; }
+        else if ([k isEqualToString:@"rec"])    { if (![v isEqualToString:@"1"]) return nil; o[@"tls_record_fragment"] = [NSNumber numberWithBool:YES]; }
+        else if ([k isEqualToString:@"frag"])   { if (![v isEqualToString:@"1"]) return nil; o[@"tls_fragment"] = [NSNumber numberWithBool:YES]; }
+        else return nil;
+    }
+    if (o[@"tls_spoof_method"] && !o[@"tls_spoof"]) return nil;
+    if (o[@"tls_record_fragment"] && o[@"tls_fragment"]) return nil;
+    return o.count ? o : nil;
+}
+
++ (BOOL)isSingBoxStrategy:(NSString *)raw { return DPISBOptions(raw) != nil; }
+
 // Every runnable candidate, in TEST order (v0.13.4: DPICuratedLines() only). A line the
 // safety filter rejects, or that this ciadpi cannot run even after cutting the options it
 // lacks, is skipped but keeps its number, so "M3" is always the third line of the list.
@@ -623,6 +681,16 @@ static NSArray<NSString *> *DPICuratedLines(void) {
     NSMutableArray<DPIEntry *> *out = [NSMutableArray array];
     NSMutableSet *seenKey = [NSMutableSet set];
     NSInteger k = 0;
+    // v0.14.2: the sing-box-run strategies come first (S1...), the stream-cutting lines after them.
+    NSInteger sk = 0;
+    for (NSString *l in DPISpoofLines()) {
+        sk++;
+        if (!DPISBOptions(l)) continue;
+        DPIEntry *se = [DPIEntry new];
+        se.raw = l; se.src = 2000 + sk;
+        se.label = [NSString stringWithFormat:@"S%ld", (long)sk];
+        [out addObject:se];
+    }
     for (NSString *l in DPICuratedLines()) {
         k++;
         BOOL ad = NO;
@@ -793,7 +861,7 @@ static NSArray<NSString *> *DPICuratedLines(void) {
     // Results saved by v0.13.3 or older cover another candidate set (68 lines).
     if (!_lastCurated || _lastTotal != (NSInteger)[self entries].count)
         return @"Результаты старого формата — повторите поиск 🔍";
-    return [NSString stringWithFormat:@"Проверено %ld · только разрезание потока (fake-пакетов в macOS-ciadpi нет)",
+    return [NSString stringWithFormat:@"Проверено %ld · подделка ClientHello (sing-box, S) и разрезание потока (ciadpi, M)",
             (long)_lastTested];
 }
 // DNS first (v0.13.3), then the two control runs.
@@ -871,6 +939,15 @@ static NSArray<NSString *> *DPICuratedLines(void) {
 - (NSString *)pidPath { return [_supDir stringByAppendingPathComponent:@"dpi.pid"]; }
 
 - (void)startProxyWithStrategy:(NSString *)raw completion:(DPIStartBlock)completion {
+    if (DPISBOptions(raw)) {                       // v0.14.2: sing-box does the desync, no ciadpi at all
+        dispatch_queue_t cbq0 = _cbq;
+        dispatch_async(_q, ^{
+            [self killProxyOnQueue];
+            self->_proxyStrategy = raw;
+            dispatch_async(cbq0, ^{ completion(YES, nil); });
+        });
+        return;
+    }
     NSArray *sargs = [DPIEngine argsForStrategy:raw];
     dispatch_queue_t cbq = _cbq;
     if (!self.available) { dispatch_async(cbq, ^{ completion(NO, @"DPI-движок не найден"); }); return; }
@@ -1129,6 +1206,118 @@ static NSString *DPIFailText(NSDictionary *f) {
     return r;
 }
 
+// ── "S" candidates (v0.14.2) ────────────────────────────────────────────────────────────────
+// Starts ONE root sing-box with a SOCKS inbound per "S" entry (ports kDPISBBase...), each inbound
+// carrying its own route-options rule. `ports` gets raw -> port. NO when there is nothing to start
+// or it did not come up; *why says so for the log. The password prompt is the app's (privStart).
+- (BOOL)startSBSearchFor:(NSArray<DPIEntry *> *)ents ports:(NSMutableDictionary<NSString *, NSNumber *> *)ports
+                     pid:(int *)pidOut why:(NSString **)why log:(NSMutableString *)log {
+    NSMutableArray *inb = [NSMutableArray array], *rules = [NSMutableArray array];
+    NSInteger i = 0;
+    for (DPIEntry *e in ents) {
+        NSDictionary *o = DPISBOptions(e.raw);
+        if (!o) continue;
+        NSString *tag = [NSString stringWithFormat:@"s%ld", (long)i];
+        [inb addObject:@{@"type": @"socks", @"tag": tag, @"listen": @"127.0.0.1",
+                         @"listen_port": @(kDPISBBase + i)}];
+        NSMutableDictionary *r = [@{@"inbound": @[tag], @"action": @"route-options"} mutableCopy];
+        [r addEntriesFromDictionary:o];
+        [rules addObject:r];
+        ports[e.raw] = @(kDPISBBase + i);
+        i++;
+    }
+    if (!inb.count) return NO;
+    NSString *bin = self.coreBinary ? self.coreBinary() : nil;
+    if (!self.privStart || !bin.length || ![[NSFileManager defaultManager] isExecutableFileAtPath:bin]) {
+        if (why) *why = @"no root launcher or sing-box";
+        [log appendString:@"sb: S candidates skipped (no root launcher or no sing-box)\n"];
+        return NO;
+    }
+    NSDictionary *cfg = @{@"log": @{@"level": @"warn"}, @"inbounds": inb,
+                          @"outbounds": @[@{@"type": @"direct", @"tag": @"direct"}],
+                          @"route": @{@"rules": rules, @"final": @"direct"}};
+    NSString *cfgPath = [_supDir stringByAppendingPathComponent:@"dpi_sb_search.json"];
+    NSString *logPath = [_supDir stringByAppendingPathComponent:@"dpi_sb_search.log"];
+    NSData *cd = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
+    if (!cd || ![cd writeToFile:cfgPath atomically:YES]) {
+        if (why) *why = @"could not write the sing-box config";
+        [log appendString:@"sb: could not write the config\n"];
+        return NO;
+    }
+    __block int pid = 0;
+    __block NSString *err = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    self.privStart(bin, cfgPath, logPath, ^(int p, NSString *e) { pid = p; err = e; dispatch_semaphore_signal(sem); });
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_SEC))) != 0)
+        err = @"no answer to the password prompt";
+    if (pid <= 0) {
+        if (why) *why = err ?: @"root start failed";
+        [log appendFormat:@"sb: not started (%@)\n", err ?: @"?"];
+        return NO;
+    }
+    *pidOut = pid;
+    BOOL up = NO;
+    for (int w = 0; w < 40 && !_cancel; w++) {
+        if (DPIPortOpen(kDPISBBase)) { up = YES; break; }
+        usleep(100000);
+    }
+    if (!up) {
+        if (why) *why = @"sing-box did not listen";
+        [log appendString:@"sb: started but not listening\n"];
+        return NO;                       // the caller stops *pidOut
+    }
+    [log appendFormat:@"sb: root sing-box up, %lu candidates on 127.0.0.1:%d-%d\n",
+                      (unsigned long)inb.count, kDPISBBase, kDPISBBase + (int)inb.count - 1];
+    return YES;
+}
+
+- (void)stopSB:(int)pid {
+    if (pid > 0 && self.privStop) self.privStop(pid);
+}
+
+// The few lines of the throw-away sing-box's own log that explain a failure (a tls_spoof problem
+// on this macOS shows up here and nowhere else).
+- (NSString *)sbLogExcerpt {
+    NSString *txt = [NSString stringWithContentsOfFile:[_supDir stringByAppendingPathComponent:@"dpi_sb_search.log"]
+                                              encoding:NSUTF8StringEncoding error:nil];
+    if (!txt.length) return @"sb log: (empty)\n";
+    NSMutableString *out = [NSMutableString stringWithString:@"sb log:\n"];
+    NSInteger n = 0;
+    for (NSString *l in [txt componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSString *low = l.lowercaseString;
+        if (!l.length || !([low containsString:@"spoof"] || [low containsString:@"fatal"] ||
+                           [low containsString:@"error"] || [low containsString:@"permission"])) continue;
+        NSString *clean = [l stringByReplacingOccurrencesOfString:@"\\x1b\\[[0-9;]*m" withString:@""
+                                                          options:NSRegularExpressionSearch
+                                                            range:NSMakeRange(0, l.length)];
+        [out appendFormat:@"  %@\n", clean.length > 200 ? [clean substringToIndex:200] : clean];
+        if (++n >= 12) { [out appendString:@"  ...\n"]; break; }
+    }
+    if (!n) [out appendString:@"  (no spoof/error lines)\n"];
+    return out;
+}
+
+// Same probes and success rule as testStrategy:, through the "S" inbound on `port` (no process of
+// its own: the root sing-box is already up).
+- (DPIResult *)testSB:(NSString *)raw port:(int)port hosts:(NSArray *)hosts probes:(NSArray *)probes
+                  ips:(NSDictionary<NSString *, NSString *> *)ips diag:(NSString **)diag {
+    DPIResult *r = [DPIResult new];
+    r.strategy = raw; r.total = (NSInteger)hosts.count;
+    NSMutableDictionary *f1 = [NSMutableDictionary dictionary];
+    double s1 = 0;
+    NSInteger p1 = [self batteryHosts:probes port:port ips:ips timeout:5 totalTime:&s1 failures:f1];
+    if (p1 > 0 && !_cancel) {
+        NSMutableDictionary *f2 = [NSMutableDictionary dictionary];
+        double sum = 0;
+        r.ok = [self batteryHosts:hosts port:port ips:ips timeout:5 totalTime:&sum failures:f2];
+        r.avgTime = r.ok ? sum / r.ok : 0;
+        if (diag) *diag = [NSString stringWithFormat:@"fail %@", DPIFailText(f2)];
+    } else if (diag) {
+        *diag = [NSString stringWithFormat:@"probe fail %@", DPIFailText(f1)];
+    }
+    return r;
+}
+
 // One direct HTTPS request to a literal address with a chosen name (SNI and Host), classified
 // by how far it got (v0.13.4). Direct on purpose: through the proxy curl cannot tell "TCP never
 // connected" from "TLS never finished" (the SOCKS reply hides the first). *kind:
@@ -1324,6 +1513,12 @@ static NSString *DPIFailText(NSDictionary *f) {
             if (pt.isRunning) { [pt terminate]; [pt waitUntilExit]; }
         }
 
+        // v0.14.2: ONE root sing-box with an inbound per "S" candidate (see the file header).
+        NSMutableDictionary<NSString *, NSNumber *> *sbPort = [NSMutableDictionary dictionary];
+        int sbPid = 0;
+        NSString *sbWhy = nil;
+        BOOL sbUp = [self startSBSearchFor:ents ports:sbPort pid:&sbPid why:&sbWhy log:log];
+
         NSMutableArray<DPIResult *> *found = [NSMutableArray array];
         NSMutableDictionary<NSString *, DPIResult *> *allTested = [NSMutableDictionary dictionary];
         NSInteger tested = 0, best = 0;
@@ -1332,7 +1527,15 @@ static NSString *DPIFailText(NSDictionary *f) {
             dispatch_async(cbq, ^{ progress(@"search", doneN, tot, bestN); });
             DPIEntry *e = ents[(NSUInteger)i];
             NSString *diag = nil;
-            DPIResult *r = [self testStrategy:e.raw hosts:hosts probes:probes ips:ips diag:&diag];
+            DPIResult *r = nil;
+            if (DPISBOptions(e.raw)) {
+                if (sbUp && sbPort[e.raw])
+                    r = [self testSB:e.raw port:sbPort[e.raw].intValue hosts:hosts probes:probes ips:ips diag:&diag];
+                else
+                    diag = sbWhy ?: @"sing-box unavailable";
+            } else {
+                r = [self testStrategy:e.raw hosts:hosts probes:probes ips:ips diag:&diag];
+            }
             if (!r) {                          // unsupported by this build
                 [log appendFormat:@"#%@  REJECTED (%@)  %@\n", e.label, diag ?: @"", e.raw];
                 continue;
@@ -1343,6 +1546,10 @@ static NSString *DPIFailText(NSDictionary *f) {
                               (long)r.ok, (long)r.total, r.avgTime, r.ok == r.total ? @"-" : (diag ?: @"-"), e.raw];
             if (r.ok > 0) { [found addObject:r]; if (r.ok > best) best = r.ok; }
             usleep(400000);                   // be gentle between strategies
+        }
+        if (sbPid > 0) {                      // stop the root sing-box; its own log explains a failure
+            [self stopSB:sbPid];
+            if (sbPort.count) [log appendString:[self sbLogExcerpt]];
         }
         BOOL cancelled = self->_cancel;
         self->_searching = NO;
@@ -1408,16 +1615,26 @@ static NSString *DPIFailText(NSDictionary *f) {
     // v0.13.4: only when the last search found the system resolver unusable; otherwise the
     // old, plain config (SOCKS5, system DNS) - DoH would add a dependency for nothing.
     NSString *doh = (_dnsSysBad && DPIValidDoHURL(_dohURL)) ? _dohURL : nil;
+    // v0.14.2: an "S" strategy is a route option of the direct connection itself (sing-box injects
+    // the fake ClientHello before the real one), so there is no ciadpi hop: the matching rule only
+    // sets the options and the traffic stays `direct`. sing-box must run as root for it - it does.
+    NSDictionary *sbo = DPISBOptions(self.selectedStrategy);
+    NSMutableDictionary *rule = [@{@"domain_suffix": suffixes} mutableCopy];
+    NSMutableArray *outs = [@[@{@"type": @"direct", @"tag": @"direct"}] mutableCopy];
+    if (sbo) {
+        rule[@"action"] = @"route-options";
+        [rule addEntriesFromDictionary:sbo];
+    } else {
+        rule[@"outbound"] = @"dpi";
+        [outs addObject:@{@"type": @"socks", @"tag": @"dpi", @"version": doh ? @"4" : @"5",
+                          @"server": @"127.0.0.1", @"server_port": @(kDPIPort)}];
+    }
     NSMutableDictionary *cfg = [@{
         @"log": @{@"level": @"warn"},
         @"inbounds": inbounds,
-        @"outbounds": @[
-            @{@"type": @"direct", @"tag": @"direct"},
-            @{@"type": @"socks", @"tag": @"dpi", @"version": doh ? @"4" : @"5",
-              @"server": @"127.0.0.1", @"server_port": @(kDPIPort)}
-        ],
+        @"outbounds": outs,
         @"route": @{
-            @"rules": @[@{@"domain_suffix": suffixes, @"outbound": @"dpi"}],
+            @"rules": @[rule],
             @"final": @"direct"
         }
     } mutableCopy];

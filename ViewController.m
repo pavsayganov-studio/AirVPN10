@@ -493,6 +493,12 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         if (wself.ytActive)
             [wself setStatus:@"⚠  DPI-движок остановился — выключите YouTube" color:rkOrange];
     };
+    // v0.14.2: the "S" strategies are run by sing-box (as root); the engine asks the app for it
+    self.dpi.coreBinary = ^NSString *{ return [wself.cores activeCorePath]; };
+    self.dpi.privStart  = ^(NSString *bin, NSString *cfg, NSString *log, void (^done)(int, NSString *)) {
+        [wself dpiPrivilegedStart:bin config:cfg log:log completion:done];
+    };
+    self.dpi.privStop   = ^(int pid) { [wself dpiPrivilegedStop:pid]; };
     [self ytUIRender];
 
     self.cachedIface = [self detectIface];
@@ -1282,6 +1288,46 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     return YES;
 }
 
+// ── Root sing-box for the DPI search (v0.14.2) ───────────────────────────────────────────────
+// The "S" strategies inject raw packets, so the search needs ONE root sing-box with an inbound per
+// candidate. DPIEngine is Foundation-only, so the password prompt is here, with the same AppleScript
+// recipe as ytLaunchCore. No `killall`: a VPN or YouTube session may be running its own core. The
+// process destroys itself after 10 minutes (only if that pid is still a sing-box) so an app that
+// quits mid-search cannot leave a root SOCKS listener behind.
+- (void)dpiPrivilegedStart:(NSString *)bin config:(NSString *)cfg log:(NSString *)log
+                completion:(void (^)(int pid, NSString *err))cb {
+    NSString *sh = [NSString stringWithFormat:
+        @"'%@' run -c '%@' > '%@' 2>&1 & P=$!;"
+        @"(sleep 600; case \"$(ps -p $P -o comm= 2>/dev/null)\" in *sing-box) kill $P;; esac) >/dev/null 2>&1 & echo $P",
+        [self esc:bin], [self esc:cfg], [self esc:log]];
+    NSString *scpt = [NSString stringWithFormat:
+        @"do shell script \"%@\" with administrator privileges "
+        @"with prompt \"Raketa: проверка стратегий обхода DPI\"",
+        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSDictionary *err = nil;
+        NSAppleEventDescriptor *res = [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
+        if (err) {
+            cb(0, [err[NSAppleScriptErrorNumber] integerValue] == -128 ? @"password prompt cancelled" : @"root start failed");
+            return;
+        }
+        int pid = [[res stringValue] intValue];
+        cb(pid, pid > 0 ? nil : @"no pid");
+    });
+}
+
+- (void)dpiPrivilegedStop:(int)pid {
+    if (pid <= 1) return;
+    NSString *sh = [NSString stringWithFormat:
+        @"case \"$(ps -p %d -o comm= 2>/dev/null)\" in *sing-box) kill %d;; esac", pid, pid];
+    NSString *scpt = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges",
+        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSDictionary *err = nil;
+        [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
+    });
+}
+
 - (void)ytSearchClicked {
     if (self.dpi.searching) { [self.dpi cancelSearch]; return; }
     if (self.ytBusy) return;
@@ -1357,8 +1403,15 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                action:NULL keyEquivalent:@""];
     NSMenu *sub = [[NSMenu alloc] initWithTitle:@""];
     sub.autoenablesItems = NO;
-    [sub addItem:[self ytMenuNote:@"Разрезание потока (M)"]];
+    NSString *grp = nil;                       // v0.14.2: S (sing-box) and M (ciadpi) are shown as two groups
     for (DPIResult *r in all) {
+        NSString *g = [r.label hasPrefix:@"S"] ? @"Подделка ClientHello — sing-box (S)"
+                                                : @"Разрезание потока — ciadpi (M)";
+        if (![g isEqualToString:grp]) {
+            grp = g;
+            if (sub.numberOfItems) [sub addItem:[NSMenuItem separatorItem]];
+            [sub addItem:[self ytMenuNote:g]];
+        }
         NSString *stat = r.total > 0 ? [NSString stringWithFormat:@"%ld/%ld", (long)r.ok, (long)r.total] : @"—";
         NSMenuItem *it = [[NSMenuItem alloc]
             initWithTitle:[NSString stringWithFormat:@"№%@    %@", r.label, stat]
@@ -1389,11 +1442,21 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 - (void)ytPick:(NSMenuItem *)it {
     NSString *s = it.representedObject;
     if (![s isKindOfClass:[NSString class]] || !s.length) return;
+    NSString *oldSel = self.dpi.selectedStrategy;
     self.dpi.selectedStrategy = s;
     NSString *lab = [self.dpi labelForStrategy:s];
     [self ytUIRender];
     if (!self.ytActive) {
         [self setStatus:[NSString stringWithFormat:@"Выбрана №%@ · нажмите «Смотреть YouTube»", lab] color:rkSub];
+        return;
+    }
+    // v0.14.2: an "S" strategy lives in sing-box's own config (route options), so going to or from
+    // one restarts sing-box: stop + start, two root prompts (cached by macOS for a few minutes).
+    if ([DPIEngine isSingBoxStrategy:oldSel] || [DPIEngine isSingBoxStrategy:s]) {
+        [self setStatus:@"Перезапуск YouTube под эту стратегию..." color:rkSub];
+        if ([self ytStopSync]) [self ytStart];
+        else self.dpi.selectedStrategy = oldSel;          // the prompt was cancelled: nothing changed
+        [self ytUIRender];
         return;
     }
     // Active: swap only ciadpi. sing-box keeps pointing at the same local port.

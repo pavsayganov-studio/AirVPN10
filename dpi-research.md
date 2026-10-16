@@ -1,4 +1,4 @@
-# DPI research digest — Raketa (state of 2026-10-10)
+# DPI research digest — Raketa (state of 2026-10-14)
 
 Purpose: everything learned about YouTube DPI bypass on macOS so that no later conversation
 has to research it again. Read this before any DPI work; research only what is newer than the
@@ -85,7 +85,7 @@ before quoting), **[inferred]** my reasoning.
   by literal IP, so no SNI to match) only when the system answer is unusable. No resolver
   bypasses an SNI filter. [summary] One 2026 Iran study found encrypted-DNS censorship ineffective.
 
-## 5. Next step, decided: path A, experiment first
+## 5. Path A (SUPERSEDED on 2026-10-14 by section 8: sing-box 1.14 already contains it)
 
 Gate: the v0.13.4 log's `wire verdict:`
 - `SNI filter` -> proceed (the filter reads the name; only fakes can help).
@@ -131,6 +131,8 @@ traffic; is not DPI bypass.
 - Suggest TUN, or touch VLESS/Reality/routing, unasked.
 - Claim a fake works on macOS before the lab table says so.
 - Treat summaries from corpus.lantern.io as primary sources (they are LLM-extracted).
+- Add more ciadpi stream-cutting lines or re-propose them: every one is recorded as non-working on
+  macOS (section 8). Build the `rkfake-lab.c` / `rkinject` helper of section 5: sing-box does it.
 
 ## 7. Refresh commands (when something may have changed)
 
@@ -140,3 +142,42 @@ grep -a -h -o -- '--filter-tcp=443 --hostlist="%LISTS%list-google.txt"[^^]*' /tm
 git clone --depth 1 https://github.com/hufrea/byedpi /tmp/byedpi && git -C /tmp/byedpi log -1 --format='%h %ad' --date=short
 git clone --depth 1 https://github.com/xvzc/SpoofDPI /tmp/spoofdpi   # internal/desync/tls.go, internal/packet/
 ```
+
+
+## 8. Update 2026-10-14 (v0.14.2): what is recorded as not working, and what replaces it
+
+- **Recorded as NOT working on macOS: every ciadpi stream-cutting strategy ("M").** **[measured]** 0 of 68
+  (v0.13.3 log, both controls 3/19 = the same as no bypass), the v0.13.4/0.13.5 candidates (10 lines, one
+  per mechanism) did not help either according to the person (no new log was sent with this sprint);
+  ciadpi has no fake packets on macOS (section 2). The M lines stay only as tripwires / manual choice.
+  Section 2's finding that the maintained zapret lists contain no plain cut for YouTube is the same fact.
+- **Upstream unchanged since 2026-10-10 [measured with `git ls-remote` on 2026-10-14]:** ByeDPI HEAD is
+  still `ba53229` (2026-03-26; the last tag v0.17.3 is `7efde1b` from 2025), SpoofDPI v1.5.4 has no commit
+  after its release. Nothing new to port from either.
+- **NEW [source: docs/configuration/route/rule_action.md, shared/tls.md and common/tlsspoof/*.go,
+  route/conn.go in SagerNet/sing-box v1.14.3]:** sing-box 1.14.0 added `tls_spoof` + `tls_spoof_method`
+  (route-options action) - "inject a forged TLS ClientHello carrying this SNI before the real one", Linux,
+  macOS and Windows, **root required** - and the pre-existing `tls_fragment` / `tls_record_fragment`
+  (mutually exclusive: `sing-box check` refuses both, **[measured]**). Methods on macOS: `wrong-sequence`
+  (default), `wrong-checksum`, `wrong-ack`, `wrong-md5`; `wrong-timestamp` is not available on macOS.
+  Implementation on macOS = exactly the lab of section 5: IPv4 raw socket with `IP_HDRINCL` (fields in host
+  byte order), the connection's sequence/ack read from the kernel's `net.inet.tcp.pcblist_n` (the
+  `xtcpcb_n` size is assumed 384 bytes for Darwin < 22 and 408 from Darwin 22), the fake sent on the first
+  Write of the real ClientHello. `ConnectionManager` wraps the dialed direct TCP connection: fragmentation
+  first, spoof outside it. So the YouTube traffic must go `direct` with the options - not through ciadpi.
+- **Candidates built from it (DPIEngine.m, labels S1-S8):** S1 fake www.google.com wrong-sequence
+  (~ zapret `fake` + `badseq`); S2 = S1 + TLS-record fragmentation; S3 = S1 + TCP fragmentation;
+  S4 wrong-md5 (~ `md5sig`); S5 wrong-checksum (~ `badsum`); S6 wrong-ack (~ `badack`); S7 S1 with the fake
+  name ya.ru (an allowed name for whitelist-style filters - **[inferred]**, a probe); S8 TCP fragmentation
+  only. `ts` fooling (the most common one in the zapret list) has no macOS method in sing-box. The
+  `seqovl`/`multisplit` family needs packet interception and stays out of reach.
+- **How they are tested:** the search starts ONE root sing-box (one password prompt) with a SOCKS inbound per
+  candidate, each with its own route-options rule, and runs the same probes / battery / success rule as for
+  ciadpi; afterwards the log gets a `sb log:` block with the spoof/error lines of that sing-box. In YouTube
+  mode an S strategy is one rule (`domain_suffix` + route-options) and traffic stays `direct`.
+- **Not known yet / risks:** whether TSPU accepts these fakes (the whole point of the experiment);
+  whether the `pcblist_n` offsets are right on macOS 10.13 (Darwin 17 - unverified; a failure shows as a
+  `tls_spoof` error line in the `sb log:` block and as failing S candidates, never as a silent success);
+  whether any S passes. Gate for the next step: read the `#S1..#S8` lines and the `sb log:` block of the
+  next `dpi_search.log`. All S fail with spoof errors -> the 10.13 offsets are the suspect; all S fail
+  without errors -> the fakes do not fool this filter, go to path B (needs the person's OK).
