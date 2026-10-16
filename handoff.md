@@ -693,11 +693,10 @@ project history around v0.9.7 iteration).
 - `dpi-research.md` is the digest of everything learned about DPI bypass (evidence labelled
   measured / source / summary / inferred); `project_custom_instructions.md` is the project's
   instruction text (the repo is the code source of truth: clone it, do not ask for a repomix).
-- **Next step (decided):** path A, experiment first - a standalone lab tool (`tools/rkfake-lab.c`,
-  root, raw socket) that injects fake ClientHellos before the real one and prints, per variant,
-  whether a ServerHello comes back; nothing touches ciadpi or the app until it shows a working
-  variant. Gate: the `wire verdict:` line of the v0.13.4 search log. Fallback path B (YouTube
-  through the VLESS outbound) only with the owner's explicit OK. Full spec: `dpi-research.md` section 5.
+- **Superseded (v0.14.2):** the planned lab tool (`tools/rkfake-lab.c`) was never written - sing-box 1.14
+  already contains the same raw injection (`tls_spoof`), and the S strategies use it (section 20,
+  `dpi-research.md` section 8). Fallback path B (YouTube through the VLESS outbound) stays: only with
+  the owner's explicit OK.
 
 
 ---
@@ -843,3 +842,24 @@ Full reasoning, sources and the candidate table: `dpi-research.md` section 8. Co
 - **Not verified on a Mac:** everything runtime - the root launch and its prompt text, the port wait, the
   raw injection on 10.13 and 12, whether any S passes. Verified off-device: the patch end to end, brackets,
   the differential clang check, the configs above.
+
+
+## 21. Repository hygiene audit (2026-10-14)
+
+- **`generate_icon.py` is NOT junk.** The `Generate AppIcon.icns` step of `build.yml` runs it
+  (cairosvg -> iconset -> iconutil); deleting it breaks the build. Left as it is.
+- **The tree has no junk.** Every tracked file is used by the build, the code or the docs (checked against
+  `build.yml`, `README.md` and `handoff.md`). A scan of every method / function / constant name in the
+  Objective-C sources for names referenced once or never found only a delegate callback and a property
+  setter - no dead code. Nothing was deleted from the tree.
+- **The junk was on GitHub:** 45 tags of the old auto-increment series (v1.0 ... v11.0, v9.1.3 ... - not
+  releases of this app; the 29 `v0.*` tags are the real ones) and Dependabot's branch
+  `dependabot/github_actions/actions-b2576794da` (two SHA bumps, taken over by v0.14.0 after checking both
+  against the upstream tags). They are remote state, so they are not part of any patch:
+  `python3 tools/cleanup_releases.py` (dry run), then `--apply`; `git push origin --delete <branch>`.
+- `.gitignore`: `repomix-output.xml` -> `repomix*` (the owner's snapshot is `repomix.md`; never commit it).
+- **`tools/objc_diffcheck.sh` was blind and is fixed:** it counted only `error:` lines, so a fatal error (a
+  header Linux lacks, e.g. CommonCrypto) gave "0 errors" for a file that never compiled, and a file that is new
+  in the commit crashed it. Now it counts `fatal error:` too, has stubs for `CommonCrypto/CommonDigest.h` and
+  `sys/sysctl.h`, and reports a new file's error classes for review instead of crashing. A deliberately
+  injected syntax error is found in a new file (the control used while fixing it).

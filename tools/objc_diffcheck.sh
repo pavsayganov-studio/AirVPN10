@@ -80,6 +80,25 @@ dispatch_semaphore_t dispatch_semaphore_create(long v);
 long dispatch_semaphore_wait(dispatch_semaphore_t s, dispatch_time_t t); long dispatch_semaphore_signal(dispatch_semaphore_t s);
 H
 
+# v0.14.2: Apple headers Linux lacks. Without them a file that includes them never compiled and the
+# check below reported "0 errors" (see handoff.md section 21).
+mkdir -p "$S/CommonCrypto" "$S/sys"
+cat > "$S/CommonCrypto/CommonDigest.h" <<'H'
+#pragma once
+#include <stdint.h>
+typedef uint32_t CC_LONG;
+#define CC_SHA256_DIGEST_LENGTH 32
+typedef struct { uint32_t x[64]; } CC_SHA256_CTX;
+int CC_SHA256_Init(CC_SHA256_CTX *c);
+int CC_SHA256_Update(CC_SHA256_CTX *c, const void *d, CC_LONG l);
+int CC_SHA256_Final(unsigned char *m, CC_SHA256_CTX *c);
+H
+cat > "$S/sys/sysctl.h" <<'H'
+#pragma once
+#include <stddef.h>
+int sysctlbyname(const char *n, void *o, size_t *ol, void *np, size_t nl);
+H
+
 prep() {  # $1 = out dir, $2 = "wt" or a git ref
   mkdir -p "$1"
   local names
@@ -111,10 +130,15 @@ cmd = ["clang", "-x", "objective-c", "-fsyntax-only", "-fblocks", "-fobjc-except
 out = subprocess.run(cmd, capture_output=True, text=True, cwd=d).stderr   # cwd = temp dir: no stray .d files in the repo
 c = collections.Counter()
 for line in out.splitlines():
-    r = re.match(r"^[^:]+:\d+:\d+: error: (.*)$", line)
+    r = re.match(r"^[^:]+:\d+:\d+: (?:fatal )?error: (.*)$", line)   # a fatal error (missing header) counts too
     if r: c[r.group(1)] += 1
 print(json.dumps(c))
 PY
+if [ ! -f "$TMP/base/$FILE" ]; then   # a file this commit adds: no baseline to diff against
+  echo "NEW FILE $FILE (not in $BASE): its error classes are listed for review; GNUstep platform noise is expected"
+  python3 "$TMP/chk.py" "$TMP/wt" "$FILE" "$S" "$GCCINC" | python3 -c 'import json,sys; [print("%5d  %s" % (v, k)) for k, v in sorted(json.load(sys.stdin).items())]'
+  exit 0
+fi
 base_json="$(python3 "$TMP/chk.py" "$TMP/base" "$FILE" "$S" "$GCCINC")"
 wt_json="$(python3 "$TMP/chk.py" "$TMP/wt" "$FILE" "$S" "$GCCINC")"
 
