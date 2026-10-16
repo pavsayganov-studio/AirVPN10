@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.14.0
+**Current version:** v0.14.1
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -331,17 +331,18 @@ their own colours; glyph icons (↻ ▾ and the drawn paper plane) take the pale
   connect toggle is a custom 36pt-tall capsule (`cornerRadius = height/2`)
   since it's a primary action, not a standard push button
 
-**Window layout (popover, `kW=300`, `kH=373`, top-down; the map at the top of
+**Window layout (popover, `kW=300`, `kH=377`, top-down; the map at the top of
 `ViewController.m` is the source of truth):**
 ```
-0–32     header: 🚀 Raketa (left) · version (right)
+0–32     header: 🚀 Raketa (left) · version (right), no band since v0.14.1
 46–95    ПОДПИСКА: label, [＋ Добавить ключи (224pt)] [↻ (28pt square)]
 113–160  СЕРВЕР: label, dropdown of parsed outbound tags
 174–188  status row: colored dot + status text
 202–238  connect toggle: full-width capsule (○ ВЫКЛ / ● ВКЛ)
 252–301  YOUTUBE (v0.12.0): label + strategy caption, then
          [🔍 28pt] [▶ Смотреть YouTube 188pt] [▾ 28pt]
-317–373  bottom bar: [Логи] ··· credit line ··· [paper plane][Выход]
+317–377  bottom dock (rounded card 280×52, 10pt side / 8pt bottom margin, v0.14.1):
+         [Логи][Ядра] ··· credit line ··· [paper plane][Выход]
 ```
 
 The Telegram settings panel is **not** a big always-visible button anymore
@@ -788,3 +789,30 @@ sing-box and `ciadpi`; there is no Xray or Happ inside it (INCY and Happ are the
 - **Backlog, not done on purpose:** Xray-core as a second engine for XHTTP servers (needs its own config
   writer, ports and a patched-Go build for 10.13; decide after seeing which `type=`/`encryption=` the
   INCY-working link has); trojan/ss/hysteria2/vmess links (only vless:// is parsed from link lists).
+
+
+## 19. Soft UI (v0.14.1)
+
+Brief: "a bit softer and more modern, smooth the corners". Shapes only - palette, typography, the
+credit line and every action are unchanged; CPU cost is zero (no shadows, blur, timers or animation).
+
+- **Radii in one place**: `kRadCtl` (14), `kRadCard` (14) and `RKRound(layer, r)`. Buttons are capsules
+  (`styleBtn:` and `ytIconBtn:` use height/2, so a 28x28 icon button is a circle); the connect button
+  keeps its 18pt capsule. On 10.15+ `RKRound` sets `cornerCurve = continuous` by KVC behind a
+  `respondsToSelector:` guard (the property does not exist on 10.13/10.14).
+- **Bottom dock**: the full-width flat bar became a rounded card, `NSMakeRect(10, 8, 280, 52)`,
+  `kH` 373 -> 377 (top-down map unchanged: dock = 317..377 with an 8pt bottom margin; everything above is
+  top-anchored through `rx:top:`). Dock-relative frames (dock is 280 wide, 52 high): buttons y=23..44
+  (21pt high, 8pt top padding), credit y=4..18 (5pt above the buttons' bottom edge); x: Логи 10..68,
+  Ядра 74..126, plane 166..198, Выход 202..270 (10pt right margin). No overlap: the free run between
+  Ядра and the plane is 40pt, the plane-to-Выход gap is 4pt as before.
+- **Server dropdown**: `NSPopUpButton` made borderless inside a 26pt capsule box (`rkField`, 0.5pt
+  `rkBorder`); `arrowPosition` is set explicitly. `rkRecolor:` walks subviews, so the box recolours on a
+  theme change like everything else.
+- **Header**: no band (`rkBG` instead of `rkSurface`). Section labels in sentence case.
+- **Not changed**: the Telegram panel is still a flat band (its inner coordinates are absolute; softening
+  it means re-laying the whole panel - a separate pass if wanted).
+- **Not verified on a Mac**: how a borderless `NSPopUpButton` draws its arrows on 10.13 (expected: title
+  plus the double-chevron; if it shows none, the field still opens the menu - add a chevron then), the
+  look of the dock and the capsules at 1x/2x in both themes. Verified off-device: patch applied in a
+  scratch clone, brackets, differential clang check.

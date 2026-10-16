@@ -5,7 +5,7 @@ compiled via raw `clang` in GitHub Actions). Wraps sing-box v1.14.3 with VLESS+R
 A second mode, "Смотреть YouTube", sends only YouTube domains through a user-level `ciadpi`
 (DPI bypass) instead of the VPN. Repo: https://github.com/pavsayganov-studio/AirVPN10 (public).
 Full history, architecture and design system live in `handoff.md`; everything learned about DPI
-bypass lives in `dpi-research.md`. Current state: v0.14.0 — the DPI search works and logs where
+bypass lives in `dpi-research.md`. Current state: v0.14.1 — the DPI search works and logs where
 the filter acts, but no strategy that a macOS `ciadpi` can run beats the current Russian filter;
 the UI got a vector rocket in the menu bar (template image), the same rocket as the app icon (on the
 macOS icon grid) and a drawn paper plane on the Telegram button (handoff §17, design.md §6).

@@ -43,13 +43,29 @@ static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 
 // 265  –273   gap (8pt)
 // 273  –301   [🔍 (28pt)] [▶ Смотреть YouTube (188pt)] [▾ (28pt)]  h=28
 // 301  –317   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
-// 317  –373   bottom bar (56pt): Логи | credit | ✈ | Выход
+// 317  –377   bottom dock (v0.14.1): a rounded card 280×52, 10pt side / 8pt bottom margin;
+//             inside, bar-relative: buttons y=23..44 (21pt), credit y=4..18
+//             Логи | Ядра | credit | ✈ | Выход
 static const CGFloat kW      = 300.0;
-static const CGFloat kH      = 373.0;
+static const CGFloat kH      = 377.0;   // v0.14.1: +4 for the floating dock (was 373)
 static const CGFloat kHTG    = 170.0;
 static const CGFloat kPAD    = 20.0;
 // Width of "Добавить ключи" button: kW - kPAD*2 - 8(gap) - 28(refresh) = 224
 static const CGFloat kAddW   = 224.0;
+
+// ── Soft corners (v0.14.1) ─────────────────────────────────────────────────────
+// One place for the radii so the whole UI stays consistent. Controls are capsules
+// (radius = height / 2); the bottom dock is a card.
+static const CGFloat kRadCtl  = 14.0;   // 28pt controls: add keys, refresh, YouTube row
+static const CGFloat kRadCard = 14.0;   // the bottom dock
+// On macOS 10.15+ the corner curve becomes the continuous ("squircle") one system UI uses.
+// KVC behind a respondsToSelector guard: cornerCurve does not exist on 10.13/10.14 and the
+// symbol must not be linked against there.
+static void RKRound(CALayer *l, CGFloat r) {
+    l.cornerRadius = r;
+    if ([l respondsToSelector:NSSelectorFromString(@"setCornerCurve:")])
+        [l setValue:@"continuous" forKey:@"cornerCurve"];
+}
 // Width of refresh square button
 static const CGFloat kRefW   = 28.0;
 
@@ -246,7 +262,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // ── Header (0–32) ─────────────────────────────────────────────────────────
     NSView *hdr = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-32, kW, 32)];
     hdr.wantsLayer = YES;
-    hdr.layer.backgroundColor = rkSurface.CGColor;
+    hdr.layer.backgroundColor = rkBG.CGColor;
     [root addSubview:hdr];
     [hdr addSubview:[self lbl:@"🚀  Raketa"
                           font:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
@@ -257,14 +273,13 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                            color:rkSub frame:NSMakeRect(kW-50, 8, 36, 16)];
     ver.alignment = NSTextAlignmentRight;
     [hdr addSubview:ver];
-    // No hairline separator here by design (v0.11.0): the header keeps its
-    // own surface color (rkSurface vs rkBG below), which reads as a distinct
-    // band without needing a drawn line. Every other separator in this
+    // No hairline separator here by design (v0.11.0). Since v0.14.1 the header has no band
+    // either: the title sits on the window colour. Every other separator in this
     // method is gone for the same reason — sections are now told apart by
     // spacing alone, per the redesign brief.
 
     // ── ПОДПИСКА (46–95) — one row: wide add button + square refresh ──────────
-    [root addSubview:[self sectionLbl:@"ПОДПИСКА" top:46]];
+    [root addSubview:[self sectionLbl:@"Подписка" top:46]];
     // v0.14.0: traffic / expiry the panel reports (Subscription-Userinfo), right-aligned on the label row
     self.subInfoLabel = [self lbl:[[NSUserDefaults standardUserDefaults] stringForKey:kSubInfoKey] ?: @""
                              font:[NSFont systemFontOfSize:10] color:rkSub
@@ -292,7 +307,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
             }];
     self.addKeysBtn.bordered    = NO;
     self.addKeysBtn.wantsLayer  = YES;
-    self.addKeysBtn.layer.cornerRadius    = 6;
+    RKRound(self.addKeysBtn.layer, kRadCtl);
     self.addKeysBtn.layer.borderWidth     = 0.5;
     self.addKeysBtn.layer.borderColor     = rkBorder.CGColor;
     self.addKeysBtn.layer.backgroundColor = rkField.CGColor;
@@ -323,7 +338,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     self.refreshIconBtn.bordered    = NO;
     self.refreshIconBtn.alignment   = NSTextAlignmentCenter;
     self.refreshIconBtn.wantsLayer  = YES;
-    self.refreshIconBtn.layer.cornerRadius    = 6;
+    RKRound(self.refreshIconBtn.layer, kRadCtl);
     self.refreshIconBtn.layer.borderWidth     = 0.5;
     self.refreshIconBtn.layer.borderColor     = rkBorder.CGColor;
     self.refreshIconBtn.layer.backgroundColor = rkBtn.CGColor;
@@ -333,15 +348,26 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [root addSubview:self.refreshIconBtn];
 
     // ── СЕРВЕР (113–160) ───────────────────────────────────────────────────────
-    [root addSubview:[self sectionLbl:@"СЕРВЕР" top:113]];
+    [root addSubview:[self sectionLbl:@"Сервер" top:113]];
+    // v0.14.1: the system popup bezel is a square-ish rounded rect that cannot be softened, so the
+    // popup is borderless (title + arrows only) and sits in a capsule "field" drawn like the buttons.
+    NSView *ddBox = [[NSView alloc] initWithFrame:[self rx:kPAD top:134 w:kW-kPAD*2 h:26]];
+    ddBox.wantsLayer = YES;
+    RKRound(ddBox.layer, 13);
+    ddBox.layer.borderWidth     = 0.5;
+    ddBox.layer.borderColor     = rkBorder.CGColor;
+    ddBox.layer.backgroundColor = rkField.CGColor;
+    [root addSubview:ddBox];
     self.dropdown = [[NSPopUpButton alloc]
-                     initWithFrame:[self rx:kPAD top:134 w:kW-kPAD*2 h:26] pullsDown:NO];
+                     initWithFrame:NSMakeRect(8, 0, ddBox.frame.size.width - 16, 26) pullsDown:NO];
+    self.dropdown.bordered = NO;
+    [(NSPopUpButtonCell *)self.dropdown.cell setArrowPosition:NSPopUpArrowAtCenter];
     [self.dropdown addItemWithTitle:@"— серверы не загружены —"];
     self.dropdown.enabled = NO;
     self.dropdown.font    = [NSFont systemFontOfSize:13];
     self.dropdown.target  = self;
     self.dropdown.action  = @selector(serverChanged);
-    [root addSubview:self.dropdown];
+    [ddBox addSubview:self.dropdown];
 
     // ── Status (174–188) ──────────────────────────────────────────────────────
     CGFloat dotY = kH - 174 - 7;
@@ -366,7 +392,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     self.connectBtn.title    = @"";
     self.connectBtn.bordered = NO;
     self.connectBtn.wantsLayer = YES;
-    self.connectBtn.layer.cornerRadius    = 18;
+    RKRound(self.connectBtn.layer, 18);
     // Thinner border (was 1.0) — part of the "same colors, lighter touch"
     // refresh; the icon-refresh button already used 0.5 and looked right,
     // so the connect button now matches it exactly.
@@ -381,27 +407,29 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // ── YouTube / DPI row (252–301) — v0.12.0 ────────────────────────────────
     [self buildYouTubeRow:root];
 
-    // ── Bottom bar (317–373) — 56pt: Логи | credit | ✈ | Выход ──────────────
-    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kW, 56)];
+    // ── Bottom dock (317–377) — v0.14.1: a rounded card, 280×52 at (10, 8): Логи | Ядра | credit | ✈ | Выход ──
+    // Child frames are dock-relative; x = absolute x - 10, so the buttons keep their old absolute x.
+    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(10, 8, kW-20, 52)];
     bar.wantsLayer = YES;
+    RKRound(bar.layer, kRadCard);
     bar.layer.backgroundColor = rkSurface.CGColor;
     [root addSubview:bar];
 
     NSButton *logBtn = [self btn:@"Логи"
-                           frame:NSMakeRect(kPAD, 26, 58, 21)
+                           frame:NSMakeRect(10, 23, 58, 21)
                           action:@selector(openLogs) primary:NO];
     [self styleBtn:logBtn size:11 primary:NO];
     [bar addSubview:logBtn];
 
     // v0.14.0: core updater menu (active sing-box version, check for update, back to the bundled core)
     self.coresBtn = [self btn:@"Ядра"
-                        frame:NSMakeRect(kPAD+58+6, 26, 52, 21)
+                        frame:NSMakeRect(10+58+6, 23, 52, 21)
                        action:@selector(coresMenu) primary:NO];
     [self styleBtn:self.coresBtn size:11 primary:NO];
     [bar addSubview:self.coresBtn];
 
     NSButton *quitBtn = [self btn:@"Выход"
-                            frame:NSMakeRect(kW-kPAD-68, 26, 68, 21)
+                            frame:NSMakeRect(kW-20-10-68, 23, 68, 21)
                            action:@selector(quit) primary:NO];
     [self styleBtn:quitBtn size:11 primary:NO];
     [bar addSubview:quitBtn];
@@ -409,7 +437,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // Paper-plane Telegram icon button — 32×21pt, left of Выход with 4pt gap (v0.13.5: a drawn
     // paper plane instead of the ✈ airplane character, which read as "airplane mode")
     self.tgIconBtn = [[NSButton alloc]
-                      initWithFrame:NSMakeRect(kW-kPAD-68-4-32, 26, 32, 21)];
+                      initWithFrame:NSMakeRect(kW-20-10-68-4-32, 23, 32, 21)];
     self.tgIconBtn.title      = @"";
     [self styleBtn:self.tgIconBtn size:14 primary:NO];
     self.tgIconBtn.image         = RKPaperPlaneImage(rkText);
@@ -420,7 +448,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [bar addSubview:self.tgIconBtn];
 
     // Credit — 9pt Mini, tracked, centred
-    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 4, kW, 14)];
+    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 4, kW-20, 14)];
     credit.bezeled = NO; credit.drawsBackground = NO;
     credit.editable = NO; credit.selectable = NO;
     credit.alignment = NSTextAlignmentCenter;
@@ -971,7 +999,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         NSParagraphStyleAttributeName:  ps }];
     b.bordered   = NO;
     b.wantsLayer = YES;
-    b.layer.cornerRadius    = 5;
+    RKRound(b.layer, b.frame.size.height / 2.0);      // v0.14.1: capsule, whatever the height
     b.layer.borderWidth     = 0.5;
     b.layer.borderColor     = (p ? rkAccent : rkBorder).CGColor;
     b.layer.backgroundColor = (p ? rkTintAccent : rkBtn).CGColor;
@@ -1037,7 +1065,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [self ytSetTitle:glyph on:b size:15 color:rkSub];
     b.bordered   = NO;
     b.wantsLayer = YES;
-    b.layer.cornerRadius    = 6;
+    RKRound(b.layer, r.size.height / 2.0);            // v0.14.1: capsule (a circle for the square icons)
     b.layer.borderWidth     = 0.5;
     b.layer.borderColor     = rkBorder.CGColor;
     b.layer.backgroundColor = rkBtn.CGColor;
@@ -1058,7 +1086,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
 // Row (273–301): [🔍 (28)] [▶ Смотреть YouTube (188)] [▾ (28)]
 - (void)buildYouTubeRow:(NSView *)root {
-    [root addSubview:[self sectionLbl:@"YOUTUBE" top:252]];
+    [root addSubview:[self sectionLbl:@"YouTube" top:252]];
     self.ytCaption = [self lbl:@"" font:[NSFont systemFontOfSize:11] color:rkSub
                          frame:[self rx:kW-kPAD-160 top:252 w:160 h:13]];
     self.ytCaption.alignment = NSTextAlignmentRight;
@@ -1075,7 +1103,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     self.ytBtn = [[NSButton alloc] initWithFrame:[self rx:midX top:273 w:midW h:28]];
     self.ytBtn.bordered   = NO;
     self.ytBtn.wantsLayer = YES;
-    self.ytBtn.layer.cornerRadius = 6;
+    RKRound(self.ytBtn.layer, kRadCtl);
     self.ytBtn.layer.borderWidth  = 0.5;
     self.ytBtn.target = self;
     self.ytBtn.action = @selector(ytToggle);
