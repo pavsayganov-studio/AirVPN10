@@ -153,12 +153,14 @@ jobs:
           mkdir -p Raketa.app/Contents/Resources/dpi
           cp dpi/youtube.sites dpi/googlevideo.sites \
              Raketa.app/Contents/Resources/dpi/
+          cp rkhelper.sh Raketa.app/Contents/Resources/rkhelper.sh
           clang -fobjc-arc \
             -framework Cocoa \
             -framework SystemConfiguration \
             -arch x86_64 -mmacosx-version-min=10.13 \
             -o Raketa.app/Contents/MacOS/Raketa \
-            main.m AppDelegate.m ViewController.m DPIEngine.m CoreUpdater.m RKSubscription.m
+            main.m AppDelegate.m ViewController.m DPIEngine.m CoreUpdater.m RKSubscription.m \
+            RKRoot.m MaintenanceEngine.m
           codesign --force --deep -s - Raketa.app
 
       # Fail the build, not the user's Mac: the whole point of this project is

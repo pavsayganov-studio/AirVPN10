@@ -167,6 +167,12 @@ static NSImage *RKRocketGlyph(void) {
                        enabled:(vc.youtubeAvailable && !vpn && !busy)
                          state:(yt ? NSOnState : NSOffState)]];
     [m addItem:[NSMenuItem separatorItem]];
+    // v0.15.0: the same action as the «Ускориться» button; no password involved, so never disabled.
+    [m addItem:[self quickItem:@"Ускориться" action:@selector(quickSpeed) enabled:YES state:NSOffState]];
+    if (vc.animationsTweaked)
+        [m addItem:[self quickItem:@"Вернуть анимации macOS" action:@selector(quickRestoreAnim)
+                           enabled:YES state:NSOffState]];
+    [m addItem:[NSMenuItem separatorItem]];
     [m addItem:[self quickItem:@"Выйти" action:@selector(quickQuit) enabled:YES state:NSOffState]];
 
     // Attach, click, detach: the documented way to show a menu for a status
@@ -181,6 +187,8 @@ static NSImage *RKRocketGlyph(void) {
 }
 - (void)quickDisconnect { [self.vc quickDisconnectVPN]; }
 - (void)quickYouTube    { [self.vc quickToggleYouTube]; }
+- (void)quickSpeed      { [self.vc quickSpeedUp]; }
+- (void)quickRestoreAnim { [self.vc quickRestoreAnimations]; }
 - (void)quickQuit       { [self.vc quickQuit]; }
 
 @end

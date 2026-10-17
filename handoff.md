@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.14.2
+**Current version:** v0.15.0
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -40,6 +40,8 @@ architecture uses:
 - One **AppleScript `do shell script ... with administrator privileges`**
   call per operation (start / stop / force-off), never split into multiple
   privileged calls — this is what prevents the "double password" bug.
+  **Since v0.15.0 the prompt itself is asked once per app session** by a root session helper (§22); the
+  one-call-per-operation recipes below are kept as the fallback when the helper cannot be used.
 
 ### Process lifecycle
 - `startVPN`: kills any stray `sing-box`, sets system proxy via
@@ -331,7 +333,7 @@ their own colours; glyph icons (↻ ▾ and the drawn paper plane) take the pale
   connect toggle is a custom 36pt-tall capsule (`cornerRadius = height/2`)
   since it's a primary action, not a standard push button
 
-**Window layout (popover, `kW=300`, `kH=377`, top-down; the map at the top of
+**Window layout (popover, `kW=300`, `kH=419`, top-down; the map at the top of
 `ViewController.m` is the source of truth):**
 ```
 0–32     header: 🚀 Raketa (left) · version (right), no band since v0.14.1
@@ -339,9 +341,10 @@ their own colours; glyph icons (↻ ▾ and the drawn paper plane) take the pale
 113–160  СЕРВЕР: label, dropdown of parsed outbound tags
 174–188  status row: colored dot + status text
 202–238  connect toggle: full-width capsule (○ ВЫКЛ / ● ВКЛ)
-252–301  YOUTUBE (v0.12.0): label + strategy caption, then
+252–280  «✦ Ускориться» (v0.15.0): full-width capsule, h=28, no label
+294–343  YOUTUBE (v0.12.0): label + strategy caption (294), then (315)
          [🔍 28pt] [▶ Смотреть YouTube 188pt] [▾ 28pt]
-317–377  bottom dock (rounded card 280×52, 10pt side / 8pt bottom margin, v0.14.1):
+359–419  bottom dock (rounded card 280×52, 10pt side / 8pt bottom margin, v0.14.1):
          [Логи][Ядра] ··· credit line ··· [paper plane][Выход]
 ```
 
@@ -863,3 +866,79 @@ Full reasoning, sources and the candidate table: `dpi-research.md` section 8. Co
   in the commit crashed it. Now it counts `fatal error:` too, has stubs for `CommonCrypto/CommonDigest.h` and
   `sys/sysctl.h`, and reports a new file's error classes for review instead of crashing. A deliberately
   injected syntax error is found in a new file (the control used while fixing it).
+
+
+## 22. «Ускориться» and one password per session (v0.15.0)
+
+Two asks of the owner, one release. Files: `RKRoot.m/.h`, `rkhelper.sh`, `MaintenanceEngine.m/.h` (new);
+`ViewController.m`, `AppDelegate.m`, `build.yml` (edited). `build.yml` compiles the two new `.m` files and
+copies `rkhelper.sh` into `Contents/Resources`.
+
+### 22.1 One password per session
+
+- **Before:** every privileged step (`startVPN`, `stopVPN`, `forceProxyOff`, `ytLaunchCore`, the DPI search
+  start/stop) was its own `do shell script ... with administrator privileges`, so a switch asked for the
+  password each time (VPN -> YouTube asked twice: stop, then start).
+- **Now:** all six steps go through `-rootRun:legacy:prompt:out:cancelled:`. It first asks `RKRoot` to run the
+  step's *verb*; `RKRoot` starts the helper on the first call (ONE prompt: "Raketa: доступ к сети на время
+  работы (пароль — один раз)") and later calls are lines on a FIFO. If `RKRoot` answers "unavailable", the same
+  step runs with the unchanged v0.14.2 shell recipe and its own prompt. Worst case = v0.14.2 behaviour.
+- **Helper (`rkhelper.sh`, bash 3.2, root):** started by one privileged script that, as root, creates
+  `/var/run/raketa.<uid>.<apppid>/` (root-owned 0755), writes the helper there (from base64, so the app
+  bundle cannot swap it afterwards), makes two FIFOs `cmd` / `ack` owned by the person (0600) and starts the
+  helper detached. Both sides open the FIFOs `O_RDWR` (never blocks, never EOF). Protocol: one TAB-separated
+  line per request, one `OK<TAB>value` / `ERR<TAB>reason` line back. Verbs, and nothing else:
+  `core-start IFACE MPORT SPORT BIN CFG LOG` (= the old killall + sleep 0.3 + three `networksetup` + launch,
+  returns the pid), `core-stop IFACE`, `proxy-off IFACE`, `search-start BIN CFG LOG` (old recipe, no
+  `killall`, 10-minute self-destruct), `search-stop PID`, `quit`.
+- **Argument checks (robustness, not a security boundary):** no shell metacharacters or `..`; ports 1-65535;
+  `BIN` must be a regular executable named `sing-box` inside the app's Resources or the support dir; `CFG` and
+  `LOG` inside the support dir, no symlinks; the log is recreated with `noclobber` (O_EXCL). A refused step
+  (`ERR`) falls back to the legacy prompt for that one step; the session stays.
+- **Lifetime, no polling:** the helper blocks in `read -t 120` on the FIFO; the 120 s wake-ups are builtins
+  only (`kill -0 $APPPID`) and exist to notice a dead app. `quit` (sent by `onTerminate:` after the stop) or a
+  dead app ends it, and it removes its directory. A reply that does not arrive in 12 s closes the session and
+  `RKRoot` stays on the legacy path until relaunch (`_broken`).
+- **Trade-off, said plainly:** it is the same trade as sudo's cached credentials. While the session lasts,
+  a program already running as the person can send those verbs without a password, and `BIN`/`CFG` live in a
+  user-writable folder, so that program could make root start a sing-box of its choosing. The password prompt
+  is not a boundary against such a program any more once the session is open. Turn the session off with
+  `defaults write com.samurai.raketa RKSessionAuth -bool NO` (then every step prompts, as before).
+  A permanent helper (LaunchDaemon, SMJobBless) was rejected: SMJobBless needs a Developer-ID signature (the
+  app is ad-hoc signed) and a permanent root service is a bigger and longer-lived hole than a session.
+- **Side fix:** `startVPN` no longer calls `forceProxyOff` after a *cancelled* prompt (it asked for the
+  password a second time); `ytLaunchCore` already behaved that way.
+- **Config and routing untouched:** the sing-box config, the proxy recipe strings and the Telegram ports are the
+  same text as in v0.14.2; only how root is obtained changed. This updates the §5/§17 remark that the VPN
+  proxy path is "textually unchanged": the *launcher* of that path changed, its inputs did not.
+
+### 22.2 «Ускориться»
+
+- **UI:** `✦  Ускориться`, full-width capsule above the YouTube row (`kSpeedTop=252`, YouTube section moved to
+  `kYTTop=294`, `kH` 377 -> 419; layout map at the top of `ViewController.m` and design.md updated). Status
+  report in the status line; a one-time `NSAlert` consent (`RKSpeedConsent`) before the first file move.
+  Right-click menu: «Ускориться»; «Вернуть анимации macOS» appears while the animation settings are ours.
+- **Engine (`MaintenanceEngine`, Foundation only, no root, no timer):** runs on a `QOS_CLASS_BACKGROUND` queue
+  (the system throttles its disk I/O - matters on an HDD). (1) Regular, non-symlink files older than 30 days
+  in `~/Library/Caches` and 90 days in `~/Library/Logs` are *moved* (rename) into
+  `~/Library/Application Support/Raketa/MacMaintenance-<stamp>/{OldUserCaches,OldUserLogs}`, then that one
+  folder goes to the Trash with `trashItemAtURL:` (works without Full Disk Access on 10.14+; a direct move
+  into `~/.Trash` does not). If the Trash refuses, the files stay in that folder and the status says so.
+  (2) The Trash paths we created are recorded (`RKTrashRuns`); a week later only those are deleted - nothing
+  else in the Trash is read or touched. (3) Animations via `CFPreferences` (global domain, Finder, Dock; the
+  list of the document's `APPLY_UI_TWEAKS`); the *original* values are saved once (`RKAnimBackup`) so
+  "Вернуть" restores exactly what the person had; the Dock is restarted only if one of its keys changed; the
+  Finder is not restarted (it would close its windows) and takes the value at its next launch.
+- **From `macOS_maintenance_idempotent.md` - taken:** old user caches and logs -> Trash (move, never delete),
+  the Trash folder named `MacMaintenance-<stamp>`, deleted only as our own folder, the animation tweaks with
+  a revert, one-time explicit consent. **Not taken, with reasons:** `periodic daily weekly monthly` (the weekly
+  `locate.updatedb` hammers exactly the old HDDs this is for; the benefit is log rotation macOS does anyway;
+  it would also need root), `purge` and DNS flush (no lasting speed-up; `purge` makes the next minute
+  slower), disabling Spotlight / launch agents / Google Updater (not safe to decide for every Mac), system
+  `/Library` caches (root, riskier), a contract-word prompt (replaced by the one-time dialog + Trash).
+  Because nothing in it needs root, the button never asks for a password.
+- **Not verified on a Mac (everything runtime):** the helper start through `do shell script` on 10.13 and
+  12, FIFO O_RDWR + `select` on Darwin, `base64 -D`, `read -t` on bash 3.2, `trashItemAtURL:` of the staging
+  folder, `CFPreferences` writes for the Dock / global domain and the Dock restart, the layout (the arithmetic
+  is in the map). Verified off-device: the helper's protocol and argument checks against stub tools (all
+  verbs, refusals, symlink log, app-death exit), brackets, the differential clang check, the patch end to end.

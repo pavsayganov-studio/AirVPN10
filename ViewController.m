@@ -3,6 +3,8 @@
 #import "DPIEngine.h"
 #import "CoreUpdater.h"
 #import "RKSubscription.h"
+#import "RKRoot.h"
+#import "MaintenanceEngine.h"
 
 // ── Ports ─────────────────────────────────────────────────────────────────────
 static const NSInteger kSOCKSPort = 10808;
@@ -39,15 +41,19 @@ static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 
 // 188  –202   gap (14pt)
 // 202  –238   connect button (36pt, corner radius 18)
 // 238  –252   gap (14pt)
-// 252  –265   YOUTUBE label (13pt) + strategy caption on the right (v0.12.0)
-// 265  –273   gap (8pt)
-// 273  –301   [🔍 (28pt)] [▶ Смотреть YouTube (188pt)] [▾ (28pt)]  h=28
-// 301  –317   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
-// 317  –377   bottom dock (v0.14.1): a rounded card 280×52, 10pt side / 8pt bottom margin;
+// 252  –280   [✦ Ускориться] full width, h=28 (v0.15.0; no label, like the connect button)
+// 280  –294   gap (14pt)
+// 294  –307   YOUTUBE label (13pt) + strategy caption on the right (v0.12.0)
+// 307  –315   gap (8pt)
+// 315  –343   [🔍 (28pt)] [▶ Смотреть YouTube (188pt)] [▾ (28pt)]  h=28
+// 343  –359   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
+// 359  –419   bottom dock (v0.14.1): a rounded card 280×52, 10pt side / 8pt bottom margin;
 //             inside, bar-relative: buttons y=23..44 (21pt), credit y=4..18
 //             Логи | Ядра | credit | ✈ | Выход
 static const CGFloat kW      = 300.0;
-static const CGFloat kH      = 377.0;   // v0.14.1: +4 for the floating dock (was 373)
+static const CGFloat kH      = 419.0;   // v0.15.0: +42 for the «Ускориться» row (28pt + 14pt gap); was 377
+static const CGFloat kSpeedTop = 252.0; // v0.15.0: top of the «Ускориться» button
+static const CGFloat kYTTop    = 294.0; // v0.15.0: top of the YouTube section label (was 252); its row is kYTTop + 21
 static const CGFloat kHTG    = 170.0;
 static const CGFloat kPAD    = 20.0;
 // Width of "Добавить ключи" button: kW - kPAD*2 - 8(gap) - 28(refresh) = 224
@@ -229,6 +235,11 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 @property (assign) BOOL            ytActive;      // YouTube mode running
 @property (assign) BOOL            ytBusy;        // start/stop/switch in flight
 @property (assign) BOOL            ytStartAfterSearch;
+// ── One password per session + «Ускориться» (v0.15.0) ──
+@property (strong) RKRoot            *root;       // root session helper: one password per app session
+@property (strong) MaintenanceEngine *tune;       // created on first use (see -tuner)
+@property (strong) NSButton          *speedBtn;   // ✦ Ускориться
+@property (assign) BOOL               speedBusy;
 // ── Cores & subscription (v0.14.0) ──
 @property (strong) CoreUpdater    *cores;          // which sing-box to run, and the in-app updater
 @property (strong) NSButton       *coresBtn;       // «Ядра» — updater menu
@@ -405,9 +416,10 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [root addSubview:self.connectBtn];
 
     // ── YouTube / DPI row (252–301) — v0.12.0 ────────────────────────────────
+    [self buildSpeedRow:root];
     [self buildYouTubeRow:root];
 
-    // ── Bottom dock (317–377) — v0.14.1: a rounded card, 280×52 at (10, 8): Логи | Ядра | credit | ✈ | Выход ──
+    // ── Bottom dock (359–419) — v0.14.1: a rounded card, 280×52 at (10, 8): Логи | Ядра | credit | ✈ | Выход ──
     // Child frames are dock-relative; x = absolute x - 10, so the buttons keep their old absolute x.
     NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(10, 8, kW-20, 52)];
     bar.wantsLayer = YES;
@@ -480,6 +492,11 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // v0.14.0: the sing-box to run is chosen here: the bundled one, or the one the in-app updater installed
     self.cores = [[CoreUpdater alloc] initWithSupportDir:sup.path
                      bundledPath:[[NSBundle mainBundle] pathForResource:@"sing-box" ofType:nil]];
+    // v0.15.0: the root session helper. Nothing is started here - the one password prompt happens at
+    // the first privileged step (see -rootRun:legacy:prompt:out:cancelled:).
+    self.root = [[RKRoot alloc] initWithHelperScript:[[NSBundle mainBundle] pathForResource:@"rkhelper" ofType:@"sh"]
+                                          supportDir:sup.path
+                                        resourcesDir:[[NSBundle mainBundle] resourcePath]];
 
     // DPI engine (v0.12.0). A missing ciadpi only disables the YouTube row;
     // it can never affect the VPN.
@@ -869,17 +886,21 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         [self esc:iface],(long)kSOCKSPort,
         [self esc:bin],[self esc:self.configPath],[self esc:self.logPath]];
 
-    NSString *scpt = [NSString stringWithFormat:
-        @"do shell script \"%@\" with administrator privileges "
-        @"with prompt \"Raketa: запуск VPN\"",
-        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
+    // v0.15.0: the config and the proxy/launch recipe above are unchanged; only HOW root is obtained
+    // changed (session helper first, the old per-step prompt as the fallback).
+    NSString *pidStr = nil; BOOL cancelled = NO;
+    BOOL ran = [self rootRun:@[@"core-start", iface ?: @"", [@(kMixedPort) stringValue], [@(kSOCKSPort) stringValue],
+                               bin, self.configPath, self.logPath]
+                      legacy:sh prompt:@"Raketa: запуск VPN" out:&pidStr cancelled:&cancelled];
+    if (!ran) {
+        [self setStatus:@"Отменено" color:rkSub];
+        // A cancelled prompt ran nothing, so there is nothing to reset; resetting would only ask for the
+        // password a second time (ytLaunchCore has always skipped it).
+        if (!cancelled) [self forceProxyOff];
+        return;
+    }
 
-    NSDictionary *err = nil;
-    NSAppleEventDescriptor *res =
-        [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
-    if (err) { [self setStatus:@"Отменено" color:rkSub]; [self forceProxyOff]; return; }
-
-    self.corePID = (pid_t)[[res stringValue] intValue];
+    self.corePID = (pid_t)[pidStr intValue];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -900,14 +921,10 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         @"networksetup -setsecurewebproxystate '%@' off;"
         @"networksetup -setsocksfirewallproxystate '%@' off",
         [self esc:iface],[self esc:iface],[self esc:iface]];
-    NSString *scpt = [NSString stringWithFormat:
-        @"do shell script \"%@\" with administrator privileges "
-        @"with prompt \"Raketa: отключение\"",
-        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
-    NSDictionary *err = nil;
-    [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
+    BOOL ran = [self rootRun:@[@"core-stop", iface ?: @""] legacy:sh prompt:@"Raketa: отключение"
+                         out:nil cancelled:NULL];
     self.stopping = NO;
-    if (err) { [self setStatus:@"Ошибка сброса" color:rkRed]; return NO; }
+    if (!ran) { [self setStatus:@"Ошибка сброса" color:rkRed]; return NO; }
     [self uiConnected:NO]; return YES;
 }
 
@@ -918,11 +935,37 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         @"networksetup -setsecurewebproxystate '%@' off;"
         @"networksetup -setsocksfirewallproxystate '%@' off",
         [self esc:iface],[self esc:iface],[self esc:iface]];
-    NSString *scpt = [NSString stringWithFormat:
-        @"do shell script \"%@\" with administrator privileges "
-        @"with prompt \"Raketa: сброс прокси\"",
-        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
-    [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:nil];
+    [self rootRun:@[@"proxy-off", iface ?: @""] legacy:sh prompt:@"Raketa: сброс прокси"
+              out:nil cancelled:NULL];
+}
+
+// =============================================================================
+#pragma mark - One password per session (v0.15.0)
+// =============================================================================
+// Every privileged step goes through here. First choice: the root session helper (RKRoot, the bundled
+// rkhelper.sh), which asks for the password ONCE per app session; afterwards switching VPN <-> YouTube,
+// disconnecting and quitting are silent. If the session cannot be used (turned off with
+// `defaults write com.samurai.raketa RKSessionAuth -bool NO`, helper missing or it refused the arguments)
+// the very same step runs exactly as in v0.14.2: its own `do shell script ... with administrator
+// privileges`. `verb` is the helper's wire form of the step, `sh` the legacy shell recipe for it.
+// Returns YES if the step ran; NO if it did not (`*cancelled` separates a cancelled prompt from a failure).
+- (BOOL)rootRun:(NSArray<NSString *> *)verb legacy:(NSString *)sh prompt:(NSString *)prompt
+            out:(NSString **)out cancelled:(BOOL *)cancelled {
+    if (out) *out = nil;
+    if (cancelled) *cancelled = NO;
+    NSString *reply = nil;
+    RKRootStatus st = [self.root run:verb reply:&reply];
+    if (st == RKRootOK)        { if (out) *out = reply; return YES; }
+    if (st == RKRootCancelled) { if (cancelled) *cancelled = YES; return NO; }
+
+    NSString *scpt = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges%@",
+        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""],
+        prompt.length ? [NSString stringWithFormat:@" with prompt \"%@\"", prompt] : @""];
+    NSDictionary *err = nil;
+    NSAppleEventDescriptor *res = [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
+    if (err) { if (cancelled) *cancelled = ([err[NSAppleScriptErrorNumber] integerValue] == -128); return NO; }
+    if (out) *out = [res stringValue];
+    return YES;
 }
 
 // =============================================================================
@@ -1046,8 +1089,100 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     (void)self.view;
     [self ytToggle];
 }
+- (void)quickSpeedUp {                          // v0.15.0
+    (void)self.view;
+    [self speedUp];
+}
+- (void)quickRestoreAnimations {               // v0.15.0
+    (void)self.view;
+    [self setStatus:[self.tuner restoreAnimations]
+                        ? @"Анимации возвращены (Finder — после перезапуска)" : @"Анимации и так не менялись"
+              color:rkSub];
+}
 - (void)quickQuit {
     if (self.isViewLoaded) [self quit]; else [NSApp terminate:nil];
+}
+
+// =============================================================================
+#pragma mark - «Ускориться» (v0.15.0)
+// =============================================================================
+// One button above the YouTube row. Nothing here needs root, so it never asks for the password.
+// What it does is MaintenanceEngine's job (old caches/logs -> Trash, own Trash folders purged after a
+// week, animations turned down); this section is only the button, the one-time consent and the report.
+// No timer: the work starts on the click and ends with a status line.
+- (MaintenanceEngine *)tuner {                  // created on first use: the menu may ask before the UI is loaded
+    if (!self.tune) self.tune = [[MaintenanceEngine alloc] init];
+    return self.tune;
+}
+- (BOOL)animationsTweaked { return self.tuner.animationsTweaked; }
+
+- (void)buildSpeedRow:(NSView *)root {
+    self.speedBtn = [[NSButton alloc] initWithFrame:[self rx:kPAD top:kSpeedTop w:kW-kPAD*2 h:28]];
+    self.speedBtn.bordered   = NO;
+    self.speedBtn.wantsLayer = YES;
+    RKRound(self.speedBtn.layer, kRadCtl);
+    self.speedBtn.layer.borderWidth = 0.5;
+    self.speedBtn.target = self;
+    self.speedBtn.action = @selector(speedUp);
+    [root addSubview:self.speedBtn];
+    [self speedUIRender];
+}
+- (void)speedUIRender {
+    if (!self.speedBtn) return;
+    BOOL busy = self.speedBusy;
+    [self ytSetTitle:(busy ? @"…  Ускоряю" : @"✦  Ускориться") on:self.speedBtn size:13 color:rkText];
+    self.speedBtn.layer.borderColor     = rkBorder.CGColor;
+    self.speedBtn.layer.backgroundColor = rkBtn.CGColor;
+    self.speedBtn.enabled    = !busy;
+    self.speedBtn.alphaValue = busy ? 0.45 : 1.0;
+    self.speedBtn.toolTip = @"Кэши старше 30 дней и логи старше 90 дней — в Корзину, анимации macOS приглушить. "
+                            @"Пароль не нужен.";
+}
+
+- (void)speedUp {
+    if (self.speedBusy) return;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (![ud boolForKey:@"RKSpeedConsent"]) {
+        // Shown once: the first click moves files, so the person says yes to exactly what happens.
+        NSAlert *a = [[NSAlert alloc] init];
+        a.messageText = @"Ускориться";
+        a.informativeText =
+            @"Raketa перенесёт в Корзину старые кэши (старше 30 дней) и логи (старше 90 дней) из папки "
+            @"«Библиотека» вашего пользователя — их можно вернуть из Корзины. Через неделю Raketa удалит "
+            @"из Корзины только свои папки (MacMaintenance-…), остальное в Корзине она не трогает. "
+            @"Ещё приглушит анимации окон, Dock и Finder — на старом Mac это заметно; вернуть можно "
+            @"правым кликом по значку ракеты. Пароль не нужен.";
+        [a addButtonWithTitle:@"Ускориться"];
+        [a addButtonWithTitle:@"Отмена"];
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([a runModal] != NSAlertFirstButtonReturn) return;
+        [ud setBool:YES forKey:@"RKSpeedConsent"];
+    }
+    self.speedBusy = YES;
+    [self speedUIRender];
+    [self setStatus:@"Ускоряю: чищу кэши и логи..." color:rkSub];
+    [self.tuner runWithCompletion:^(RKTuneReport *r) {
+        self.speedBusy = NO;
+        [self speedUIRender];
+        if (r.trashFailed) {
+            [self setStatus:@"⚠  Корзина недоступна — файлы лежат в папке Raketa" color:rkOrange];
+            return;
+        }
+        NSString *(^sz)(unsigned long long) = ^NSString *(unsigned long long b) {
+            return [NSByteCountFormatter stringFromByteCount:(long long)b
+                                                  countStyle:NSByteCountFormatterCountStyleFile];
+        };
+        NSMutableArray *parts = [NSMutableArray array];
+        if (r.movedFiles > 0)     [parts addObject:[NSString stringWithFormat:@"в Корзине %@", sz(r.movedBytes)]];
+        if (r.purgedBytes > 0)    [parts addObject:[NSString stringWithFormat:@"освобождено %@", sz(r.purgedBytes)]];
+        if (r.animationsChanged)  [parts addObject:@"анимации выкл."];
+        NSString *msg;
+        if (parts.count) msg = [@"Готово · " stringByAppendingString:[parts componentsJoinedByString:@" · "]];
+        else if (r.freeBytes >= 0)
+            msg = [NSString stringWithFormat:@"Уже чисто · свободно %@", sz((unsigned long long)r.freeBytes)];
+        else msg = @"Уже чисто — делать нечего";
+        [self setStatus:msg color:rkGreen];
+    }];
 }
 
 // =============================================================================
@@ -1090,11 +1225,11 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         NSParagraphStyleAttributeName:  ps }];
 }
 
-// Row (273–301): [🔍 (28)] [▶ Смотреть YouTube (188)] [▾ (28)]
+// Row (kYTTop+21 = 315–343): [🔍 (28)] [▶ Смотреть YouTube (188)] [▾ (28)]
 - (void)buildYouTubeRow:(NSView *)root {
-    [root addSubview:[self sectionLbl:@"YouTube" top:252]];
+    [root addSubview:[self sectionLbl:@"YouTube" top:kYTTop]];
     self.ytCaption = [self lbl:@"" font:[NSFont systemFontOfSize:11] color:rkSub
-                         frame:[self rx:kW-kPAD-160 top:252 w:160 h:13]];
+                         frame:[self rx:kW-kPAD-160 top:kYTTop w:160 h:13]];
     self.ytCaption.alignment = NSTextAlignmentRight;
     [root addSubview:self.ytCaption];
 
@@ -1103,10 +1238,10 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
     self.ytSearchBtn = [self ytIconBtn:@"🔍" tip:@"Обновить список стратегий и найти лучшие для этой сети"
                                 action:@selector(ytSearchClicked)
-                                 frame:[self rx:kPAD top:273 w:kRefW h:28]];
+                                 frame:[self rx:kPAD top:kYTTop+21 w:kRefW h:28]];
     [root addSubview:self.ytSearchBtn];
 
-    self.ytBtn = [[NSButton alloc] initWithFrame:[self rx:midX top:273 w:midW h:28]];
+    self.ytBtn = [[NSButton alloc] initWithFrame:[self rx:midX top:kYTTop+21 w:midW h:28]];
     self.ytBtn.bordered   = NO;
     self.ytBtn.wantsLayer = YES;
     RKRound(self.ytBtn.layer, kRadCtl);
@@ -1117,7 +1252,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
     self.ytListBtn = [self ytIconBtn:@"▾" tip:@"Стратегии для YouTube: лучшие и выбор вручную"
                               action:@selector(ytShowMenu)
-                               frame:[self rx:kW-kPAD-kRefW top:273 w:kRefW h:28]];
+                               frame:[self rx:kW-kPAD-kRefW top:kYTTop+21 w:kRefW h:28]];
     [root addSubview:self.ytListBtn];
 }
 
@@ -1236,24 +1371,20 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         [self esc:iface],(long)kMixedPort,
         [self esc:iface],(long)kSOCKSPort,
         [self esc:bin],[self esc:self.ytConfigPath],[self esc:self.logPath]];
-    NSString *scpt = [NSString stringWithFormat:
-        @"do shell script \"%@\" with administrator privileges "
-        @"with prompt \"Raketa: запуск YouTube\"",
-        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
-
-    NSDictionary *err = nil;
-    NSAppleEventDescriptor *res =
-        [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
-    if (err) {
+    NSString *pidStr = nil; BOOL cancelled = NO;
+    BOOL ran = [self rootRun:@[@"core-start", iface ?: @"", [@(kMixedPort) stringValue], [@(kSOCKSPort) stringValue],
+                               bin, self.ytConfigPath, self.logPath]
+                      legacy:sh prompt:@"Raketa: запуск YouTube" out:&pidStr cancelled:&cancelled];
+    if (!ran) {
         [self.dpi stopProxy]; self.ytBusy = NO;
         [self setStatus:@"Отменено" color:rkSub];
-        // -128 = the person cancelled the password prompt: nothing ran, so there
-        // is nothing to reset (and a second prompt would just be noise).
-        if ([err[NSAppleScriptErrorNumber] integerValue] != -128) [self forceProxyOff];
+        // A cancelled password prompt ran nothing, so there is nothing to reset (and a second
+        // prompt would just be noise).
+        if (!cancelled) [self forceProxyOff];
         [self ytUIRender];
         return;
     }
-    self.corePID = (pid_t)[[res stringValue] intValue];
+    self.corePID = (pid_t)[pidStr intValue];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -1300,18 +1431,17 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         @"'%@' run -c '%@' > '%@' 2>&1 & P=$!;"
         @"(sleep 600; case \"$(ps -p $P -o comm= 2>/dev/null)\" in *sing-box) kill $P;; esac) >/dev/null 2>&1 & echo $P",
         [self esc:bin], [self esc:cfg], [self esc:log]];
-    NSString *scpt = [NSString stringWithFormat:
-        @"do shell script \"%@\" with administrator privileges "
-        @"with prompt \"Raketa: проверка стратегий обхода DPI\"",
-        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
+    // v0.15.0: through the session helper (verb search-start: same recipe, same 10-minute self-destruct);
+    // `sh` above is the legacy fallback.
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSDictionary *err = nil;
-        NSAppleEventDescriptor *res = [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
-        if (err) {
-            cb(0, [err[NSAppleScriptErrorNumber] integerValue] == -128 ? @"password prompt cancelled" : @"root start failed");
+        NSString *pidStr = nil; BOOL cancelled = NO;
+        BOOL ran = [self rootRun:@[@"search-start", bin, cfg, log] legacy:sh
+                          prompt:@"Raketa: проверка стратегий обхода DPI" out:&pidStr cancelled:&cancelled];
+        if (!ran) {
+            cb(0, cancelled ? @"password prompt cancelled" : @"root start failed");
             return;
         }
-        int pid = [[res stringValue] intValue];
+        int pid = [pidStr intValue];
         cb(pid, pid > 0 ? nil : @"no pid");
     });
 }
@@ -1320,11 +1450,8 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     if (pid <= 1) return;
     NSString *sh = [NSString stringWithFormat:
         @"case \"$(ps -p %d -o comm= 2>/dev/null)\" in *sing-box) kill %d;; esac", pid, pid];
-    NSString *scpt = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges",
-        [sh stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSDictionary *err = nil;
-        [[[NSAppleScript alloc] initWithSource:scpt] executeAndReturnError:&err];
+        [self rootRun:@[@"search-stop", [@(pid) stringValue]] legacy:sh prompt:nil out:nil cancelled:NULL];
     });
 }
 
@@ -1790,6 +1917,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     if (self.connected && !self.stopping) [self stopVPN];
     else if (self.ytActive && !self.stopping) [self ytStopSync];   // v0.12.0
     [self.dpi shutdown];                     // ciadpi + any test processes
+    [self.root shutdown];                    // v0.15.0: the root helper leaves with the app (after the stop above)
 }
 
 // =============================================================================

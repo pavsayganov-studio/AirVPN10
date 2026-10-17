@@ -12,5 +12,9 @@
 - (void)quickDisconnectVPN;
 - (void)quickToggleYouTube;
 - (void)quickQuit;
+// «Ускориться» (v0.15.0): same entry points the button and the menu use.
+@property (readonly) BOOL animationsTweaked;     // Raketa's animation settings are in force (menu: "Вернуть анимации")
+- (void)quickSpeedUp;
+- (void)quickRestoreAnimations;
 
 @end
