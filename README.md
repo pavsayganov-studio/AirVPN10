@@ -150,7 +150,7 @@ python3 patch_raketa_<ver>.py
 | # | Проблема | Где искать в коде |
 |---|---|---|
 | 1 | `nohup` падает на macOS 12 (`ENOTTY`, нет терминала у AppleScript) | `startVPN` — убран, используется просто `&` |
-| 2 | `"type": "http"` inbound даёт `protocol wrong type for socket` | конфиг sing-box — используется `"type": "mixed"` |
+| 2 | Порт системного прокси — `"type": "mixed"` (HTTP CONNECT и SOCKS5 на одном порту); `protocol wrong type for socket` в логе — безвредный шум (macOS: запись в сокет, который клиент уже закрыл), а не признак типа inbound | конфиг sing-box; разбор строк лога — `handoff.md` §4.2 |
 | 3 | `selector`/`urltest` группы в подписке вызывают reconnect-storm у Telegram | парсер подписки — такие группы фильтруются |
 | 4 | Telegram в `direct` не работает (заблокирован), но через VPN с `selector` — виснет | Telegram идёт через VPN, `selector` исключён |
 | 5 | Пароль при каждом открытии попапа | проверка `isSystemProxyEnabled` перед сбросом прокси |

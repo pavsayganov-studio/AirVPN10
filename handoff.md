@@ -236,11 +236,24 @@ these, the bug **will** come back.
    worked by accident on 10.13 (lenient `nohup`) and was invisible until
    tested on 12.x.
 
-2. **`http` inbound type causes `protocol wrong type for socket`.** sing-box's
-   `"type": "http"` inbound cannot handle `CONNECT` tunneling reliably in
-   all client scenarios. Fixed by using `"type": "mixed"` for the main
-   system-proxy port (10809) — it accepts both HTTP CONNECT and SOCKS5 on
-   one port.
+2. **The system-proxy port (10809) is `"type": "mixed"`, not `http`** — one port then
+   accepts both HTTP CONNECT and SOCKS5. The old note of this item blamed the `http` type
+   for `protocol wrong type for socket`; that attribution was wrong: the same line was
+   measured on the `mixed` inbound (`inbound/mixed[mixed]`, sing-box 1.8.11 era). It is
+   `EPROTOTYPE`, which macOS gives for a write to a loopback client that has already
+   closed (inferred, not reproduced). sing's closed-error list holds only EPIPE and
+   ECONNRESET, so it is logged at ERROR. Harmless noise on either inbound type: do not
+   "fix" it in the config. Two more lines of that log are noise or the network, not bugs:
+   - `router: missing default interface` — the network monitor saw no default route for a
+     moment (Wi-Fi roam, sleep, router flap). The monitor exists even without
+     `auto_detect_interface`. In the 1.14.3 source only urltest and WireGuard react to the
+     pause it causes; Raketa has neither (item 3).
+   - `download: read tcp ...: operation timed out` after ~57 s — the TCP connection was
+     up, the other side then stayed silent until macOS gave up: the on-wire block of the
+     DPI filter, not a Raketa bug. The 1.14 copy path skips timeouts (source reading).
+   The log prefix tells the core apart: `router:` = sing-box 1.8.x, `network:` = 1.14.
+   The DPI search never touched port 10809 (`DPIEngine.m` has no reference to it) and
+   used no sing-box before v0.14.2, so such lines come from a running VPN/YouTube session.
 
 3. **`selector`/`urltest` outbound groups in a subscription cause a Telegram
    reconnect storm.** These trigger background URL-test pings that overload
