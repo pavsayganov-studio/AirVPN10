@@ -106,8 +106,14 @@ static NSArray<NSColor *> *sPalPrev, *sPalCur;   // previous / current palette, 
 // Dark detection that works on every target OS:
 //  * 10.14+: the app's effective appearance (also covers "Auto" switching);
 //  * 10.13 and older: the global AppleInterfaceStyle flag ("dark menu bar").
+// v0.15.2: bestMatchFromAppearancesWithNames: is 10.14+ (the CI warned about it every build) while
+// effectiveAppearance exists on 10.9+, so the old guard let a system that lacks the selector call it. The guard
+// now asks the appearance object itself; the pragma only silences the (now guarded) availability warning.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
 static BOOL rkSystemIsDark(void) {
-    if ([NSApp respondsToSelector:@selector(effectiveAppearance)]) {
+    if ([NSApp respondsToSelector:@selector(effectiveAppearance)] &&
+        [[NSApp effectiveAppearance] respondsToSelector:@selector(bestMatchFromAppearancesWithNames:)]) {
         NSString *m = [[NSApp effectiveAppearance] bestMatchFromAppearancesWithNames:
                        @[@"NSAppearanceNameAqua", @"NSAppearanceNameDarkAqua"]];
         return [m isEqualToString:@"NSAppearanceNameDarkAqua"];
@@ -115,6 +121,7 @@ static BOOL rkSystemIsDark(void) {
     return [[[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"]
             isEqualToString:@"Dark"];
 }
+#pragma clang diagnostic pop
 // Appearance names as string literals: NSAppearanceNameDarkAqua does not exist
 // on 10.13 and referencing the symbol would crash there. appearanceNamed: just
 // returns nil for an unknown name, and we fall back to the vibrant-dark look.
@@ -1173,9 +1180,10 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                                                   countStyle:NSByteCountFormatterCountStyleFile];
         };
         NSMutableArray *parts = [NSMutableArray array];
+        // The label shows ~40 characters (the tooltip has the whole line), so the most useful part goes first.
         if (r.movedFiles > 0)     [parts addObject:[NSString stringWithFormat:@"в Корзине %@", sz(r.movedBytes)]];
-        if (r.purgedBytes > 0)    [parts addObject:[NSString stringWithFormat:@"освобождено %@", sz(r.purgedBytes)]];
         if (r.animationsChanged)  [parts addObject:@"анимации выкл."];
+        if (r.purgedBytes > 0)    [parts addObject:[NSString stringWithFormat:@"освобождено %@", sz(r.purgedBytes)]];
         NSString *msg;
         if (parts.count) msg = [@"Готово · " stringByAppendingString:[parts componentsJoinedByString:@" · "]];
         else if (r.freeBytes >= 0)

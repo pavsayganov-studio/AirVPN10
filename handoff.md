@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.15.1
+**Current version:** v0.15.2
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -963,3 +963,19 @@ argument, so the ivar was shadowed (6 clang errors, the Actions build failed). R
 `_ack` -> `_ackFD`. **Rule: never name an ivar or local `_cmd` / `_sel`.** The GNUstep differential check
 cannot see this class of error (it reports ivars as undeclared on the legacy runtime), so a green
 `objc_diffcheck.sh` does not prove the file compiles on macOS.
+
+### 22.4 Audit (v0.15.2)
+
+Checked after the v0.15.0 build failure: (1) the 0.15.0/0.15.1 sources for names that collide with hidden
+Objective-C arguments — `_cmd` was the only one; `tools/lint_objc.sh` now flags `_cmd` / `_sel` (run it before every
+patch; it catches what `objc_diffcheck.sh` cannot). (2) The CI workflow order (resources copied, then clang, then
+`codesign`, then `Verify bundle`) and the new `.m` files in the clang line — fine. (3) Every path handed to the
+helper (`config.json`, `config-yt.json`, `dpi_sb_search.*`, `cores/sing-box-<ver>/sing-box`, the bundled core) lies
+inside the Support or Resources dir and is not a symlink, so the helper never refuses them; a refusal would silently
+fall back to the old per-step prompt. (4) The helper's launcher script, built exactly as `RKRoot.m` builds it, was
+run end to end: it starts, answers, refuses `a;b`, quits and removes its directory. (5) `rkSystemIsDark` called a
+10.14+ selector behind a guard that only tested `effectiveAppearance` (10.9+); the guard now asks the appearance
+object. (6) The «Ускориться» report puts the Trash size first (the status label cuts at ~40 characters).
+(7) The junk cleaner of patch_raketa_0.15.0.py deleted sibling `patch_raketa_*.py` files lying in the repo root, which broke
+a chain of patches: keep patch scripts OUTSIDE the repo (`../rk_patches/`) and run them by path.
+Not verifiable here: everything that needs a Mac (see 22.2 "Not verified on a Mac").
