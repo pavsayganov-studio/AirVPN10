@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.15.0
+**Current version:** v0.15.1
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -955,3 +955,11 @@ copies `rkhelper.sh` into `Contents/Resources`.
   folder, `CFPreferences` writes for the Dock / global domain and the Dock restart, the layout (the arithmetic
   is in the map). Verified off-device: the helper's protocol and argument checks against stub tools (all
   verbs, refusals, symlink log, app-death exit), brackets, the differential clang check, the patch end to end.
+
+### 22.3 Build fix (v0.15.1)
+
+`RKRoot.m` named an instance variable `_cmd`; inside every Objective-C method `_cmd` is the hidden `SEL`
+argument, so the ivar was shadowed (6 clang errors, the Actions build failed). Renamed `_cmd` -> `_cmdFD`,
+`_ack` -> `_ackFD`. **Rule: never name an ivar or local `_cmd` / `_sel`.** The GNUstep differential check
+cannot see this class of error (it reports ivars as undeclared on the legacy runtime), so a green
+`objc_diffcheck.sh` does not prove the file compiles on macOS.

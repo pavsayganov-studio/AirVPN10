@@ -25,7 +25,7 @@ static NSString *RKASEscape(NSString *s) {
 
 @interface RKRoot () {
     NSString *_script, *_sup, *_res, *_dir;
-    int  _cmd, _ack;
+    int  _cmdFD, _ackFD;
     BOOL _active, _broken;      // _broken: the session failed once; stay on the legacy path until relaunch
 }
 @end
@@ -36,7 +36,7 @@ static NSString *RKASEscape(NSString *s) {
                         resourcesDir:(NSString *)resourcesDir {
     if ((self = [super init])) {
         _script = [scriptPath copy]; _sup = [supportDir copy]; _res = [resourcesDir copy];
-        _cmd = _ack = -1;
+        _cmdFD = _ackFD = -1;
     }
     return self;
 }
@@ -49,9 +49,9 @@ static NSString *RKASEscape(NSString *s) {
 }
 
 - (void)closeFDs {
-    if (_cmd >= 0) close(_cmd);
-    if (_ack >= 0) close(_ack);
-    _cmd = _ack = -1; _active = NO;
+    if (_cmdFD >= 0) close(_cmdFD);
+    if (_ackFD >= 0) close(_ackFD);
+    _cmdFD = _ackFD = -1; _active = NO;
 }
 
 // The ONE prompt. Everything the helper needs is created here as root, before it starts: its private
@@ -89,9 +89,9 @@ static NSString *RKASEscape(NSString *s) {
     if (![[res stringValue] isEqualToString:@"started"]) { _broken = YES; return RKRootUnavailable; }
 
     // O_RDWR on a FIFO never blocks on open and never sees EOF: the helper and the app can start in any order.
-    _cmd = open([[_dir stringByAppendingPathComponent:@"cmd"] fileSystemRepresentation], O_RDWR | O_NONBLOCK);
-    _ack = open([[_dir stringByAppendingPathComponent:@"ack"] fileSystemRepresentation], O_RDWR | O_NONBLOCK);
-    if (_cmd < 0 || _ack < 0) { [self closeFDs]; _broken = YES; return RKRootUnavailable; }
+    _cmdFD = open([[_dir stringByAppendingPathComponent:@"cmd"] fileSystemRepresentation], O_RDWR | O_NONBLOCK);
+    _ackFD = open([[_dir stringByAppendingPathComponent:@"ack"] fileSystemRepresentation], O_RDWR | O_NONBLOCK);
+    if (_cmdFD < 0 || _ackFD < 0) { [self closeFDs]; _broken = YES; return RKRootUnavailable; }
     _active = YES;
     return RKRootOK;
 }
@@ -104,13 +104,13 @@ static NSString *RKASEscape(NSString *s) {
         struct timeval now; gettimeofday(&now, NULL);
         double left = secs - ((now.tv_sec - start.tv_sec) + (now.tv_usec - start.tv_usec) / 1e6);
         if (left <= 0) return nil;
-        fd_set rf; FD_ZERO(&rf); FD_SET(_ack, &rf);
+        fd_set rf; FD_ZERO(&rf); FD_SET(_ackFD, &rf);
         struct timeval tv = { (time_t)left, (suseconds_t)((left - (time_t)left) * 1e6) };
-        int n = select(_ack + 1, &rf, NULL, NULL, &tv);
+        int n = select(_ackFD + 1, &rf, NULL, NULL, &tv);
         if (n < 0) { if (errno == EINTR) continue; return nil; }
         if (n == 0) return nil;
         char tmp[256];
-        ssize_t r = read(_ack, tmp, sizeof tmp);
+        ssize_t r = read(_ackFD, tmp, sizeof tmp);
         if (r < 0) { if (errno == EAGAIN || errno == EINTR) continue; return nil; }
         if (r == 0) return nil;
         [buf appendBytes:tmp length:(NSUInteger)r];
@@ -132,11 +132,11 @@ static NSString *RKASEscape(NSString *s) {
             if (s != RKRootOK) return s;
         }
         // Drop anything left from an earlier timed-out request, so replies cannot get out of step.
-        char junk[256]; while (read(_ack, junk, sizeof junk) > 0) {}
+        char junk[256]; while (read(_ackFD, junk, sizeof junk) > 0) {}
 
         NSData *line = [[[verbAndArgs componentsJoinedByString:@"\t"] stringByAppendingString:@"\n"]
                         dataUsingEncoding:NSUTF8StringEncoding];
-        if (write(_cmd, line.bytes, line.length) != (ssize_t)line.length) {
+        if (write(_cmdFD, line.bytes, line.length) != (ssize_t)line.length) {
             [self closeFDs]; _broken = YES; return RKRootUnavailable;
         }
         // core-start sleeps 0.3 s and runs three networksetup calls: a few seconds on an old Mac.
@@ -156,7 +156,7 @@ static NSString *RKASEscape(NSString *s) {
     @synchronized (self) {
         if (!_active) return;
         const char *q = "quit\n";
-        (void)!write(_cmd, q, 5);       // the helper replies, removes its directory and exits
+        (void)!write(_cmdFD, q, 5);       // the helper replies, removes its directory and exits
         [self closeFDs];
     }
 }
