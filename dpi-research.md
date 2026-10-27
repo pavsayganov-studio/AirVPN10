@@ -1,4 +1,4 @@
-# DPI research digest — Raketa (state of 2026-10-25)
+# DPI research digest — Raketa (state of 2026-10-26)
 
 Purpose: everything learned about YouTube DPI bypass on macOS so that no later conversation
 has to research it again. Read this before any DPI work; research only what is newer than the
@@ -237,3 +237,40 @@ git clone --depth 1 https://github.com/xvzc/SpoofDPI /tmp/spoofdpi   # internal/
   addresses included -> path B (needs the person's OK).
 - **Do not (added):** conclude "no trick can help" from one address; treat a count of hosts as playback; re-add
   the fake-only or fragments-only S lines.
+
+
+## 10. Update 2026-10-26 (v0.15.4): three suggestions, checked
+
+The person suggested: disable IPv6 completely; "fragmentation with noises"; Google / Cloudflare DNS over DoT and DoH
+only. Each was checked against sources and, for configs, against a real `sing-box check` / `sing-box run` 1.14.3
+(Linux build, same option code as the macOS one). Result: one applied as a test, one not applicable, one applied as
+a measurement.
+
+- **IPv6 - tested per family, not switched off.** [source] sing-box's macOS spoofer supports IPv6
+  (`common/tlsspoof/raw_darwin.go`: the kernel builds the IPv6 header on a raw AF_INET6 socket), so there is no
+  technical reason for the fake to fail on v6. [source] ciadpi already runs with `-X` (IPv4 only). [measured gap]
+  the 2026-10-25 run could not say which family S3 used: sing-box resolves A and AAAA, the wire probe and curl
+  asked IPv4 only. No source found says whether the TSPU filters IPv6 differently; one blog line "zapret works only
+  with IPv4" is wrong in general and is not evidence. System-wide `networksetup -setv6off` was rejected: it changes
+  the person's network settings, needs admin rights, hits every app, and is unnecessary when the family can be
+  pinned per dial. **Applied:** S8 = S1 + `ip=4`, S9 = S1 + `ip=6` (outbound `direct` with `domain_resolver`
+  `{server, strategy: ipv4_only|ipv6_only}`, rule action `route` - which carries the same `tls_*` fields); the log
+  gets `wire6:` rows (the first AAAA, both names) and a `wire6 verdict:`. [measured here, Linux] the v4 inbound
+  reached github.com (HTTP 200), the v6 one failed with `lookup github.com: empty result` - the strategy steers
+  the dial; `tls_fragment_fallback_delay: "40ms"` is a valid duration (a bare "40" is rejected).
+  [caveat] `sing-box check` silently ignores unknown keys; key names were taken from `option/rule_action.go`.
+- **"Fragmentation with noise" - not applicable to TCP/443.** [source] Xray `freedom`: `fragment` slices the TCP
+  stream / the TLS hello, `noises` is **UDP** noise sent before a UDP connection (Xray-docs-next, freedom). Raketa
+  proxies TCP only (the HTTP/SOCKS system proxy carries no UDP; browsers fall back from QUIC to TCP). The TCP
+  analogue of noise is the fake ClientHello - which is S1-S9. sing-box exposes no repeat count for it (zapret's
+  `repeats=6`). No change.
+- **DNS over DoT/DoH only - DoH stays; DoT is measured.** [measured, 2026-10-09] DoH 8.8.4.4 answers, DoH 1.1.1.1
+  does not; [source, zapret wiki per section 4] 8.8.8.8 stopped answering over TCP on 2026-07-03. DNS is not where the
+  filter is (log 2026-10-09: DoH addresses 3/19 = system 3/19). 0.15.3 already switches the run and the YouTube mode
+  to DoH when no system address completes a TCP handshake. "Encrypted DNS only" as a standing policy was not applied:
+  it adds a dependency on resolvers that are being blocked one by one, for no measured gain. DoT was never measured, so
+  v0.15.4 logs `dns: tcp/853 (DoT)` and `dns: tcp/443 (DoH)` connect times for every resolver. If DoH is dead and 853
+  alive, a DoT server (`type: tls`, `server_port: 853` - validated by `sing-box check`) is a small runtime change.
+- **Gate for the next step:** the `wire6 verdict` line; `dns: tcp/853` next to `tcp/443`; S8 vs S9 vs S1 in the
+  results (and their `passed:` lines). If S9 opens hosts S8 does not, IPv6 is the path; if S1 = S8, the family
+  was IPv4 all along.

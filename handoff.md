@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.15.3
+**Current version:** v0.15.4
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -1005,3 +1005,17 @@ place that derives the look of ВКЛ/ВЫКЛ from `self.connected`; the theme 
 truncation for the status line, the subscription caption and the strategy caption.
 **Not verified on a Mac:** all of the above compiles and passes `tools/objc_diffcheck.sh` and `tools/lint_objc.sh`
 off-device only. If a green rectangle still shows, a screenshot decides: ring (accent) vs the ON state (rkTintGreen).
+
+
+## 24. v0.15.4: address family per strategy, IPv6 and DoT measured
+
+Three suggestions of 2026-10-26 (disable IPv6; fragmentation with noise; DoT/DoH-only DNS) were checked, details in
+`dpi-research.md` section 10. Applied: the `ip=4|6` key of an "sb:" line (`DPISBIPStrategy()`; S8, S9): in the search
+config and in the YouTube-mode config the candidate gets an outbound `direct` with `domain_resolver {server,
+strategy}` and its rule is `route` instead of `route-options`; a `dns` section with `local` (and `doh` when it is in
+use) and `route.default_domain_resolver` is added when any line pins a family. Log only: `wireProbeV6:` (AAAA of the
+system resolver, both names, `wire6:` rows) and `dotProbeLog:` (`dns: tcp/853 (DoT)` and `tcp/443 (DoH)` connect times,
+curl `telnet://` + `time_connect`). `wireProbeName:` takes an IPv6 literal (`-6`, `--resolve name:443:[addr]`; the
+bracket form is from the curl man page - not run against macOS 10.13's curl 7.54). Not applied: system-wide IPv6 off,
+Xray-style noise (UDP only), DNS policy change. Config shapes were run through a real sing-box 1.14.3 (`check`, and
+`run` for the family steering). **Not verified on a Mac.**

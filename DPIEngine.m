@@ -680,6 +680,11 @@ static NSArray<NSString *> *DPICuratedLines(void) {
 //   S7 S1 with the pause between fragments 40 ms instead of sing-box's 500 ms [inferred]: on macOS
 //      sing-box waits for the ACK of each piece (SO_NWRITE) and uses the fixed pause only when the ACK
 //      came within 20 ms - a near cache or a transparent proxy [source: common/tlsfragment/wait_darwin.go]
+// v0.15.4: S8 and S9 are S1 with the address family pinned (ip=4 / ip=6). The 2026-10-25 run could not say
+// whether S3 went out over IPv4 or IPv6: sing-box resolves A and AAAA both, the wire probe and curl asked
+// IPv4 only. sing-box's macOS spoofer handles IPv6 itself [source: common/tlsspoof/raw_darwin.go], so IPv6
+// is not switched off (system-wide it would also be a change to the person's network settings); each
+// family is TESTED instead. Over the DoH-address path (`ips`) the candidates already dial IPv4 literals.
 static NSArray<NSString *> *DPISpoofLines(void) {
     return @[@"sb:spoof=www.google.com;method=wrong-sequence;frag=1",
              @"sb:spoof=www.google.com;method=wrong-checksum;frag=1",
@@ -687,7 +692,9 @@ static NSArray<NSString *> *DPISpoofLines(void) {
              @"sb:spoof=www.google.com;method=wrong-ack;frag=1",
              @"sb:spoof=ya.ru;method=wrong-sequence;frag=1",
              @"sb:spoof=max.ru;method=wrong-sequence;frag=1",
-             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;delay=40"];
+             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;delay=40",
+             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;ip=4",
+             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;ip=6"];
 }
 
 // The route-options fields for an "sb:" line; nil when the line is not a valid one.
@@ -708,12 +715,27 @@ static NSDictionary *DPISBOptions(NSString *raw) {
             if (ms < 5 || ms > 2000 || ![[@(ms) stringValue] isEqualToString:v]) return nil;
             o[@"tls_fragment_fallback_delay"] = [NSString stringWithFormat:@"%ldms", (long)ms];
         }
+        else if ([k isEqualToString:@"ip"]) {             // v0.15.4: address family, read by DPISBIPStrategy()
+            if (![v isEqualToString:@"4"] && ![v isEqualToString:@"6"]) return nil;
+        }
         else return nil;
     }
     if (o[@"tls_spoof_method"] && !o[@"tls_spoof"]) return nil;
     if (o[@"tls_record_fragment"] && o[@"tls_fragment"]) return nil;
     if (o[@"tls_fragment_fallback_delay"] && !o[@"tls_fragment"]) return nil;
     return o.count ? o : nil;
+}
+
+// "ipv4_only" / "ipv6_only" when the line carries ip=4 / ip=6, else nil (v0.15.4). The address family is not a
+// route option: sing-box takes it from the DNS strategy of the dial, so a line with ip= gets an outbound of
+// its own (direct + domain_resolver) and its rule becomes `route` (which accepts the same tls_* options).
+static NSString *DPISBIPStrategy(NSString *raw) {
+    if (!DPISBOptions(raw)) return nil;
+    for (NSString *kv in [[raw substringFromIndex:3] componentsSeparatedByString:@";"]) {
+        if ([kv isEqualToString:@"ip=4"]) return @"ipv4_only";
+        if ([kv isEqualToString:@"ip=6"]) return @"ipv6_only";
+    }
+    return nil;
 }
 
 + (BOOL)isSingBoxStrategy:(NSString *)raw { return DPISBOptions(raw) != nil; }
@@ -1281,6 +1303,8 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
 - (BOOL)startSBSearchFor:(NSArray<DPIEntry *> *)ents ports:(NSMutableDictionary<NSString *, NSNumber *> *)ports
                      pid:(int *)pidOut why:(NSString **)why log:(NSMutableString *)log {
     NSMutableArray *inb = [NSMutableArray array], *rules = [NSMutableArray array];
+    NSMutableArray *outs = [@[@{@"type": @"direct", @"tag": @"direct"}] mutableCopy];
+    BOOL needDNS = NO;
     NSInteger i = 0;
     for (DPIEntry *e in ents) {
         NSDictionary *o = DPISBOptions(e.raw);
@@ -1289,6 +1313,14 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
         [inb addObject:@{@"type": @"socks", @"tag": tag, @"listen": @"127.0.0.1",
                          @"listen_port": @(kDPISBBase + i)}];
         NSMutableDictionary *r = [@{@"inbound": @[tag], @"action": @"route-options"} mutableCopy];
+        NSString *ipst = DPISBIPStrategy(e.raw);
+        if (ipst) {                      // v0.15.4: the family is a property of the dial -> its own outbound
+            NSString *otag = [NSString stringWithFormat:@"d%ld", (long)i];
+            [outs addObject:@{@"type": @"direct", @"tag": otag,
+                              @"domain_resolver": @{@"server": @"local", @"strategy": ipst}}];
+            r[@"action"] = @"route"; r[@"outbound"] = otag;
+            needDNS = YES;
+        }
         [r addEntriesFromDictionary:o];
         [rules addObject:r];
         ports[e.raw] = @(kDPISBBase + i);
@@ -1301,9 +1333,13 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
         [log appendString:@"sb: S candidates skipped (no root launcher or no sing-box)\n"];
         return NO;
     }
-    NSDictionary *cfg = @{@"log": @{@"level": @"warn"}, @"inbounds": inb,
-                          @"outbounds": @[@{@"type": @"direct", @"tag": @"direct"}],
-                          @"route": @{@"rules": rules, @"final": @"direct"}};
+    NSMutableDictionary *route = [@{@"rules": rules, @"final": @"direct"} mutableCopy];
+    NSMutableDictionary *cfg = [@{@"log": @{@"level": @"warn"}, @"inbounds": inb,
+                                  @"outbounds": outs, @"route": route} mutableCopy];
+    if (needDNS) {                       // a domain_resolver names a DNS server; 1.14 wants a default one then
+        cfg[@"dns"] = @{@"servers": @[@{@"tag": @"local", @"type": @"local"}], @"final": @"local"};
+        route[@"default_domain_resolver"] = @"local";
+    }
     NSString *cfgPath = [_supDir stringByAppendingPathComponent:@"dpi_sb_search.json"];
     NSString *logPath = [_supDir stringByAppendingPathComponent:@"dpi_sb_search.log"];
     NSData *cd = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
@@ -1398,11 +1434,13 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
 // both die at the TCP stage, the address or the route is blocked and no ClientHello trick
 // can help.
 - (NSString *)wireProbeName:(NSString *)name ip:(NSString *)ip kind:(NSInteger *)kind {
-    NSArray *args = @[@"-q", @"-sS", @"-o", @"/dev/null", @"--http1.1",
+    BOOL v6 = [ip containsString:@":"];             // v0.15.4: the same probe over an IPv6 literal
+    NSMutableArray *args = [@[@"-q", @"-sS", @"-o", @"/dev/null", @"--http1.1",
                       @"--connect-timeout", @"5", @"-m", @"8",
-                      @"--resolve", [NSString stringWithFormat:@"%@:443:%@", name, ip],
+                      @"--resolve", [NSString stringWithFormat:@"%@:443:%@", name, v6 ? [NSString stringWithFormat:@"[%@]", ip] : ip],
                       @"-w", @"\n@@W %{http_code} %{time_connect} %{time_appconnect}\n",
-                      [NSString stringWithFormat:@"https://%@/", name]];
+                      [NSString stringWithFormat:@"https://%@/", name]] mutableCopy];
+    if (v6) [args insertObject:@"-6" atIndex:1];
     NSTask *t = [[NSTask alloc] init];
     t.launchPath = @"/usr/bin/curl";
     t.arguments = args;
@@ -1476,6 +1514,119 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
         [rows addObject:@{@"ip": ip, @"ky": y[@"k"], @"kg": gg[@"k"]}];
     }
     return rows;
+}
+
+// IPv6, the one path the wire probe never asked (v0.15.4): it is IPv4 only, like ciadpi's -X. The first AAAA
+// the system resolver gives is asked with both names, like an IPv4 address. LOG ONLY: it measures whether
+// IPv6 is a free path (or the same wall) and changes nothing by itself; S8/S9 test the fake over each family.
+- (void)wireProbeV6:(NSMutableString *)log {
+    __block NSString *addr = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [NSThread detachNewThreadWithBlock:^{
+        struct addrinfo hints; memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET6; hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo *res = NULL;
+        if (getaddrinfo("www.youtube.com", NULL, &hints, &res) == 0) {
+            for (struct addrinfo *p = res; p; p = p->ai_next) {
+                char buf[INET6_ADDRSTRLEN];
+                if (p->ai_addr && inet_ntop(AF_INET6, &((struct sockaddr_in6 *)p->ai_addr)->sin6_addr, buf, sizeof buf)) {
+                    addr = [NSString stringWithUTF8String:buf];
+                    break;
+                }
+            }
+        }
+        if (res) freeaddrinfo(res);
+        dispatch_semaphore_signal(sem);
+    }];
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC))) != 0) {
+        [log appendString:@"wire6: the system resolver did not answer AAAA in time\n"];
+        return;
+    }
+    NSString *ip = addr;
+    if (!ip.length) { [log appendString:@"wire6: no AAAA address from the system resolver\n"]; return; }
+    NSString *nameY = @"www.youtube.com", *nameG = @"www.google.com";
+    __block NSInteger ky = 4, kg = 4;
+    __block NSString *ty = @"not tested", *tg = @"not tested";
+    dispatch_group_t g = dispatch_group_create();
+    dispatch_group_enter(g);
+    [NSThread detachNewThreadWithBlock:^{ NSInteger k = 4; NSString *t = [self wireProbeName:nameY ip:ip kind:&k]; ky = k; ty = t; dispatch_group_leave(g); }];
+    dispatch_group_enter(g);
+    [NSThread detachNewThreadWithBlock:^{ NSInteger k = 4; NSString *t = [self wireProbeName:nameG ip:ip kind:&k]; kg = k; tg = t; dispatch_group_leave(g); }];
+    dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
+    [log appendFormat:@"wire6: %@  SNI %@ -> %@\n", ip, nameY, ty];
+    [log appendFormat:@"wire6: %@  SNI %@  -> %@\n", ip, nameG, tg];
+    if (ky == 0)
+        [log appendString:@"wire6 verdict: IPv6 completes TLS for the YouTube name with no bypass - a path around the filter (S9 runs the fake + fragments over it)\n"];
+    else if (ky == 1 && kg == 1)
+        [log appendString:@"wire6 verdict: no TCP handshake over IPv6 for either name - no IPv6 route, or the address is dropped as well\n"];
+    else
+        [log appendFormat:@"wire6 verdict: IPv6 reaches the host but the YouTube name does not complete TLS (kinds %ld/%ld) - filtered like IPv4, or partly\n",
+                          (long)ky, (long)kg];
+}
+
+// Seconds the TCP handshake to host:port took, 0 = none within 4 s (v0.15.4). curl prints time_connect even
+// when it then times out waiting for a server that never speaks - which is what a DNS-over-TLS port does to
+// a telnet client - so "connected" and "silent" are told apart by the number, not the exit code.
+- (double)tcpConnectSeconds:(NSString *)host port:(int)port {
+    NSTask *t = [[NSTask alloc] init];
+    t.launchPath = @"/usr/bin/curl";
+    t.arguments = @[@"-q", @"-sS", @"-o", @"/dev/null", @"--connect-timeout", @"4", @"-m", @"5",
+                    @"-w", @"\n@@C %{time_connect}\n",
+                    [NSString stringWithFormat:@"telnet://%@:%d", host, port]];
+    NSPipe *p = [NSPipe pipe];
+    t.standardOutput = p;
+    t.standardError  = [NSFileHandle fileHandleWithNullDevice];
+    t.standardInput  = [NSFileHandle fileHandleWithNullDevice];
+    @synchronized (_testTasks) { [_testTasks addObject:t]; }
+    double s = 0;
+    @try {
+        [t launch];
+        NSData *out = [[p fileHandleForReading] readDataToEndOfFile];
+        [t waitUntilExit];
+        NSString *txt = [[NSString alloc] initWithData:out encoding:NSISOLatin1StringEncoding] ?: @"";
+        for (NSString *l in [txt componentsSeparatedByString:@"\n"])
+            if ([l hasPrefix:@"@@C "]) s = [[l substringFromIndex:4] doubleValue];
+    } @catch (NSException *e) { s = 0; }
+    @synchronized (_testTasks) { [_testTasks removeObject:t]; }
+    return s;
+}
+
+// DoT (853) next to DoH (443) for every resolver the app can use (v0.15.4), LOG ONLY: the 2026-07-03 block of
+// 8.8.8.8 was seen over TCP on both ports, 1.1.1.1 over DoH answered nothing on the person's network, and
+// nothing was measured for 853. If DoH is dead and 853 alive the log shows it; until then DoH stays the one
+// encrypted path (a DoT server in the runtime config is a one-line change once it is worth it).
+- (void)dotProbeLog:(NSMutableString *)log {
+    NSMutableArray<NSString *> *hosts = [NSMutableArray array];
+    for (NSString *b in DPIDoHServers()) {
+        NSString *h = [NSURL URLWithString:b].host;
+        if (h.length && ![hosts containsObject:h]) [hosts addObject:h];
+    }
+    NSArray<NSNumber *> *ports = @[@853, @443];
+    NSMutableDictionary<NSString *, NSNumber *> *res = [NSMutableDictionary dictionary];
+    NSObject *lock = [NSObject new];
+    dispatch_group_t g = dispatch_group_create();
+    for (NSString *h in hosts) {
+        for (NSNumber *pn in ports) {
+            int port = pn.intValue;
+            dispatch_group_enter(g);
+            [NSThread detachNewThreadWithBlock:^{
+                double s = self->_cancel ? 0 : [self tcpConnectSeconds:h port:port];
+                @synchronized (lock) { res[[NSString stringWithFormat:@"%@:%d", h, port]] = @(s); }
+                dispatch_group_leave(g);
+            }];
+        }
+    }
+    dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
+    for (NSNumber *pn in ports) {
+        int port = pn.intValue;
+        NSMutableArray<NSString *> *parts = [NSMutableArray array];
+        for (NSString *h in hosts) {
+            double s = [res[[NSString stringWithFormat:@"%@:%d", h, port]] doubleValue];
+            [parts addObject:[NSString stringWithFormat:@"%@ %@", h, s > 0 ? [NSString stringWithFormat:@"%.2fs", s] : @"no"]];
+        }
+        [log appendFormat:@"dns: tcp/%d (%@)  %@\n", port, port == 853 ? @"DoT" : @"DoH",
+                          [parts componentsJoinedByString:@"; "]];
+    }
 }
 
 // YES when no probed address completes a TCP handshake for either name.
@@ -1650,6 +1801,8 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
             [log appendString:@"wire: no address to test\n"];
         }
 
+        if (!self->_cancel) { [self dotProbeLog:log]; [self wireProbeV6:log]; }      // v0.15.4, log only
+
         // Control runs: the same hosts with NO bypass. They tell "network is open / blocked"
         // apart from "strategy breaks the connection" in the log. With DoH addresses the
         // second one isolates DPI from DNS: if it still fails, the filter is on the wire.
@@ -1800,10 +1953,16 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
     // the fake ClientHello before the real one), so there is no ciadpi hop: the matching rule only
     // sets the options and the traffic stays `direct`. sing-box must run as root for it - it does.
     NSDictionary *sbo = DPISBOptions(self.selectedStrategy);
+    NSString *ipst = sbo ? DPISBIPStrategy(self.selectedStrategy) : nil;      // v0.15.4: ip=4 / ip=6
     NSMutableDictionary *rule = [@{@"domain_suffix": suffixes} mutableCopy];
     NSMutableArray *outs = [@[@{@"type": @"direct", @"tag": @"direct"}] mutableCopy];
     if (sbo) {
         rule[@"action"] = @"route-options";
+        if (ipst) {
+            rule[@"action"] = @"route"; rule[@"outbound"] = @"direct-ip";
+            [outs addObject:@{@"type": @"direct", @"tag": @"direct-ip",
+                              @"domain_resolver": @{@"server": doh ? @"doh" : @"local", @"strategy": ipst}}];
+        }
         [rule addEntriesFromDictionary:sbo];
     } else {
         rule[@"outbound"] = @"dpi";
@@ -1819,20 +1978,24 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
             @"final": @"direct"
         }
     } mutableCopy];
-    if (doh) {
+    if (doh || ipst) {
         // sing-box 1.14 removed the legacy DNS server format (`address` URLs, deprecated in
         // 1.12): servers are typed now and the strategy moved into the rule. `sing-box check`
         // 1.14.3 rejects the old shape, and also asks for default_domain_resolver as soon as
         // there is a DNS section. Same behaviour as before: DoH only for the YouTube names.
-        NSURL *du = [NSURL URLWithString:doh];
-        cfg[@"dns"] = @{
-            @"servers": @[@{@"tag": @"doh", @"type": @"https", @"server": du.host ?: @"",
-                            @"server_port": du.port ?: @443,
-                            @"path": du.path.length ? du.path : @"/dns-query"},
-                          @{@"tag": @"local", @"type": @"local"}],
-            @"rules": @[@{@"domain_suffix": suffixes, @"server": @"doh", @"strategy": @"ipv4_only"}],
-            @"final": @"local"
-        };
+        // v0.15.4: the section is also built for a pinned address family (no DoH then: `local` only).
+        NSMutableArray *servers = [NSMutableArray array];
+        if (doh) {
+            NSURL *du = [NSURL URLWithString:doh];
+            [servers addObject:@{@"tag": @"doh", @"type": @"https", @"server": du.host ?: @"",
+                                 @"server_port": du.port ?: @443,
+                                 @"path": du.path.length ? du.path : @"/dns-query"}];
+        }
+        [servers addObject:@{@"tag": @"local", @"type": @"local"}];
+        NSMutableDictionary *dns = [@{@"servers": servers, @"final": @"local"} mutableCopy];
+        if (doh)
+            dns[@"rules"] = @[@{@"domain_suffix": suffixes, @"server": @"doh", @"strategy": ipst ?: @"ipv4_only"}];
+        cfg[@"dns"] = dns;
         NSMutableDictionary *rt = [cfg[@"route"] mutableCopy];
         rt[@"default_domain_resolver"] = @"local";
         cfg[@"route"] = rt;
