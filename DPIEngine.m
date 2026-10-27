@@ -44,6 +44,19 @@
 // sets the options and the connection stays `direct`; in the search ONE root sing-box carries an
 // inbound per candidate (a password prompt per candidate would be unusable), and the same probes,
 // success rule and ranking are applied to it.
+// v0.15.3 - WHAT CHANGED AND WHY. The log of 2026-10-25 (v0.15.2) is the first with a candidate that
+// opened anything: S3, a fake ClientHello (wrong-sequence) PLUS TCP fragmentation, 6/19 against 3/19
+// with no bypass; every other S line (fake alone, fragments alone, fake + TLS records) and every M line
+// died at the probe stage. Two things in that log were wrong or missing:
+//   * the wire probe asked ONE address (the first the resolver gave) and printed "address or route
+//     blocked ... no ClientHello trick can help" - and then S3 did help on other hosts. Google answers
+//     with many addresses and they need not behave alike (users report Google/googlevideo addresses cut
+//     at the TCP stage on some operators and a name filter elsewhere). The probe now asks up to four
+//     addresses; when EVERY system address fails at the TCP stage it asks DoH for others and, if one of
+//     those answers, the rest of the run and the runtime use DoH names;
+//   * "mean 0.00 s" for six passed hosts is not a real page load, and the log did not say which hosts
+//     passed. The controls and every candidate that opens anything now log "passed: host http/bytes/secs".
+// The S list is rebuilt around the one combination that worked (see DPISpoofLines).
 #import "DPIEngine.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <libproc.h>
@@ -56,6 +69,7 @@
 
 static const int kDPIPort     = 10811;   // runtime ciadpi (system proxy -> sing-box -> here)
 static const int kDPITestPort = 10820;   // throw-away ciadpi used by the search
+static const NSUInteger kDPIWireMax = 4;   // v0.15.3: addresses of one name the wire probe asks
 static const int kDPISBBase   = 10830;   // search: first SOCKS inbound of the root sing-box (one per "S" candidate)
 static NSString *const kDPIRepoRaw  = @"https://raw.githubusercontent.com/romanvht/ByeByeDPI/master/app/src/main/assets/";
 static NSString *const kDPISelKey   = @"RaketaDPIStrategy";
@@ -242,25 +256,39 @@ static NSArray<NSString *> *DPIParseDNSA(NSData *d) {
 
 // What the system resolver says: an IPv4 string, "timeout" or "error N". getaddrinfo()
 // cannot be interrupted, so it runs on its own thread and is abandoned on timeout.
-static NSString *DPISystemResolve(NSString *host, NSTimeInterval within) {
-    __block NSString *ans = nil;
+// Up to `maxN` public IPv4 addresses the system resolver gives for `host`, in its order (v0.15.3; it used to
+// return only the first). nil = no usable answer; *err then says "timeout" or "error <rc>" for the log.
+static NSArray<NSString *> *DPISystemResolveAll(NSString *host, NSTimeInterval within, NSUInteger maxN,
+                                                NSString **err) {
+    __block NSArray<NSString *> *got = nil;
+    __block NSString *why = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     [NSThread detachNewThreadWithBlock:^{
         struct addrinfo hints; memset(&hints, 0, sizeof hints);
         hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
         struct addrinfo *res = NULL;
         int rc = getaddrinfo(host.UTF8String, NULL, &hints, &res);
-        char buf[INET_ADDRSTRLEN];
-        if (rc == 0 && res && inet_ntop(AF_INET, &((struct sockaddr_in *)res->ai_addr)->sin_addr, buf, sizeof buf))
-            ans = [NSString stringWithUTF8String:buf];
-        else
-            ans = [NSString stringWithFormat:@"error %d", rc];
+        NSMutableArray<NSString *> *out = [NSMutableArray array];
+        for (struct addrinfo *p = res; rc == 0 && p && out.count < maxN; p = p->ai_next) {
+            char buf[INET_ADDRSTRLEN];
+            if (!p->ai_addr || !inet_ntop(AF_INET, &((struct sockaddr_in *)p->ai_addr)->sin_addr, buf, sizeof buf))
+                continue;
+            unsigned a = 0, b = 0, c = 0, d = 0;
+            if (sscanf(buf, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || !DPIPublicIPv4(a, b)) continue;
+            NSString *s = [NSString stringWithUTF8String:buf];
+            if (s && ![out containsObject:s]) [out addObject:s];
+        }
         if (res) freeaddrinfo(res);
+        if (out.count) got = out;
+        else why = rc != 0 ? [NSString stringWithFormat:@"error %d", rc] : @"no public address";
         dispatch_semaphore_signal(sem);
     }];
-    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(within * NSEC_PER_SEC))) != 0)
-        return @"timeout";
-    return ans ?: @"error";
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(within * NSEC_PER_SEC))) != 0) {
+        if (err) *err = @"timeout";
+        return nil;
+    }
+    if (!got && err) *err = why ?: @"error";
+    return got;
 }
 
 #pragma mark - DPIResult
@@ -302,6 +330,7 @@ static NSString *DPISystemResolve(NSString *host, NSTimeInterval within) {
     NSInteger _lastCurated;                // candidates of the last search
     NSString *_dohURL;                     // DoH endpoint the last search used (nil = system DNS)
     BOOL     _dnsSysBad;                   // the system resolver gave no usable answer for YouTube
+    BOOL     _sysAddrBlocked;              // v0.15.3: it answered, but none of its addresses completes a TCP handshake while a DoH one does
     NSString *_wireVerdict;                // one-line result of the last wire probe (menu note), nil = none
     BOOL     _wireSNI;                     // the same address completed TLS for another SNI: a name-based filter
     NSDictionary<NSString *, DPIResult *> *_tested;   // every candidate tested at the last search, failures included
@@ -630,26 +659,35 @@ static NSArray<NSString *> *DPICuratedLines(void) {
              @"-o1"];
 }
 
-// ── Strategies run by sing-box itself ("S", v0.14.2) ───────────────────────────────────────
+// ── Strategies run by sing-box itself ("S", v0.14.2; list rebuilt in v0.15.3) ─────────────────
 // raw = "sb:key=value;key=value": spoof=<fake SNI> method=<wrong-sequence|wrong-checksum|wrong-ack|
-// wrong-md5> rec=1 (TLS record fragmentation) frag=1 (TCP fragmentation). The two fragmentation
-// options are mutually exclusive in sing-box ("sing-box check" refuses both together). The strategy
-// is stored in NSUserDefaults and ends up in a config, so DPISBOptions() is a whitelist: anything
-// else is nil. Mapping to the zapret catalogue (dpi-research.md section 2): wrong-sequence ~ badseq,
-// wrong-md5 ~ md5sig, wrong-checksum ~ badsum, wrong-ack ~ badack; `ts` (TCP timestamp) has no
-// macOS method in sing-box. www.google.com is the fake the maintained community lists use.
-//   S1 fake, badseq            S2 fake + TLS records      S3 fake + TCP fragments
-//   S4 fake, md5sig            S5 fake, bad checksum      S6 fake, bad ack
-//   S7 fake with another allowed name (ya.ru)             S8 fragments only, no fake
+// wrong-md5> frag=1 (TCP fragmentation at the SNI) rec=1 (TLS record fragmentation) delay=<ms>
+// (tls_fragment_fallback_delay, needs frag=1). The two fragmentation options are mutually exclusive in
+// sing-box ("sing-box check" refuses both together). The strategy is stored in NSUserDefaults and ends up
+// in a config, so DPISBOptions() is a whitelist: anything else is nil.
+//
+// WHAT THE 2026-10-25 LOG SAID [measured]: of the eight v0.14.2 lines only "fake ClientHello
+// (wrong-sequence) + TCP fragments" opened anything (6/19 against 3/19 with no bypass); the fake alone
+// (four methods, two fake names), the fragments alone and fake + TLS records all died at the probe stage.
+// That is the shape of every rule in the maintained zapret list - a fake AND a split in one rule
+// (dpi-research.md section 2) - so the list is now built around that one combination and varies the two
+// things never varied: HOW the real server rejects the fake, and WHICH name the fake carries. The old S1,
+// S2, S4-S8 are gone as measured dead; the old S3 is S1 now (the strategy line is unchanged, so a saved
+// choice stays valid). Labels are positions, as always.
+//   S1 fake google.com, badseq + TCP fragments      (measured 6/19)
+//   S2 the same, bad checksum     S3 the same, md5sig option     S4 the same, bad ack
+//   S5 fake name ya.ru            S6 fake name max.ru (the name the zapret lists use for non-Google rules)
+//   S7 S1 with the pause between fragments 40 ms instead of sing-box's 500 ms [inferred]: on macOS
+//      sing-box waits for the ACK of each piece (SO_NWRITE) and uses the fixed pause only when the ACK
+//      came within 20 ms - a near cache or a transparent proxy [source: common/tlsfragment/wait_darwin.go]
 static NSArray<NSString *> *DPISpoofLines(void) {
-    return @[@"sb:spoof=www.google.com;method=wrong-sequence",
-             @"sb:spoof=www.google.com;method=wrong-sequence;rec=1",
-             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1",
-             @"sb:spoof=www.google.com;method=wrong-md5",
-             @"sb:spoof=www.google.com;method=wrong-checksum",
-             @"sb:spoof=www.google.com;method=wrong-ack",
-             @"sb:spoof=ya.ru;method=wrong-sequence",
-             @"sb:frag=1"];
+    return @[@"sb:spoof=www.google.com;method=wrong-sequence;frag=1",
+             @"sb:spoof=www.google.com;method=wrong-checksum;frag=1",
+             @"sb:spoof=www.google.com;method=wrong-md5;frag=1",
+             @"sb:spoof=www.google.com;method=wrong-ack;frag=1",
+             @"sb:spoof=ya.ru;method=wrong-sequence;frag=1",
+             @"sb:spoof=max.ru;method=wrong-sequence;frag=1",
+             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;delay=40"];
 }
 
 // The route-options fields for an "sb:" line; nil when the line is not a valid one.
@@ -665,10 +703,16 @@ static NSDictionary *DPISBOptions(NSString *raw) {
         else if ([k isEqualToString:@"method"]) { if (![methods containsObject:v]) return nil; o[@"tls_spoof_method"] = v; }
         else if ([k isEqualToString:@"rec"])    { if (![v isEqualToString:@"1"]) return nil; o[@"tls_record_fragment"] = [NSNumber numberWithBool:YES]; }
         else if ([k isEqualToString:@"frag"])   { if (![v isEqualToString:@"1"]) return nil; o[@"tls_fragment"] = [NSNumber numberWithBool:YES]; }
+        else if ([k isEqualToString:@"delay"]) {          // pause between the pieces, whole ms, 5...2000
+            NSInteger ms = v.integerValue;
+            if (ms < 5 || ms > 2000 || ![[@(ms) stringValue] isEqualToString:v]) return nil;
+            o[@"tls_fragment_fallback_delay"] = [NSString stringWithFormat:@"%ldms", (long)ms];
+        }
         else return nil;
     }
     if (o[@"tls_spoof_method"] && !o[@"tls_spoof"]) return nil;
     if (o[@"tls_record_fragment"] && o[@"tls_fragment"]) return nil;
+    if (o[@"tls_fragment_fallback_delay"] && !o[@"tls_fragment"]) return nil;
     return o.count ? o : nil;
 }
 
@@ -812,6 +856,7 @@ static NSDictionary *DPISBOptions(NSString *raw) {
     _passOK = [j[@"pass_ok"] integerValue]; _passTotal = [j[@"pass_n"] integerValue];
     _dohURL = DPIValidDoHURL(j[@"doh"]) ? j[@"doh"] : nil;      // validated: it goes into a config
     _dnsSysBad = [j[@"dns_bad"] boolValue];
+    _sysAddrBlocked = [j[@"addr_blocked"] boolValue];
     NSString *wv = j[@"wire"];
     _wireVerdict = ([wv isKindOfClass:[NSString class]] && wv.length) ? wv : nil;
     _wireSNI = [j[@"wire_sni"] boolValue];
@@ -828,7 +873,7 @@ static NSDictionary *DPISBOptions(NSString *raw) {
                         @"curated": @(_lastCurated),
                         @"direct_ok": @(_directOK), @"direct_n": @(_directTotal),
                         @"pass_ok": @(_passOK), @"pass_n": @(_passTotal),
-                        @"doh": _dohURL ?: @"", @"dns_bad": @(_dnsSysBad),
+                        @"doh": _dohURL ?: @"", @"dns_bad": @(_dnsSysBad), @"addr_blocked": @(_sysAddrBlocked),
                         @"wire": _wireVerdict ?: @"", @"wire_sni": @(_wireSNI),
                         @"results": a, @"all": all};
     NSData *d = [NSJSONSerialization dataWithJSONObject:j options:0 error:nil];
@@ -868,6 +913,9 @@ static NSDictionary *DPISBOptions(NSString *raw) {
 - (NSString *)diagnosisNote {
     NSString *ctl = [self controlNote] ?: @"";
     NSString *wire = _wireVerdict.length ? [_wireVerdict stringByAppendingString:@" "] : @"";
+    if (_sysAddrBlocked && _dohURL.length)
+        return [NSString stringWithFormat:@"%@Адреса YouTube от DNS провайдера не отвечают — имена через DoH %@. %@",
+                wire, [[NSURL URLWithString:_dohURL] host] ?: @"", ctl];
     if (_dnsSysBad && _dohURL.length)
         return [NSString stringWithFormat:@"%@DNS провайдера не отдаёт YouTube — имена через DoH %@. %@",
                 wire, [[NSURL URLWithString:_dohURL] host] ?: @"", ctl];
@@ -1087,7 +1135,8 @@ static NSDictionary *DPISBOptions(NSString *raw) {
 // transfer that stalls (the DPI freeze), -m is only a backstop for huge pages.
 // None of them punishes a strategy for being slow but alive.
 - (BOOL)curlHost:(NSString *)host port:(int)port ips:(NSDictionary<NSString *, NSString *> *)ips
-          timeout:(int)to seconds:(double *)secs code:(int *)code {
+          timeout:(int)to seconds:(double *)secs code:(int *)code
+             http:(int *)httpOut size:(long long *)sizeOut {
     NSMutableArray *args = [NSMutableArray arrayWithObjects:
         @"-q", @"-sS", @"-o", @"/dev/null", @"-D", @"-", @"--http1.1",
         @"-L", @"--max-redirs", @"3",
@@ -1113,6 +1162,8 @@ static NSDictionary *DPISBOptions(NSString *raw) {
     t.standardInput  = [NSFileHandle fileHandleWithNullDevice];
     @synchronized (_testTasks) { [_testTasks addObject:t]; }
     BOOL ok = NO; int status = -1;
+    if (httpOut) *httpOut = 0;
+    if (sizeOut) *sizeOut = 0;
     @try {
         [t launch];
         NSData *out = [[p fileHandleForReading] readDataToEndOfFile];   // headers + one line; ends at exit
@@ -1123,6 +1174,8 @@ static NSDictionary *DPISBOptions(NSString *raw) {
         int http; long long size, declared; double s;
         DPIParseCurlOutput(txt, &http, &size, &s, &declared);
         ok = DPIRequestPassed(http, size, declared, status);
+        if (httpOut) *httpOut = http;
+        if (sizeOut) *sizeOut = size;
         if (ok && secs) *secs = s;
     } @catch (NSException *e) { ok = NO; status = -1; }
     @synchronized (_testTasks) { [_testTasks removeObject:t]; }
@@ -1138,7 +1191,8 @@ static NSDictionary *DPISBOptions(NSString *raw) {
 // (old) Macs, which would serialize the battery and stretch the search.
 - (NSInteger)batteryHosts:(NSArray<NSString *> *)hosts port:(int)port
                       ips:(NSDictionary<NSString *, NSString *> *)ips timeout:(int)to
-                totalTime:(double *)sum failures:(NSMutableDictionary *)fails {
+                totalTime:(double *)sum failures:(NSMutableDictionary *)fails
+                   passed:(NSMutableArray<NSString *> *)passed {
     __block NSInteger okc = 0; __block double tsum = 0;
     dispatch_group_t g = dispatch_group_create();
     NSObject *lock = [NSObject new];
@@ -1146,12 +1200,16 @@ static NSDictionary *DPISBOptions(NSString *raw) {
         dispatch_group_enter(g);
         [NSThread detachNewThreadWithBlock:^{
             if (!self->_cancel) {
-                double secs = 0; int code = 0; BOOL ok = NO;
+                double secs = 0; int code = 0, http = 0; long long size = 0; BOOL ok = NO;
                 if (ips.count && !ips[h]) code = 6;      // DoH had no address: counted, no curl
-                else ok = [self curlHost:h port:port ips:ips timeout:to seconds:&secs code:&code];
+                else ok = [self curlHost:h port:port ips:ips timeout:to seconds:&secs code:&code
+                                    http:&http size:&size];
                 @synchronized (lock) {
-                    if (ok) { okc++; tsum += secs; }
-                    else if (fails) {
+                    if (ok) {
+                        okc++; tsum += secs;
+                        // v0.15.3: what really came back (messages to a nil `passed` do nothing)
+                        [passed addObject:[NSString stringWithFormat:@"%@ %d/%lldB/%.2fs", h, http, size, secs]];
+                    } else if (fails) {
                         NSNumber *k = @(code);
                         fails[k] = @([fails[k] integerValue] + 1);
                     }
@@ -1161,6 +1219,7 @@ static NSDictionary *DPISBOptions(NSString *raw) {
         }];
     }
     dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
+    [passed sortUsingSelector:@selector(compare:)];
     if (sum) *sum = tsum;
     return okc;
 }
@@ -1172,6 +1231,13 @@ static NSString *DPIFailText(NSDictionary *f) {
     for (NSNumber *k in [[f allKeys] sortedArrayUsingSelector:@selector(compare:)])
         [parts addObject:[NSString stringWithFormat:@"%@x%@", k, f[k]]];
     return [parts componentsJoinedByString:@" "];
+}
+
+// "    passed: host http/bytes/secs; ..." for the log (v0.15.3): which hosts a run really opened and with
+// what - the only way to tell a real page load from an accident of the success rule.
+static NSString *DPIPassText(NSArray<NSString *> *p) {
+    if (!p.count) return @"";
+    return [NSString stringWithFormat:@"    passed: %@\n", [p componentsJoinedByString:@"; "]];
 }
 
 // nil = this ciadpi build rejected the strategy (not counted as "tested").
@@ -1189,11 +1255,13 @@ static NSString *DPIFailText(NSDictionary *f) {
         // through is dead; skip the full battery (saves ~5 s and a pile of curls).
         NSMutableDictionary *f1 = [NSMutableDictionary dictionary];
         double s1 = 0;
-        NSInteger p1 = [self batteryHosts:probes port:kDPITestPort ips:ips timeout:5 totalTime:&s1 failures:f1];
+        NSInteger p1 = [self batteryHosts:probes port:kDPITestPort ips:ips timeout:5 totalTime:&s1 failures:f1 passed:nil];
         if (p1 > 0 && !_cancel) {
             NSMutableDictionary *f2 = [NSMutableDictionary dictionary];
+            NSMutableArray<NSString *> *pl = [NSMutableArray array];
             double sum = 0;
-            r.ok = [self batteryHosts:hosts port:kDPITestPort ips:ips timeout:5 totalTime:&sum failures:f2];
+            r.ok = [self batteryHosts:hosts port:kDPITestPort ips:ips timeout:5 totalTime:&sum failures:f2 passed:pl];
+            r.passed = pl;
             r.avgTime = r.ok ? sum / r.ok : 0;
             if (diag) *diag = [NSString stringWithFormat:@"fail %@", DPIFailText(f2)];
         } else if (diag) {
@@ -1305,11 +1373,13 @@ static NSString *DPIFailText(NSDictionary *f) {
     r.strategy = raw; r.total = (NSInteger)hosts.count;
     NSMutableDictionary *f1 = [NSMutableDictionary dictionary];
     double s1 = 0;
-    NSInteger p1 = [self batteryHosts:probes port:port ips:ips timeout:5 totalTime:&s1 failures:f1];
+    NSInteger p1 = [self batteryHosts:probes port:port ips:ips timeout:5 totalTime:&s1 failures:f1 passed:nil];
     if (p1 > 0 && !_cancel) {
         NSMutableDictionary *f2 = [NSMutableDictionary dictionary];
+        NSMutableArray<NSString *> *pl = [NSMutableArray array];
         double sum = 0;
-        r.ok = [self batteryHosts:hosts port:port ips:ips timeout:5 totalTime:&sum failures:f2];
+        r.ok = [self batteryHosts:hosts port:port ips:ips timeout:5 totalTime:&sum failures:f2 passed:pl];
+        r.passed = pl;
         r.avgTime = r.ok ? sum / r.ok : 0;
         if (diag) *diag = [NSString stringWithFormat:@"fail %@", DPIFailText(f2)];
     } else if (diag) {
@@ -1372,6 +1442,88 @@ static NSString *DPIFailText(NSDictionary *f) {
     return what;
 }
 
+// The wire probe over several addresses (v0.15.3): every address is asked twice (the YouTube name and a
+// Google name nobody filters), all of it concurrently - at most kDPIWireMax x 2 short-lived curls. Logs
+// two lines per address; the rows carry ip / ky / kg (the `kind` values of wireProbeName:).
+- (NSArray<NSDictionary *> *)wireProbeAddresses:(NSArray<NSString *> *)ips log:(NSMutableString *)log {
+    NSString *nameY = @"www.youtube.com", *nameG = @"www.google.com";
+    NSArray<NSString *> *names = @[nameY, nameG];
+    NSMutableDictionary<NSString *, NSDictionary *> *res = [NSMutableDictionary dictionary];
+    NSObject *lock = [NSObject new];
+    dispatch_group_t g = dispatch_group_create();
+    for (NSString *ip in ips) {
+        for (NSString *nm in names) {
+            dispatch_group_enter(g);
+            [NSThread detachNewThreadWithBlock:^{
+                NSInteger k = 4;
+                NSString *t = @"not tested";
+                if (!self->_cancel) t = [self wireProbeName:nm ip:ip kind:&k];
+                @synchronized (lock) {
+                    res[[NSString stringWithFormat:@"%@|%@", ip, nm]] = @{@"k": @(k), @"t": t};
+                }
+                dispatch_group_leave(g);
+            }];
+        }
+    }
+    dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
+    NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
+    for (NSString *ip in ips) {
+        NSDictionary *y = res[[NSString stringWithFormat:@"%@|%@", ip, nameY]];
+        NSDictionary *gg = res[[NSString stringWithFormat:@"%@|%@", ip, nameG]];
+        if (!y || !gg) continue;
+        [log appendFormat:@"wire: %@  SNI %@ -> %@\n", ip, nameY, y[@"t"]];
+        [log appendFormat:@"wire: %@  SNI %@  -> %@\n", ip, nameG, gg[@"t"]];
+        [rows addObject:@{@"ip": ip, @"ky": y[@"k"], @"kg": gg[@"k"]}];
+    }
+    return rows;
+}
+
+// YES when no probed address completes a TCP handshake for either name.
+static BOOL DPIWireAllNoTCP(NSArray<NSDictionary *> *rows) {
+    if (!rows.count) return NO;
+    for (NSDictionary *r in rows)
+        if (!([r[@"ky"] integerValue] == 1 && [r[@"kg"] integerValue] == 1)) return NO;
+    return YES;
+}
+
+// One verdict over every probed address: the log gets it in English, the return value is the menu note.
+// *sni = YES when some address completes TLS for the Google name but not for the YouTube one.
+static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMutableString *log) {
+    NSUInteger n = rows.count, ok = 0, byName = 0, noTCP = 0;
+    for (NSDictionary *r in rows) {
+        NSInteger ky = [r[@"ky"] integerValue], kg = [r[@"kg"] integerValue];
+        if (ky == 0) ok++;
+        else if (kg == 0) byName++;
+        else if (ky == 1 && kg == 1) noTCP++;
+    }
+    if (sni) *sni = byName > 0;
+    NSString *drop = noTCP ? [NSString stringWithFormat:@" (%lu dropped at the TCP stage: address or route block)",
+                              (unsigned long)noTCP] : @"";
+    if (ok == n) {
+        [log appendString:@"wire verdict: every probed address completes TLS for the YouTube name - no filter seen on it\n"];
+        return @"Адрес YouTube отвечает — блокировки на проводе не видно.";
+    }
+    if (byName > 0) {
+        [log appendFormat:@"wire verdict: SNI filter - %lu of %lu address(es) complete TLS for another name only%@\n",
+                          (unsigned long)byName, (unsigned long)n, drop];
+        return noTCP ? @"Фильтр по имени (SNI): часть адресов отвечает на другое имя, часть отброшена по IP."
+                     : @"Фильтр по имени (SNI): тот же адрес отвечает на другое имя.";
+    }
+    if (ok > 0) {
+        [log appendFormat:@"wire verdict: %lu of %lu address(es) answer for the YouTube name, the rest do not%@\n",
+                          (unsigned long)ok, (unsigned long)n, drop];
+        return @"Часть адресов YouTube отвечает, остальные отброшены.";
+    }
+    if (noTCP == n) {
+        [log appendFormat:@"wire verdict: no TCP handshake on any of the %lu probed address(es) for either name - "
+                          @"THESE addresses are blocked by IP or route (no ClientHello matters before the "
+                          @"handshake); other addresses of the same service may differ\n", (unsigned long)n];
+        return @"Эти адреса не отвечают даже с другим именем — блок по IP или маршруту.";
+    }
+    [log appendString:@"wire verdict: the addresses fail for both names, so the filter is not (only) name-based\n"];
+    return @"Адрес режется независимо от имени — разрезание потока вряд ли поможет.";
+}
+
 - (NSString *)searchLogPath { return [_supDir stringByAppendingPathComponent:@"dpi_search.log"]; }
 
 - (void)searchWithProgress:(DPIProgressBlock)progress done:(DPIDoneBlock)done {
@@ -1404,7 +1556,7 @@ static NSString *DPIFailText(NSDictionary *f) {
         // No network signature here on purpose: the person may paste this log into a chat
         // and the signature contains the router address.
         [log appendFormat:@"# Raketa DPI search %@\n# ciadpi options: %@\n"
-                          @"# list: %ld candidates (stream cutting only: ciadpi on macOS has no fake packets); %lu hosts per strategy; lists: %@\n"
+                          @"# list: %ld candidates (S = sing-box fake ClientHello + fragments, needs root; M = ciadpi stream cutting, no fakes on macOS); %lu hosts per strategy; lists: %@\n"
                           @"# columns: №  ok/total  mean-s  failures(curl-exit x count; 1 = short body)  line\n",
                           [df stringFromDate:[NSDate date]],
                           [self probedOptions] ? @"probed" : @"probe failed (macOS defaults)",
@@ -1415,9 +1567,10 @@ static NSString *DPIFailText(NSDictionary *f) {
         dispatch_async(cbq, ^{ progress(@"search", 0, total, 0); });
         NSMutableArray<NSString *> *names = [NSMutableArray arrayWithArray:hosts];
         [names addObjectsFromArray:probes];
-        NSString *sysAns = DPISystemResolve(@"www.youtube.com", 4);
-        unsigned oa = 0, ob = 0, oc = 0, od = 0;
-        BOOL sysOK = sscanf(sysAns.UTF8String, "%u.%u.%u.%u", &oa, &ob, &oc, &od) == 4 && DPIPublicIPv4(oa, ob);
+        NSString *sysErr = nil;
+        NSArray<NSString *> *sysAll = DPISystemResolveAll(@"www.youtube.com", 4, kDPIWireMax, &sysErr);
+        NSString *sysAns = sysAll.count ? [sysAll componentsJoinedByString:@" "] : (sysErr ?: @"error");
+        BOOL sysOK = sysAll.count > 0;
         [log appendFormat:@"dns: system resolver  www.youtube.com -> %@%@\n", sysAns, sysOK ? @"" : @"  (unusable)"];
         NSString *doh = nil;
         NSDictionary<NSString *, NSString *> *ips = nil;
@@ -1450,33 +1603,50 @@ static NSString *DPIFailText(NSDictionary *f) {
             if (!ips) doh = nil;
         }
 
-        // Where does the filter act? (v0.13.4) The same address is asked twice, once with the
-        // YouTube name and once with a Google name nobody filters. See wireProbeName:.
+        // Where does the filter act? (v0.13.4; v0.15.3: over SEVERAL addresses.) Each address is asked twice,
+        // once with the YouTube name and once with a Google name nobody filters. The 2026-10-25 log asked
+        // only the first address, called it blocked and said no trick can help - and S3 then opened hosts the
+        // control could not, so the verdict is made over every address the resolver gave (see wireProbeAddresses:).
         NSString *wireText = nil;
-        BOOL wireSNI = NO;
-        NSString *wireIP = sysOK ? sysAns : ips[@"www.youtube.com"];
-        if (wireIP.length && !self->_cancel) {
-            NSInteger ky = 0, kg = 0;
-            NSString *ty = [self wireProbeName:@"www.youtube.com" ip:wireIP kind:&ky];
-            NSString *tg = [self wireProbeName:@"www.google.com" ip:wireIP kind:&kg];
-            [log appendFormat:@"wire: %@  SNI www.youtube.com -> %@\n", wireIP, ty];
-            [log appendFormat:@"wire: %@  SNI www.google.com  -> %@\n", wireIP, tg];
-            if (ky == 0) {
-                wireText = @"Адрес YouTube отвечает — блокировки на проводе не видно.";
-                [log appendString:@"wire verdict: the YouTube address answers, no filter seen on it\n"];
-            } else if (kg == 0) {
-                wireSNI = YES;
-                wireText = @"Фильтр по имени (SNI): тот же адрес отвечает на другое имя.";
-                [log appendString:@"wire verdict: SNI filter - the same address completes TLS for another name\n"];
-            } else if (ky == 1 && kg == 1) {
-                wireText = @"Адрес не отвечает даже с другим именем — блок по IP или маршруту, обход DPI не поможет.";
-                [log appendString:@"wire verdict: address or route blocked - no TCP handshake for any name; "
-                                  @"no ClientHello trick can help\n"];
-            } else {
-                wireText = @"Адрес режется независимо от имени — разрезание потока вряд ли поможет.";
-                [log appendString:@"wire verdict: the address fails for both names, so the filter is not (only) name-based\n"];
+        BOOL wireSNI = NO, sysAddrBlocked = NO;
+        NSArray<NSString *> *wireIPs = sysOK ? sysAll
+                                             : (ips[@"www.youtube.com"] ? @[ips[@"www.youtube.com"]] : @[]);
+        if (wireIPs.count && !self->_cancel) {
+            NSArray<NSDictionary *> *rows = [self wireProbeAddresses:wireIPs log:log];
+            wireText = DPIWireVerdict(rows, &wireSNI, log);
+            if (sysOK && DPIWireAllNoTCP(rows) && !self->_cancel) {
+                // Every system address is dropped before the handshake: ask DoH for OTHER addresses of the
+                // same name. If one of them answers, the run (and the YouTube mode, via _dnsSysBad) uses DoH.
+                for (NSString *base in DPIDoHServers()) {
+                    if (self->_cancel) break;
+                    double ds = 0;
+                    NSArray<NSString *> *a = [self dohLookup:@"www.youtube.com" server:base seconds:&ds];
+                    [log appendFormat:@"dns: DoH %@  %@  %.1fs\n", base,
+                                      a.count ? [a componentsJoinedByString:@" "] : @"no answer", ds];
+                    if (!a.count) continue;
+                    NSMutableArray<NSString *> *fresh = [NSMutableArray array];
+                    for (NSString *x in a)
+                        if (![wireIPs containsObject:x] && fresh.count < kDPIWireMax) [fresh addObject:x];
+                    if (!fresh.count) { [log appendString:@"dns: DoH gives the same addresses\n"]; break; }
+                    NSArray<NSDictionary *> *rows2 = [self wireProbeAddresses:fresh log:log];
+                    NSString *up = nil;
+                    for (NSDictionary *r in rows2)
+                        if (!([r[@"ky"] integerValue] == 1 && [r[@"kg"] integerValue] == 1)) { up = r[@"ip"]; break; }
+                    if (up) {
+                        BOOL s2 = NO;
+                        wireText = DPIWireVerdict(rows2, &s2, log);
+                        wireSNI = s2;
+                        NSMutableDictionary<NSString *, NSString *> *m2 =
+                            [[self dohResolveNames:names server:base] mutableCopy];
+                        m2[@"www.youtube.com"] = up;          // the address that answered, not just the first
+                        doh = base; ips = m2; sysAddrBlocked = YES;
+                        [log appendFormat:@"dns: the system addresses do not answer, DoH %@ gives one that does (%@) - "
+                                          @"names go through DoH\n", base, up];
+                    }
+                    break;
+                }
             }
-        } else if (!wireIP.length) {
+        } else if (!wireIPs.count) {
             [log appendString:@"wire: no address to test\n"];
         }
 
@@ -1485,14 +1655,18 @@ static NSString *DPIFailText(NSDictionary *f) {
         // second one isolates DPI from DNS: if it still fails, the filter is on the wire.
         NSMutableDictionary *dfail = [NSMutableDictionary dictionary];
         double dsum = 0;
-        NSInteger dOK = [self batteryHosts:hosts port:0 ips:nil timeout:5 totalTime:&dsum failures:dfail];
+        NSMutableArray<NSString *> *dPass = [NSMutableArray array];
+        NSInteger dOK = [self batteryHosts:hosts port:0 ips:nil timeout:5 totalTime:&dsum failures:dfail passed:dPass];
         [log appendFormat:@"direct, system DNS    %ld/%lu  failures %@\n", (long)dOK,
                           (unsigned long)hosts.count, DPIFailText(dfail)];
+        [log appendString:DPIPassText(dPass)];
         if (ips) {
             NSMutableDictionary *dfail2 = [NSMutableDictionary dictionary];
-            dOK = [self batteryHosts:hosts port:0 ips:ips timeout:5 totalTime:&dsum failures:dfail2];
+            NSMutableArray<NSString *> *dPass2 = [NSMutableArray array];
+            dOK = [self batteryHosts:hosts port:0 ips:ips timeout:5 totalTime:&dsum failures:dfail2 passed:dPass2];
             [log appendFormat:@"direct, DoH addresses %ld/%lu  failures %@\n", (long)dOK,
                               (unsigned long)hosts.count, DPIFailText(dfail2)];
+            [log appendString:DPIPassText(dPass2)];
         }
 
         // Third control: the SAME hosts through ciadpi with no desync option at all. If
@@ -1504,9 +1678,11 @@ static NSString *DPIFailText(NSDictionary *f) {
             double psum = 0;
             NSTask *pt = [self launchCiadpiPort:kDPITestPort strategyArgs:@[]];
             if (pt && !self->_cancel && [self waitReady:pt port:kDPITestPort timeout:1.0]) {
-                pOK = [self batteryHosts:hosts port:kDPITestPort ips:ips timeout:5 totalTime:&psum failures:pfail];
+                NSMutableArray<NSString *> *pPass = [NSMutableArray array];
+                pOK = [self batteryHosts:hosts port:kDPITestPort ips:ips timeout:5 totalTime:&psum failures:pfail passed:pPass];
                 [log appendFormat:@"proxy, no desync    %ld/%lu  failures %@\n", (long)pOK,
                                   (unsigned long)hosts.count, DPIFailText(pfail)];
+                [log appendString:DPIPassText(pPass)];
             } else {
                 [log appendString:@"proxy, no desync    could not start ciadpi\n"];
             }
@@ -1544,6 +1720,10 @@ static NSString *DPIFailText(NSDictionary *f) {
             allTested[e.raw] = r;
             [log appendFormat:@"#%@  %ld/%ld  %.2f  %@  %@\n", e.label,
                               (long)r.ok, (long)r.total, r.avgTime, r.ok == r.total ? @"-" : (diag ?: @"-"), e.raw];
+            if (r.ok > 0) {                   // v0.15.3: the evidence, not just the count
+                [log appendFormat:@"    vs no bypass: %+ld hosts\n", (long)(r.ok - dOK)];
+                [log appendString:DPIPassText(r.passed)];
+            }
             if (r.ok > 0) { [found addObject:r]; if (r.ok > best) best = r.ok; }
             usleep(400000);                   // be gentle between strategies
         }
@@ -1572,7 +1752,8 @@ static NSString *DPIFailText(NSDictionary *f) {
         self->_lastCurated = nCurated;
         self->_directOK = dOK; self->_directTotal = (NSInteger)hosts.count;
         self->_passOK = pOK; self->_passTotal = (NSInteger)hosts.count;
-        self->_dohURL = doh; self->_dnsSysBad = !sysOK;
+        self->_dohURL = doh; self->_dnsSysBad = !sysOK || sysAddrBlocked;
+        self->_sysAddrBlocked = sysAddrBlocked;
         self->_wireVerdict = wireText; self->_wireSNI = wireSNI;
         self->_tested = allTested;
         [self saveResults];

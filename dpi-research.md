@@ -1,4 +1,4 @@
-# DPI research digest — Raketa (state of 2026-10-14)
+# DPI research digest — Raketa (state of 2026-10-25)
 
 Purpose: everything learned about YouTube DPI bypass on macOS so that no later conversation
 has to research it again. Read this before any DPI work; research only what is newer than the
@@ -181,3 +181,59 @@ git clone --depth 1 https://github.com/xvzc/SpoofDPI /tmp/spoofdpi   # internal/
   whether any S passes. Gate for the next step: read the `#S1..#S8` lines and the `sb log:` block of the
   next `dpi_search.log`. All S fail with spoof errors -> the 10.13 offsets are the suspect; all S fail
   without errors -> the fakes do not fool this filter, go to path B (needs the person's OK).
+
+
+## 9. Update 2026-10-25 (v0.15.3): the first candidate that opened anything
+
+- **[measured] Log of 2026-10-25 (v0.15.2, 18 candidates, 19 hosts).** Controls: direct 3/19 (curl 28 x16), ciadpi
+  with no desync 3/19. The wire probe asked ONE address (142.251.153.4) with both names: no TCP handshake for
+  either -> the old verdict "address or route blocked, no ClientHello trick can help". Then **S3** (sing-box
+  `tls_spoof` www.google.com `wrong-sequence` + `tls_fragment`) opened **6/19** (curl 28 x13). Every other S line
+  (the fake alone with wrong-sequence / md5 / checksum / ack / name ya.ru, fragments alone, fake + TLS-record
+  fragments) and all ten M lines: probe fail (curl 28 on www.youtube.com and i.ytimg.com). Not recorded: which
+  3 hosts pass directly, which 6 pass through S3, and their times - `mean-s` printed 0.00 for six passed hosts,
+  which a real TLS page load cannot give. [inferred] either the time is not parsed for these requests or the
+  successes are not full page loads; v0.15.3 logs `passed: host http/bytes/secs` to settle it.
+- **[inferred] What the log shows and what it does not.** One system address gets no TCP handshake (an IP or
+  route drop is one explanation); it is not the only YouTube address (S3 opened others), so a verdict over one
+  address was a wrong generalisation. The fake alone and the fragments alone fail while the two together open
+  something: the filter needs both, which is the shape of every maintained zapret rule (section 2). It does NOT
+  show that video plays - only that some of 19 hosts answered. Playback in YouTube mode is the next test.
+- **[source] sing-box v1.14.4 (2026-10-23) vs v1.14.3 (`git diff`):** in `common/tlsspoof` only `raw_linux.go`
+  changed (routing inheritance); the macOS spoofer and `tlsfragment` are unchanged -> no core bump for this.
+- **[source] How sing-box fragments on macOS:** `common/tlsfragment/conn.go` cuts the first write at a random point
+  inside each SNI label except the public suffix (www.youtube.com -> 2 cuts, 3 segments). Between segments
+  `wait_darwin.go` waits for the ACK (`SO_NWRITE`) and sleeps the fixed `tls_fragment_fallback_delay` (default
+  500 ms) only when the ACK came within 20 ms (a near cache or a transparent proxy).
+- **[source] zapret catalogue re-read** (Flowseal/zapret-discord-youtube HEAD `176f56d`, 2026-10-20, 23 .bat): the
+  google-list TCP/443 rules are the families of section 2 (hostfakesplit x4 with `ts` + `host=www.google.com`,
+  fake+multisplit seqovl681 `ts`, fake `ts`/`badseq`, fake+fakedsplit, fake+multidisorder); none is a plain
+  split. [source: Discussion #251, comments of 2026-05-30 and 2026-06-03] after the 2026-05-28 TSPU update users
+  moved `googlevideo.com` out of the google list into its own rule: `hostfakesplit` + `ts` +
+  `host=www.google.com`, repeats=4. ByeDPI HEAD is still `ba53229`; SpoofDPI HEAD is `0b49eaf` (it was `eb07db9` at
+  v1.5.4; the difference was not read).
+- **[summary] User reports, October 2026 (not primary, single comments):** Zapret-Manager #1169 (2026-10-21) - seven
+  googlevideo CDN hosts "are cut over TCP without a VPN, zapret does not break through"; Discussion #251
+  (2026-10-22) - a comment advises excluding 142.250.0.0/15 from any VPN/proxy (the snippet does not say why;
+  read the thread before using it - it is NOT evidence of an IP drop); zapret-wiki articles of 2026-10-20
+  (`ttk-youtube-ggc-october-2026`, `googlevideo-pcap-analysis-ttk-october-2026`, `ggc-googlevideo-how-it-works`)
+  - titles only, NOT read (the wiki is blocked from Russian networks since 2026-10-19; re-read before quoting).
+  The 142.251.153.4 of the log lies inside that /15 - a coincidence worth one line, no more.
+- **[summary] How the TSPU follows a flow** (Habr 1009560 "the first 16 KB", Habr 1047442 and zapret wiki
+  `dpi-tls-june-2026`; single-author observations that differ per operator): IP drop before the handshake -> SNI
+  and ClientHello in the first packets -> behavioural rules (a freeze after ~16 KB / ~25 packets "tcp 16-20",
+  connection rate, subnet + fingerprint combinations). Hypotheses for this network. A handshake that completes
+  and then stalls is a different failure from "no handshake"; the success rule already fails a chunked body that
+  stops under 32 KB.
+- **What v0.15.3 does.** (1) The wire probe asks up to 4 addresses; when every system address is dropped at TCP it
+  asks DoH for others and, if one answers, uses DoH names for the run and at runtime (`_sysAddrBlocked`).
+  (2) S list rebuilt around the working combination - S1 = google/badseq/frag [measured 6/19]; S2 checksum;
+  S3 md5; S4 ack; S5 fake name ya.ru; S6 max.ru; S7 S1 with a 40 ms pause [inferred]. The old S1, S2, S4-S8 are
+  removed as measured dead; the old S3 line is the new S1. (3) `passed:` and `vs no bypass:` in the log.
+- **Gate for the next step (read the next `dpi_search.log`):** (a) the `wire:` rows per address and the DoH rows -
+  is any address reachable; (b) the `passed:` line of S1 - http codes, bytes, seconds: real page loads (hundreds
+  of ms, kilobytes) or artefacts (0.00 s); (c) which of S2-S7 open hosts too. S1 real -> choose it and test
+  playback in YouTube mode (googlevideo is the part users report as cut). Every address dropped at TCP, DoH
+  addresses included -> path B (needs the person's OK).
+- **Do not (added):** conclude "no trick can help" from one address; treat a count of hosts as playback; re-add
+  the fake-only or fragments-only S lines.

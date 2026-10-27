@@ -50,14 +50,45 @@ static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 
 // 359  –419   bottom dock (v0.14.1): a rounded card 280×52, 10pt side / 8pt bottom margin;
 //             inside, bar-relative: buttons y=23..44 (21pt), credit y=4..18
 //             Логи | Ядра | credit | ✈ | Выход
-static const CGFloat kW      = 300.0;
-static const CGFloat kH      = 419.0;   // v0.15.0: +42 for the «Ускориться» row (28pt + 14pt gap); was 377
-static const CGFloat kSpeedTop = 252.0; // v0.15.0: top of the «Ускориться» button
-static const CGFloat kYTTop    = 294.0; // v0.15.0: top of the YouTube section label (was 252); its row is kYTTop + 21
-static const CGFloat kHTG    = 170.0;
-static const CGFloat kPAD    = 20.0;
-// Width of "Добавить ключи" button: kW - kPAD*2 - 8(gap) - 28(refresh) = 224
-static const CGFloat kAddW   = 224.0;
+// ── Layout metrics (v0.15.3) ────────────────────────────────────────────────────────────────
+// Every size of the main column is derived top to bottom from the base units below, so changing one unit
+// reflows the column and kH follows. Before this, kH (419) and the tops (46, 67, 113, ...) were typed
+// numbers that had to be kept equal to each other by hand. They are ENUM constants on purpose: a
+// `static const CGFloat` is not a compile-time constant in C, so it cannot initialise another one.
+// The values reproduce the v0.15.2 layout exactly (46 67 113 134 174 202 252 294 315 359 419).
+enum {
+    RKWidth = 300, RKPadX = 20, RKGapX = 8, RKRefW = 28, RKHTG = 170,
+    RKUnit = 14,                                  // the rhythm: the gap between rows
+    RKHdrH = 32, RKLblH = 13, RKLblGap = 8,       // header band; section label line; label -> its control
+    RKCtlH = 28, RKFieldH = 26, RKStatH = 14, RKConnH = 36,
+    RKSecGap = 18,                                // gap before the "Сервер" label (room for the add button)
+    RKDockH = 52, RKDockGap = 16, RKDockSide = 10, RKDockBot = 8,
+    RKTopSub    = RKHdrH + RKUnit,                        //  46  "Подписка" label
+    RKTopSubRow = RKTopSub + RKLblH + RKLblGap,           //  67
+    RKTopSrv    = RKTopSubRow + RKCtlH + RKSecGap,        // 113  "Сервер" label
+    RKTopSrvRow = RKTopSrv + RKLblH + RKLblGap,           // 134
+    RKTopStat   = RKTopSrvRow + RKFieldH + RKUnit,        // 174
+    RKTopConn   = RKTopStat + RKStatH + RKUnit,           // 202
+    RKTopSpeed  = RKTopConn + RKConnH + RKUnit,           // 252
+    RKTopYT     = RKTopSpeed + RKCtlH + RKUnit,           // 294
+    RKTopYTRow  = RKTopYT + RKLblH + RKLblGap,            // 315
+    RKTopDock   = RKTopYTRow + RKCtlH + RKDockGap,        // 359
+    RKHeight    = RKTopDock + RKDockH + RKDockBot,        // 419
+    // small parts
+    RKSubInfoW = 190, RKYTCapW = 160, RKSecLblW = 200,    // right-aligned captions; section label width
+    RKDot = 7, RKDotGap = 6,                              // status dot and its gap to the text
+    RKDockPad = 10, RKDockBtnY = 23, RKDockBtnH = 21,     // inside the dock card
+    RKBtnLogW = 58, RKBtnCoresW = 52, RKBtnQuitW = 68, RKBtnTGW = 32, RKBtnGapA = 6, RKBtnGapB = 4,
+    RKCreditY = 4, RKCreditH = 14
+};
+static const CGFloat kW        = RKWidth;
+static const CGFloat kH        = RKHeight;
+static const CGFloat kSpeedTop = RKTopSpeed;   // top of the «Ускориться» button
+static const CGFloat kYTTop    = RKTopYT;      // top of the YouTube section label; its row is RKTopYTRow
+static const CGFloat kHTG      = RKHTG;
+static const CGFloat kPAD      = RKPadX;
+static const CGFloat kRefW     = RKRefW;                                 // square ↻ / 🔍 / ▾ buttons
+static const CGFloat kAddW     = RKWidth - RKPadX * 2 - RKGapX - RKRefW; // "Добавить ключи" = 224
 
 // ── Soft corners (v0.14.1) ─────────────────────────────────────────────────────
 // One place for the radii so the whole UI stays consistent. Controls are capsules
@@ -72,8 +103,14 @@ static void RKRound(CALayer *l, CGFloat r) {
     if ([l respondsToSelector:NSSelectorFromString(@"setCornerCurve:")])
         [l setValue:@"continuous" forKey:@"cornerCurve"];
 }
-// Width of refresh square button
-static const CGFloat kRefW   = 28.0;
+// One device pixel in points: 0.5 on a 2x (Retina) display, 1.0 on a 1x one (v0.15.3). A typed 0.5 is half a
+// pixel on a 1x screen, which AppKit smears into a grey 1 px line. Refreshed in viewWillAppear for the
+// screen the popover really opens on (the menu-bar item may sit on a display with another scale).
+static CGFloat rkHair = 0.5;
+static CGFloat rkHairFor(NSScreen *s) {
+    CGFloat sc = s ? s.backingScaleFactor : 2.0;
+    return sc >= 1.0 ? 1.0 / sc : 1.0;
+}
 
 // ── Colors — palette tables, allocated in +initialize and on theme change ───
 // Row order = enum order. Each row: light RGBA, then dark RGBA. The patch
@@ -260,6 +297,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 + (void)initialize {
     if (self != [ViewController class]) return;
     rkSetPalette(rkSystemIsDark());       // v0.13.0: light or dark, per the system
+    rkHair = rkHairFor([NSScreen mainScreen]);
     sTaskQ    = dispatch_queue_create("com.samurai.raketa.tasks", DISPATCH_QUEUE_SERIAL);
 }
 
@@ -278,7 +316,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     root.layer.backgroundColor = rkBG.CGColor;
 
     // ── Header (0–32) ─────────────────────────────────────────────────────────
-    NSView *hdr = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-32, kW, 32)];
+    NSView *hdr = [[NSView alloc] initWithFrame:NSMakeRect(0, kH-RKHdrH, kW, RKHdrH)];
     hdr.wantsLayer = YES;
     hdr.layer.backgroundColor = rkBG.CGColor;
     [root addSubview:hdr];
@@ -297,12 +335,13 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // spacing alone, per the redesign brief.
 
     // ── ПОДПИСКА (46–95) — one row: wide add button + square refresh ──────────
-    [root addSubview:[self sectionLbl:@"Подписка" top:46]];
+    [root addSubview:[self sectionLbl:@"Подписка" top:RKTopSub]];
     // v0.14.0: traffic / expiry the panel reports (Subscription-Userinfo), right-aligned on the label row
     self.subInfoLabel = [self lbl:[[NSUserDefaults standardUserDefaults] stringForKey:kSubInfoKey] ?: @""
                              font:[NSFont systemFontOfSize:10] color:rkSub
-                            frame:[self rx:kW-kPAD-190 top:46 w:190 h:13]];
+                            frame:[self rx:kW-kPAD-RKSubInfoW top:RKTopSub w:RKSubInfoW h:RKLblH]];
     self.subInfoLabel.alignment = NSTextAlignmentRight;
+    [self rkTail:self.subInfoLabel];
     [root addSubview:self.subInfoLabel];
 
     // "Добавить ключи" — primary, wide
@@ -316,7 +355,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // fill white (not rkBtn's pale blue) so it still reads as the primary
     // action on the row — the refresh button stays secondary/pale blue.
     self.addKeysBtn = [[NSButton alloc]
-                       initWithFrame:[self rx:kPAD top:67 w:kAddW h:28]];
+                       initWithFrame:[self rx:kPAD top:RKTopSubRow w:kAddW h:RKCtlH]];
     self.addKeysBtn.attributedTitle = [[NSAttributedString alloc]
         initWithString:@"＋  Добавить ключи"
             attributes:@{
@@ -326,7 +365,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     self.addKeysBtn.bordered    = NO;
     self.addKeysBtn.wantsLayer  = YES;
     RKRound(self.addKeysBtn.layer, kRadCtl);
-    self.addKeysBtn.layer.borderWidth     = 0.5;
+    self.addKeysBtn.layer.borderWidth     = rkHair;
     self.addKeysBtn.layer.borderColor     = rkBorder.CGColor;
     self.addKeysBtn.layer.backgroundColor = rkField.CGColor;
     self.addKeysBtn.target = self;
@@ -336,9 +375,9 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // ↻ refresh button — square, icon only, right of add button
     // ↻ = U+21BB CLOCKWISE OPEN CIRCLE ARROW — clear refresh metaphor,
     // present in all macOS system fonts since 10.9
-    CGFloat refX = kPAD + kAddW + 8;
+    CGFloat refX = kPAD + kAddW + RKGapX;
     self.refreshIconBtn = [[NSButton alloc]
-                           initWithFrame:[self rx:refX top:67 w:kRefW h:28]];
+                           initWithFrame:[self rx:refX top:RKTopSubRow w:kRefW h:RKCtlH]];
     // attributedTitle + bordered=NO: NSBezelStyleRounded clips/hides the ↻
     // glyph at small button sizes on macOS 10.13. This renders reliably.
     // Same recipe as every other icon button (ytSetTitle:, styleBtn:): a centered paragraph
@@ -357,7 +396,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     self.refreshIconBtn.alignment   = NSTextAlignmentCenter;
     self.refreshIconBtn.wantsLayer  = YES;
     RKRound(self.refreshIconBtn.layer, kRadCtl);
-    self.refreshIconBtn.layer.borderWidth     = 0.5;
+    self.refreshIconBtn.layer.borderWidth     = rkHair;
     self.refreshIconBtn.layer.borderColor     = rkBorder.CGColor;
     self.refreshIconBtn.layer.backgroundColor = rkBtn.CGColor;
     self.refreshIconBtn.toolTip    = @"Обновить ключи";
@@ -366,18 +405,18 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [root addSubview:self.refreshIconBtn];
 
     // ── СЕРВЕР (113–160) ───────────────────────────────────────────────────────
-    [root addSubview:[self sectionLbl:@"Сервер" top:113]];
+    [root addSubview:[self sectionLbl:@"Сервер" top:RKTopSrv]];
     // v0.14.1: the system popup bezel is a square-ish rounded rect that cannot be softened, so the
     // popup is borderless (title + arrows only) and sits in a capsule "field" drawn like the buttons.
-    NSView *ddBox = [[NSView alloc] initWithFrame:[self rx:kPAD top:134 w:kW-kPAD*2 h:26]];
+    NSView *ddBox = [[NSView alloc] initWithFrame:[self rx:kPAD top:RKTopSrvRow w:kW-kPAD*2 h:RKFieldH]];
     ddBox.wantsLayer = YES;
-    RKRound(ddBox.layer, 13);
-    ddBox.layer.borderWidth     = 0.5;
+    RKRound(ddBox.layer, RKFieldH / 2.0);
+    ddBox.layer.borderWidth     = rkHair;
     ddBox.layer.borderColor     = rkBorder.CGColor;
     ddBox.layer.backgroundColor = rkField.CGColor;
     [root addSubview:ddBox];
     self.dropdown = [[NSPopUpButton alloc]
-                     initWithFrame:NSMakeRect(8, 0, ddBox.frame.size.width - 16, 26) pullsDown:NO];
+                     initWithFrame:NSMakeRect(RKGapX, 0, ddBox.frame.size.width - RKGapX*2, RKFieldH) pullsDown:NO];
     self.dropdown.bordered = NO;
     [(NSPopUpButtonCell *)self.dropdown.cell setArrowPosition:NSPopUpArrowAtCenter];
     [self.dropdown addItemWithTitle:@"— серверы не загружены —"];
@@ -388,15 +427,16 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [ddBox addSubview:self.dropdown];
 
     // ── Status (174–188) ──────────────────────────────────────────────────────
-    CGFloat dotY = kH - 174 - 7;
-    self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(kPAD, dotY+1, 7, 7)];
+    CGFloat dotY = kH - RKTopStat - RKDot;
+    self.statusDot = [[NSView alloc] initWithFrame:NSMakeRect(kPAD, dotY+1, RKDot, RKDot)];
     self.statusDot.wantsLayer = YES;
-    self.statusDot.layer.cornerRadius    = 3.5;
+    self.statusDot.layer.cornerRadius    = RKDot / 2.0;
     self.statusDot.layer.backgroundColor = rkSub.CGColor;
     [root addSubview:self.statusDot];
     self.statusLabel = [self lbl:@"Готов к работе"
                             font:[NSFont systemFontOfSize:11] color:rkSub
-                           frame:NSMakeRect(kPAD+13, dotY-2, kW-kPAD*2-13, 14)];
+                           frame:NSMakeRect(kPAD+RKDot+RKDotGap, dotY-2, kW-kPAD*2-RKDot-RKDotGap, RKStatH)];
+    [self rkTail:self.statusLabel];
     [root addSubview:self.statusLabel];
 
     // ── Connect button (202–238) — capsule-style rounded rect ────────────────
@@ -406,15 +446,15 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // method keeps >=14pt from its neighbor; this one now gets 16pt too,
     // and there's no separator line immediately under it to crowd against.
     self.connectBtn = [[NSButton alloc]
-                       initWithFrame:[self rx:kPAD top:202 w:kW-kPAD*2 h:36]];
+                       initWithFrame:[self rx:kPAD top:RKTopConn w:kW-kPAD*2 h:RKConnH]];
     self.connectBtn.title    = @"";
     self.connectBtn.bordered = NO;
     self.connectBtn.wantsLayer = YES;
-    RKRound(self.connectBtn.layer, 18);
+    RKRound(self.connectBtn.layer, RKConnH / 2.0);
     // Thinner border (was 1.0) — part of the "same colors, lighter touch"
     // refresh; the icon-refresh button already used 0.5 and looked right,
     // so the connect button now matches it exactly.
-    self.connectBtn.layer.borderWidth     = 0.5;
+    self.connectBtn.layer.borderWidth     = rkHair;
     self.connectBtn.layer.borderColor     = rkBorder.CGColor;
     self.connectBtn.layer.backgroundColor = rkBtn.CGColor;
     self.connectBtn.target = self;
@@ -428,27 +468,27 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 
     // ── Bottom dock (359–419) — v0.14.1: a rounded card, 280×52 at (10, 8): Логи | Ядра | credit | ✈ | Выход ──
     // Child frames are dock-relative; x = absolute x - 10, so the buttons keep their old absolute x.
-    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(10, 8, kW-20, 52)];
+    NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(RKDockSide, RKDockBot, kW-RKDockSide*2, RKDockH)];
     bar.wantsLayer = YES;
     RKRound(bar.layer, kRadCard);
     bar.layer.backgroundColor = rkSurface.CGColor;
     [root addSubview:bar];
 
     NSButton *logBtn = [self btn:@"Логи"
-                           frame:NSMakeRect(10, 23, 58, 21)
+                           frame:NSMakeRect(RKDockPad, RKDockBtnY, RKBtnLogW, RKDockBtnH)
                           action:@selector(openLogs) primary:NO];
     [self styleBtn:logBtn size:11 primary:NO];
     [bar addSubview:logBtn];
 
     // v0.14.0: core updater menu (active sing-box version, check for update, back to the bundled core)
     self.coresBtn = [self btn:@"Ядра"
-                        frame:NSMakeRect(10+58+6, 23, 52, 21)
+                        frame:NSMakeRect(RKDockPad+RKBtnLogW+RKBtnGapA, RKDockBtnY, RKBtnCoresW, RKDockBtnH)
                        action:@selector(coresMenu) primary:NO];
     [self styleBtn:self.coresBtn size:11 primary:NO];
     [bar addSubview:self.coresBtn];
 
     NSButton *quitBtn = [self btn:@"Выход"
-                            frame:NSMakeRect(kW-20-10-68, 23, 68, 21)
+                            frame:NSMakeRect(kW-RKDockSide*2-RKDockPad-RKBtnQuitW, RKDockBtnY, RKBtnQuitW, RKDockBtnH)
                            action:@selector(quit) primary:NO];
     [self styleBtn:quitBtn size:11 primary:NO];
     [bar addSubview:quitBtn];
@@ -456,7 +496,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // Paper-plane Telegram icon button — 32×21pt, left of Выход with 4pt gap (v0.13.5: a drawn
     // paper plane instead of the ✈ airplane character, which read as "airplane mode")
     self.tgIconBtn = [[NSButton alloc]
-                      initWithFrame:NSMakeRect(kW-20-10-68-4-32, 23, 32, 21)];
+                      initWithFrame:NSMakeRect(kW-RKDockSide*2-RKDockPad-RKBtnQuitW-RKBtnGapB-RKBtnTGW, RKDockBtnY, RKBtnTGW, RKDockBtnH)];
     self.tgIconBtn.title      = @"";
     [self styleBtn:self.tgIconBtn size:14 primary:NO];
     self.tgIconBtn.image         = RKPaperPlaneImage(rkText);
@@ -467,7 +507,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [bar addSubview:self.tgIconBtn];
 
     // Credit — 9pt Mini, tracked, centred
-    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 4, kW-20, 14)];
+    NSTextField *credit = [[NSTextField alloc] initWithFrame:NSMakeRect(0, RKCreditY, kW-RKDockSide*2, RKCreditH)];
     credit.bezeled = NO; credit.drawsBackground = NO;
     credit.editable = NO; credit.selectable = NO;
     credit.alignment = NSTextAlignmentCenter;
@@ -483,6 +523,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     // ── TG Panel ──────────────────────────────────────────────────────────────
     [self buildTGPanel:root];
 
+    [self rkNoFocusRings:root];
     self.view = root; self.connected = NO; self.stopping = NO; self.fetchingKeys = NO;
     self.tgOpen = NO; self.corePID = 0;
 
@@ -1003,6 +1044,29 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 - (void)viewWillAppear {
     [super viewWillAppear];
     [self applyThemeNow];
+    [self applyHairlineFor:self.view.window.screen];
+}
+
+// v0.15.3: 1 device pixel for the screen the popover opens on; only layers that already carry a hairline
+// (borderWidth 0...1) are touched.
+- (void)applyHairlineFor:(NSScreen *)screen {
+    CGFloat hv = rkHairFor(screen ?: [NSScreen mainScreen]);
+    if (fabs(hv - rkHair) < 0.001) return;
+    rkHair = hv;
+    [self rkHairlines:self.view];
+}
+- (void)rkHairlines:(NSView *)view {
+    CALayer *l = view.layer;
+    if (l && l.borderWidth > 0 && l.borderWidth <= 1.0) l.borderWidth = rkHair;
+    for (NSView *s in view.subviews) [self rkHairlines:s];
+}
+
+// v0.15.3: the custom buttons are layer-drawn capsules. The system focus ring is a RECTANGLE in the
+// system accent colour (green for a person who picked a green accent) drawn around the frame, not the
+// capsule - the "wrongly highlighted button". They are mouse-driven; no ring.
+- (void)rkNoFocusRings:(NSView *)view {
+    if ([view isKindOfClass:[NSButton class]]) view.focusRingType = NSFocusRingTypeNone;
+    for (NSView *s in view.subviews) [self rkNoFocusRings:s];
 }
 
 - (void)applyThemeNow {
@@ -1012,6 +1076,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     if (!self.isViewLoaded) return;
     self.view.appearance = rkAppearanceFor(dark);
     [self rkRecolor:self.view];
+    [self renderConnectButton];
     [self.view setNeedsDisplay:YES];
 }
 
@@ -1056,7 +1121,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     b.bordered   = NO;
     b.wantsLayer = YES;
     RKRound(b.layer, b.frame.size.height / 2.0);      // v0.14.1: capsule, whatever the height
-    b.layer.borderWidth     = 0.5;
+    b.layer.borderWidth     = rkHair;
     b.layer.borderColor     = (p ? rkAccent : rkBorder).CGColor;
     b.layer.backgroundColor = (p ? rkTintAccent : rkBtn).CGColor;
 }
@@ -1124,11 +1189,11 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 - (BOOL)animationsTweaked { return self.tuner.animationsTweaked; }
 
 - (void)buildSpeedRow:(NSView *)root {
-    self.speedBtn = [[NSButton alloc] initWithFrame:[self rx:kPAD top:kSpeedTop w:kW-kPAD*2 h:28]];
+    self.speedBtn = [[NSButton alloc] initWithFrame:[self rx:kPAD top:kSpeedTop w:kW-kPAD*2 h:RKCtlH]];
     self.speedBtn.bordered   = NO;
     self.speedBtn.wantsLayer = YES;
     RKRound(self.speedBtn.layer, kRadCtl);
-    self.speedBtn.layer.borderWidth = 0.5;
+    self.speedBtn.layer.borderWidth = rkHair;
     self.speedBtn.target = self;
     self.speedBtn.action = @selector(speedUp);
     [root addSubview:self.speedBtn];
@@ -1215,7 +1280,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     b.bordered   = NO;
     b.wantsLayer = YES;
     RKRound(b.layer, r.size.height / 2.0);            // v0.14.1: capsule (a circle for the square icons)
-    b.layer.borderWidth     = 0.5;
+    b.layer.borderWidth     = rkHair;
     b.layer.borderColor     = rkBorder.CGColor;
     b.layer.backgroundColor = rkBtn.CGColor;
     b.toolTip = tip;
@@ -1233,34 +1298,35 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         NSParagraphStyleAttributeName:  ps }];
 }
 
-// Row (kYTTop+21 = 315–343): [🔍 (28)] [▶ Смотреть YouTube (188)] [▾ (28)]
+// Row (RKTopYTRow = 315–343): [🔍 (28)] [▶ Смотреть YouTube (188)] [▾ (28)]
 - (void)buildYouTubeRow:(NSView *)root {
     [root addSubview:[self sectionLbl:@"YouTube" top:kYTTop]];
     self.ytCaption = [self lbl:@"" font:[NSFont systemFontOfSize:11] color:rkSub
-                         frame:[self rx:kW-kPAD-160 top:kYTTop w:160 h:13]];
+                         frame:[self rx:kW-kPAD-RKYTCapW top:kYTTop w:RKYTCapW h:RKLblH]];
     self.ytCaption.alignment = NSTextAlignmentRight;
+    [self rkTail:self.ytCaption];
     [root addSubview:self.ytCaption];
 
-    CGFloat midX = kPAD + kRefW + 8;
-    CGFloat midW = kW - kPAD*2 - kRefW*2 - 16;
+    CGFloat midX = kPAD + kRefW + RKGapX;
+    CGFloat midW = kW - kPAD*2 - kRefW*2 - RKGapX*2;
 
     self.ytSearchBtn = [self ytIconBtn:@"🔍" tip:@"Обновить список стратегий и найти лучшие для этой сети"
                                 action:@selector(ytSearchClicked)
-                                 frame:[self rx:kPAD top:kYTTop+21 w:kRefW h:28]];
+                                 frame:[self rx:kPAD top:RKTopYTRow w:kRefW h:RKCtlH]];
     [root addSubview:self.ytSearchBtn];
 
-    self.ytBtn = [[NSButton alloc] initWithFrame:[self rx:midX top:kYTTop+21 w:midW h:28]];
+    self.ytBtn = [[NSButton alloc] initWithFrame:[self rx:midX top:RKTopYTRow w:midW h:RKCtlH]];
     self.ytBtn.bordered   = NO;
     self.ytBtn.wantsLayer = YES;
     RKRound(self.ytBtn.layer, kRadCtl);
-    self.ytBtn.layer.borderWidth  = 0.5;
+    self.ytBtn.layer.borderWidth  = rkHair;
     self.ytBtn.target = self;
     self.ytBtn.action = @selector(ytToggle);
     [root addSubview:self.ytBtn];
 
     self.ytListBtn = [self ytIconBtn:@"▾" tip:@"Стратегии для YouTube: лучшие и выбор вручную"
                               action:@selector(ytShowMenu)
-                               frame:[self rx:kW-kPAD-kRefW top:kYTTop+21 w:kRefW h:28]];
+                               frame:[self rx:kW-kPAD-kRefW top:RKTopYTRow w:kRefW h:RKCtlH]];
     [root addSubview:self.ytListBtn];
 }
 
@@ -1814,12 +1880,16 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
                            self.dropdown.titleOfSelectedItem ?: @""]
                        : @"Готов к работе";
     [self setStatus:lbl color:on ? rkGreen : rkSub];
-    [self setConnectTitle:(on ? @"●  ВКЛ" : @"○  ВЫКЛ") color:(on ? rkGreen : rkSub)];
-    self.connectBtn.layer.borderColor = on ? rkGreen.CGColor : rkBorder.CGColor;
-    self.connectBtn.layer.backgroundColor = on
-        ? rkTintGreen.CGColor
-        : rkBtn.CGColor;
+    [self renderConnectButton];
     [self ytUIRender];                       // v0.12.0
+}
+// v0.15.3: the whole look of ВКЛ/ВЫКЛ is derived from self.connected here and nowhere else (it used to be set
+// in the initial build and again in uiConnected:, and a theme switch could only remap the colours it found).
+- (void)renderConnectButton {
+    BOOL on = self.connected;
+    [self setConnectTitle:(on ? @"●  ВКЛ" : @"○  ВЫКЛ") color:(on ? rkGreen : rkSub)];
+    self.connectBtn.layer.borderColor     = (on ? rkGreen : rkBorder).CGColor;
+    self.connectBtn.layer.backgroundColor = (on ? rkTintGreen : rkBtn).CGColor;
 }
 - (void)setStatus:(NSString *)text color:(NSColor *)color {
     self.statusLabel.stringValue         = text;
@@ -1937,9 +2007,15 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     v.bezeled=NO; v.drawsBackground=NO; v.editable=NO; v.selectable=NO;
     return v;
 }
+// Text that comes from outside (status messages, the panel's traffic line, a strategy caption) must end in
+// an ellipsis, not be cut mid-glyph at the frame edge (v0.15.3). The full text stays in the tooltip.
+- (void)rkTail:(NSTextField *)t {
+    [(NSTextFieldCell *)t.cell setLineBreakMode:NSLineBreakByTruncatingTail];
+    [(NSTextFieldCell *)t.cell setUsesSingleLineMode:YES];
+}
 - (NSTextField *)sectionLbl:(NSString *)s top:(CGFloat)t {
     return [self lbl:s font:[NSFont systemFontOfSize:11 weight:NSFontWeightMedium]
-               color:rkSub frame:[self rx:kPAD top:t w:200 h:13]];
+               color:rkSub frame:[self rx:kPAD top:t w:RKSecLblW h:RKLblH]];
 }
 - (NSTextField *)monoLbl:(NSString *)s frame:(NSRect)r {
     NSTextField *v = [[NSTextField alloc] initWithFrame:r];

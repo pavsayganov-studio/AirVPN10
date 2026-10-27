@@ -25,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (assign) NSInteger ok;         // hosts reachable through this strategy
 @property (assign) NSInteger total;      // hosts tested
 @property (assign) double    avgTime;    // mean seconds of the successful requests
+@property (copy)   NSArray<NSString *> *passed;   // v0.15.3: "host http/bytes/secs" of the hosts that passed (this run only, not persisted)
 @end
 
 // stage: @"update" (checking the repo) or @"search"; done/total count strategies

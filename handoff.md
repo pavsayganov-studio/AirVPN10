@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.15.2
+**Current version:** v0.15.3
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -979,3 +979,29 @@ object. (6) The «Ускориться» report puts the Trash size first (the s
 (7) The junk cleaner of patch_raketa_0.15.0.py deleted sibling `patch_raketa_*.py` files lying in the repo root, which broke
 a chain of patches: keep patch scripts OUTSIDE the repo (`../rk_patches/`) and run them by path.
 Not verifiable here: everything that needs a Mac (see 22.2 "Not verified on a Mac").
+
+
+## 23. v0.15.3: DPI evidence, S list, layout metrics
+
+**DPI (details and sources: `dpi-research.md` section 9).** The 2026-10-25 log: S3 (fake ClientHello + TCP
+fragments) opened 6/19 against 3/19 with no bypass, everything else 0/19. Changes: the wire probe asks up to four
+addresses (`wireProbeAddresses:log:`, `DPIWireVerdict`) instead of the first one; when all system addresses get no
+TCP handshake it asks DoH for others and, if one answers, the run and the YouTube mode use DoH names
+(`_sysAddrBlocked`, persisted as `addr_blocked`); the S list is `DPISpoofLines()` = 7 lines around the working
+combination (S1 = the old S3); the log gets `passed: host http/bytes/secs` for the three controls and for every
+candidate that opens a host, and `vs no bypass: +N hosts`. `DPIResult.passed` is not persisted. A saved S choice stays
+valid when its line is still in the list.
+**Open:** the `mean-s 0.00` of S3 is unexplained; the next log decides whether the six passes are real.
+
+**UI.** (1) Layout metrics are the `RK*` enum in ViewController.m: tops and kH are computed from base units
+(`RKUnit`, `RKCtlH`, ...) and reproduce the v0.15.2 numbers (46 67 113 134 174 202 252 294 315 359 419). They are
+enum constants because a `static const CGFloat` cannot initialise another one in C. The Telegram panel's offsets
+(`kHTG-19`, ...) are still typed numbers - the next candidate. (2) `rkHair` = one device pixel (0.5 pt on 2x, 1.0 pt
+on 1x), refreshed in `viewWillAppear` for the popover's screen; no `borderWidth = 0.5` literals. (3) Custom buttons have
+`focusRingType = NSFocusRingTypeNone` (`rkNoFocusRings:`): the system ring is a rectangle in the accent colour, which
+is the most likely reading of "the ВКЛ button is highlighted in green wrongly" (a green accent colour in System
+Settings). Keyboard focus is not shown on these buttons; they are mouse-driven. (4) `renderConnectButton` is the one
+place that derives the look of ВКЛ/ВЫКЛ from `self.connected`; the theme switch calls it. (5) `rkTail:` - tail
+truncation for the status line, the subscription caption and the strategy caption.
+**Not verified on a Mac:** all of the above compiles and passes `tools/objc_diffcheck.sh` and `tools/lint_objc.sh`
+off-device only. If a green rectangle still shows, a screenshot decides: ring (accent) vs the ON state (rkTintGreen).
