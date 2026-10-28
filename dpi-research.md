@@ -274,3 +274,44 @@ a measurement.
 - **Gate for the next step:** the `wire6 verdict` line; `dns: tcp/853` next to `tcp/443`; S8 vs S9 vs S1 in the
   results (and their `passed:` lines). If S9 opens hosts S8 does not, IPv6 is the path; if S1 = S8, the family
   was IPv4 all along.
+
+
+## 11. Update 2026-10-27 (v0.16.0 log analysed; v0.16.1)
+
+- **[measured] What the person sent was the TAIL of `dpi_search.log`** (S7-S9, M1-M10, the sb log); the head (controls,
+  `wire:` / `wire6:` / `dns:` rows, S1-S6) was not sent, so nothing below says anything about them.
+  S7 8/19 and S8 7/19 (control 3/19, `vs no bypass: +5 / +4`); S9 `probe fail 7x2` and the sb log shows `dial tcp
+  [2a00:1450:...]:443: connect: no route to host` and the same for `[2001:4860:...]` on outbound `d8` (= S9, 0-based):
+  **this Mac has no IPv6 route**, IPv6 is closed as a direction. The 10 M lines are `probe fail 28x2` as before.
+- **[measured] S7 opened: googleapis.com, googleusercontent.com, i.ytimg.com, i9.ytimg.com, jnn-pa.googleapis.com,
+  youtubei.googleapis.com, yt3.googleusercontent.com, yt4.ggpht.com** - all HTTP 400/404/405, 1.1-1.6 KB bodies (Google's
+  error page for `/`): a completed TLS exchange, not a page. By elimination from the 19-host list the 11 that fail are
+  youtu.be, youtube.com, signaler-pa.youtube.com, yt3.ggpht.com, manifest.googlevideo.com and the six googlevideo nodes.
+  S8's set is the same minus youtubei.googleapis.com (one 5 s timeout flips: noise exists). **Not one youtube.com,
+  youtu.be or googlevideo host opened in any of the three candidates seen.** yt3.ggpht.com fails while yt4.ggpht.com
+  opens under the same candidate (one pair, one run): not explained by a name rule alone.
+- **[source: code] Why the app said "found".** `found` = candidates with at least one host open; no key host was
+  required. Fixed in v0.16.1 (handoff section 25). The log's last line said `5 working of 19 tested`; "8" is S7's host count.
+- **[open] `mean-s 0.00` on every pass.** Either a parse artefact (a decimal comma; the app is started by launchd, so a
+  C locale is the expectation, not a fact) or real answers from a near edge (a few ms of RTT). v0.16.1 logs the raw tokens.
+- **[summary] zapret wiki, read in full:** `wiki2.zapret.moe/DPI/ggc-googlevideo-how-it-works` and
+  `.../ttk-youtube-ggc-october-2026` (both of 2026-10-20; community articles with the authors' own measurements - one
+  Moscow host, one Netherlands server - single source, not independent). (a) The player gets googlevideo node names from
+  the YouTube page/API according to the client's address (ISP Google Global Cache nodes, e.g. inside Transtelecom);
+  sending only `*.googlevideo.com` through a VPN is described as futile when the page was fetched directly and handed
+  Russian nodes - page and nodes should leave through the same exit. (b) From abroad to a Russian node, a ClientHello with
+  a lowercase `...googlevideo.com` SNI is silently dropped while `...googlevideo.COM`, `googlevideo.net`, `ya.ru`,
+  `www.youtube.com` pass; splitting the hello into 2-3 segments does not help (the box reassembles). That is the
+  opposite direction to ours and says nothing about subscribers; [inferred] a proxy cannot use it anyway - the TLS Finished
+  covers the ClientHello bytes, so a rewritten SNI breaks the handshake. (c) Nodes accept any SNI from Moscow, so a stall
+  that depends on the name lies on the path. (d) Plain UDP DNS to 8.8.8.8/8.8.4.4/1.1.1.1/1.0.0.1 is answered by RIPN
+  resolvers in some networks, DoH to Google/Cloudflare works (consistent with section 4). (e) A green handshake test does
+  not prove video - the same flaw our success rule had. The `Runnin4ik/ggc-russia` repository came up in search: snippet
+  only, NOT read.
+- **[inferred] What this leaves.** On this network the fake + fragments combination opens non-YouTube Google names and not
+  the three blocked ones. Two explanations stay open and v0.16.1 separates them: the three names are blocked by name
+  behind something stronger than our fake (then zapret's `hostfakesplit` + `ts`, unavailable on macOS - sections 2 and 8 -
+  is what is missing), or their ADDRESSES are the problem (then pinning another Google address in the YouTube mode would
+  open them without any trick). Gate: the `hostwire:` and `swap:` rows of the next full log. Fails everywhere -> path B.
+- **Do not (added):** offer a candidate as "working" when only non-key hosts opened; read `0.00s` as a result in either
+  direction; conclude anything about S1-S6 or the controls from a log tail.

@@ -1019,3 +1019,29 @@ curl `telnet://` + `time_connect`). `wireProbeName:` takes an IPv6 literal (`-6`
 bracket form is from the curl man page - not run against macOS 10.13's curl 7.54). Not applied: system-wide IPv6 off,
 Xray-style noise (UDP only), DNS policy change. Config shapes were run through a real sing-box 1.14.3 (`check`, and
 `run` for the family steering). **Not verified on a Mac.**
+
+
+## 25. v0.16.1: an honest "working", key-host measurements (log only)
+
+**Why.** The v0.16.0 build (the 0.15.4 tree) reported "found N" and none of it played video. Root cause: `found` was
+every candidate that opened ANY of the 19 hosts; the log of 2026-10-27 shows the hosts that opened were ytimg /
+googleapis / googleusercontent / ggpht (HTTP 400/404/405 error pages of 1.1-1.6 KB), never youtube.com, youtu.be or a
+googlevideo host. The sb log of that run also answers v0.15.4's IPv6 question: S9 (`ip=6`) died with `no route to
+host` - this Mac has no IPv6 route, so IPv6 is not a direction.
+
+**Changes (DPIEngine.m, no routing, no VLESS, no new strategy, no timer, nothing left running).**
+(1) `DPIKeyHost()` / `DPIKeyCount()`: a candidate is "working" only if a key host opened; `found` is sorted key hosts
+first, then hosts, then time; the log says `key hosts ...: N` per candidate and ends with `best any-host count`. The
+status line says "youtube.com и googlevideo не открылись ни у одной" when only other hosts opened. The manual list (▾)
+still shows every candidate. (2) curl children run with `LC_ALL=C` (`DPICurlEnv()`), numbers go through `DPINum()`
+(decimal comma tolerant) - `wireProbeName:` would have read "0,004" as 0, i.e. "no TCP handshake". `passed:` lines carry
+the raw `time_total/time_connect/time_appconnect` tokens: `host 404/1561B/0.004s (t=0.004 c=0.001 a=0.003)`; this settles
+the `0.00` question (parse artefact vs a real answer from a near edge). `curlHost:` got a `raw:` out-parameter.
+(3) `keyHostDiagnostics:` (called before the search's sing-box is stopped): `hostwire:` rows (key hosts, direct, own
+name vs www.google.com on the same address) and `swap:` rows (www.youtube.com and the first googlevideo node pinned to
+their own address, i.ytimg.com's and googleapis.com's, direct and through S1, curl `--resolve`, SOCKS4 when through S1).
+It adds roughly 15-25 s to a search.
+**Gate for the next step (read the new log, head included):** `swap:` - a name that opens at a donor address direct
+= the address was the problem (pin an address in the YouTube mode); only through S1 = S1 plus an address; fails
+everywhere = blocked by name beyond our tricks -> path B (needs the person's OK). `hostwire:` says per key host whether
+it dies at TCP (both names) or only for its own name. **Not verified on a Mac** (off-device: lint, diffcheck, test_patch).

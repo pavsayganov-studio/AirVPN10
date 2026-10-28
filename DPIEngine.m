@@ -127,6 +127,60 @@ static BOOL DPIPortOpen(int port) {
     return rc == 0;
 }
 
+// ---- v0.16.1: what counts as "working", and curl numbers that survive a decimal comma ----------------------
+// The names the filter is after. The 2026-10-27 log: every candidate that opened anything opened ytimg /
+// googleapis / googleusercontent / ggpht (+4..+5 hosts over no bypass) and not ONE youtube.com, youtu.be or
+// googlevideo host - such a candidate cannot play video and must not be offered as "working".
+static BOOL DPIKeyHost(NSString *h) {
+    NSString *l = h.lowercaseString;
+    return [l isEqualToString:@"youtu.be"] || [l isEqualToString:@"youtube.com"] ||
+           [l hasSuffix:@".youtube.com"] || [l isEqualToString:@"googlevideo.com"] ||
+           [l hasSuffix:@".googlevideo.com"];
+}
+
+// `passed` entries start with the host name ("host http/bytes/secs (t= c= a=)").
+static NSInteger DPIKeyCount(NSArray<NSString *> *passed) {
+    NSInteger n = 0;
+    for (NSString *p in passed) {
+        NSRange sp = [p rangeOfString:@" "];
+        if (DPIKeyHost(sp.location == NSNotFound ? p : [p substringToIndex:sp.location])) n++;
+    }
+    return n;
+}
+
+// curl's -w prints numbers with the C library's decimal separator. The app is launched by launchd (no LANG), so a
+// point is expected - but "0,004" must not read as 0 and turn a completed handshake into "no TCP handshake".
+static double DPINum(NSString *s) {
+    return [[s stringByReplacingOccurrencesOfString:@"," withString:@"."] doubleValue];
+}
+
+// A curl child with a C locale (the two helpers above are the second line of defence).
+static NSDictionary *DPICurlEnv(void) {
+    NSMutableDictionary *e = [[[NSProcessInfo processInfo] environment] mutableCopy];
+    e[@"LC_ALL"] = @"C"; e[@"LC_NUMERIC"] = @"C"; e[@"LANG"] = @"C";
+    return e;
+}
+
+// The numbers exactly as curl printed them, digits . , only - for the log (`mean-s 0.00` on every pass of the
+// 2026-10-27 log is either a parse artefact or a real answer from a very near edge; the raw token decides).
+static NSString *DPIRawNum(NSString *s) {
+    NSMutableString *o = [NSMutableString string];
+    for (NSUInteger i = 0; i < s.length && i < 12; i++) {
+        unichar c = [s characterAtIndex:i];
+        if ((c >= '0' && c <= '9') || c == '.' || c == ',') [o appendFormat:@"%C", c];
+    }
+    return o.length ? o : @"?";
+}
+static NSString *DPIRawTimes(NSString *out) {
+    for (NSString *raw in [out componentsSeparatedByString:@"\n"]) {
+        if (![raw hasPrefix:@"@@RK "]) continue;
+        NSArray *p = [[raw substringFromIndex:5] componentsSeparatedByString:@" "];
+        if (p.count >= 5)
+            return [NSString stringWithFormat:@"t=%@ c=%@ a=%@", DPIRawNum(p[2]), DPIRawNum(p[3]), DPIRawNum(p[4])];
+    }
+    return @"t=?";
+}
+
 // Result of one curl request, parsed from `-D -` (headers) + `-w` (trailer).
 // Pure function so it can be unit-tested without a network.
 //   http     - final HTTP status, 0 when no answer arrived
@@ -148,7 +202,7 @@ static void DPIParseCurlOutput(NSString *out, int *http, long long *size,
         } else if ([l hasPrefix:@"@@RK "]) {
             NSArray *p = [[l substringFromIndex:5] componentsSeparatedByString:@" "];
             if (p.count >= 3) {
-                *http = [p[0] intValue]; *size = [p[1] longLongValue]; *secs = [p[2] doubleValue];
+                *http = [p[0] intValue]; *size = [p[1] longLongValue]; *secs = DPINum(p[2]);
             }
         }
     }
@@ -1158,7 +1212,7 @@ static NSString *DPISBIPStrategy(NSString *raw) {
 // None of them punishes a strategy for being slow but alive.
 - (BOOL)curlHost:(NSString *)host port:(int)port ips:(NSDictionary<NSString *, NSString *> *)ips
           timeout:(int)to seconds:(double *)secs code:(int *)code
-             http:(int *)httpOut size:(long long *)sizeOut {
+             http:(int *)httpOut size:(long long *)sizeOut raw:(NSString **)rawOut {
     NSMutableArray *args = [NSMutableArray arrayWithObjects:
         @"-q", @"-sS", @"-o", @"/dev/null", @"-D", @"-", @"--http1.1",
         @"-L", @"--max-redirs", @"3",
@@ -1173,11 +1227,12 @@ static NSString *DPISBIPStrategy(NSString *raw) {
     if (port > 0)
         [args addObjectsFromArray:@[ips.count ? @"--socks4" : @"--socks5-hostname",
                                     [NSString stringWithFormat:@"127.0.0.1:%d", port]]];
-    [args addObjectsFromArray:@[@"-w", @"\n@@RK %{http_code} %{size_download} %{time_total}\n",
+    [args addObjectsFromArray:@[@"-w", @"\n@@RK %{http_code} %{size_download} %{time_total} %{time_connect} %{time_appconnect}\n",
                                 [NSString stringWithFormat:@"https://%@/", host]]];
     NSTask *t = [[NSTask alloc] init];
     t.launchPath = @"/usr/bin/curl";
     t.arguments = args;
+    t.environment = DPICurlEnv();                  // v0.16.1: C locale, a point as decimal separator
     NSPipe *p = [NSPipe pipe];
     t.standardOutput = p;
     t.standardError  = [NSFileHandle fileHandleWithNullDevice];
@@ -1186,6 +1241,7 @@ static NSString *DPISBIPStrategy(NSString *raw) {
     BOOL ok = NO; int status = -1;
     if (httpOut) *httpOut = 0;
     if (sizeOut) *sizeOut = 0;
+    if (rawOut) *rawOut = nil;
     @try {
         [t launch];
         NSData *out = [[p fileHandleForReading] readDataToEndOfFile];   // headers + one line; ends at exit
@@ -1198,6 +1254,7 @@ static NSString *DPISBIPStrategy(NSString *raw) {
         ok = DPIRequestPassed(http, size, declared, status);
         if (httpOut) *httpOut = http;
         if (sizeOut) *sizeOut = size;
+        if (rawOut) *rawOut = DPIRawTimes(txt);
         if (ok && secs) *secs = s;
     } @catch (NSException *e) { ok = NO; status = -1; }
     @synchronized (_testTasks) { [_testTasks removeObject:t]; }
@@ -1222,15 +1279,16 @@ static NSString *DPISBIPStrategy(NSString *raw) {
         dispatch_group_enter(g);
         [NSThread detachNewThreadWithBlock:^{
             if (!self->_cancel) {
-                double secs = 0; int code = 0, http = 0; long long size = 0; BOOL ok = NO;
+                double secs = 0; int code = 0, http = 0; long long size = 0; BOOL ok = NO; NSString *rawT = nil;
                 if (ips.count && !ips[h]) code = 6;      // DoH had no address: counted, no curl
                 else ok = [self curlHost:h port:port ips:ips timeout:to seconds:&secs code:&code
-                                    http:&http size:&size];
+                                    http:&http size:&size raw:&rawT];
                 @synchronized (lock) {
                     if (ok) {
                         okc++; tsum += secs;
                         // v0.15.3: what really came back (messages to a nil `passed` do nothing)
-                        [passed addObject:[NSString stringWithFormat:@"%@ %d/%lldB/%.2fs", h, http, size, secs]];
+                        [passed addObject:[NSString stringWithFormat:@"%@ %d/%lldB/%.3fs (%@)", h, http, size, secs,
+                                           rawT ?: @"t=?"]];
                     } else if (fails) {
                         NSNumber *k = @(code);
                         fails[k] = @([fails[k] integerValue] + 1);
@@ -1444,6 +1502,7 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
     NSTask *t = [[NSTask alloc] init];
     t.launchPath = @"/usr/bin/curl";
     t.arguments = args;
+    t.environment = DPICurlEnv();                  // v0.16.1: "0,004" read as 0 would be "no TCP handshake"
     NSPipe *p = [NSPipe pipe];
     t.standardOutput = p;
     t.standardError  = [NSFileHandle fileHandleWithNullDevice];
@@ -1460,7 +1519,7 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
         for (NSString *l in [txt componentsSeparatedByString:@"\n"]) {
             if (![l hasPrefix:@"@@W "]) continue;
             NSArray *f = [[l substringFromIndex:4] componentsSeparatedByString:@" "];
-            if (f.count >= 3) { http = [f[0] intValue]; tConn = [f[1] doubleValue]; tApp = [f[2] doubleValue]; }
+            if (f.count >= 3) { http = [f[0] intValue]; tConn = DPINum(f[1]); tApp = DPINum(f[2]); }
         }
     } @catch (NSException *e) { status = -1; }
     @synchronized (_testTasks) { [_testTasks removeObject:t]; }
@@ -1573,6 +1632,7 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
     t.arguments = @[@"-q", @"-sS", @"-o", @"/dev/null", @"--connect-timeout", @"4", @"-m", @"5",
                     @"-w", @"\n@@C %{time_connect}\n",
                     [NSString stringWithFormat:@"telnet://%@:%d", host, port]];
+    t.environment = DPICurlEnv();
     NSPipe *p = [NSPipe pipe];
     t.standardOutput = p;
     t.standardError  = [NSFileHandle fileHandleWithNullDevice];
@@ -1585,10 +1645,117 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
         [t waitUntilExit];
         NSString *txt = [[NSString alloc] initWithData:out encoding:NSISOLatin1StringEncoding] ?: @"";
         for (NSString *l in [txt componentsSeparatedByString:@"\n"])
-            if ([l hasPrefix:@"@@C "]) s = [[l substringFromIndex:4] doubleValue];
+            if ([l hasPrefix:@"@@C "]) s = DPINum([l substringFromIndex:4]);
     } @catch (NSException *e) { s = 0; }
     @synchronized (_testTasks) { [_testTasks removeObject:t]; }
     return s;
+}
+
+// v0.16.1, LOG ONLY (no routing is touched, nothing is kept running). The 2026-10-27 log: the candidates that open
+// anything open ytimg / googleapis / googleusercontent / ggpht, never youtube.com, youtu.be or a googlevideo
+// node; and yt3.ggpht.com fails while yt4.ggpht.com opens under the same candidate - one domain, two outcomes,
+// which a rule on the name alone does not explain. Two questions, answerable without a new bypass:
+//  hostwire: for the key hosts themselves, direct - does the stall follow the NAME (the own name stalls while
+//            www.google.com on the same address completes TLS) or the ADDRESS (both die before the handshake)?
+//  swap:     the same name pinned (curl --resolve; the SNI stays the name) to an address that OTHER hosts did
+//            reach - i.ytimg.com's and googleapis.com's - direct and through the first S candidate. A name that
+//            completes there is not blocked by its name: the address was the problem and the YouTube mode could
+//            dial another one. A name that dies there is blocked by name, whatever the address.
+- (void)keyHostDiagnostics:(NSMutableString *)log hosts:(NSArray<NSString *> *)hosts
+                     sPort:(int)sPort sLabel:(NSString *)sLabel {
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    for (NSString *h in hosts)
+        if (DPIKeyHost(h) && keys.count < 6) [keys addObject:h];
+    if (!keys.count || _cancel) return;
+
+    NSObject *lock = [NSObject new];
+    NSMutableDictionary<NSString *, NSString *> *rows = [NSMutableDictionary dictionary];
+    dispatch_group_t g = dispatch_group_create();
+    for (NSString *h in keys) {
+        dispatch_group_enter(g);
+        [NSThread detachNewThreadWithBlock:^{
+            NSString *row = nil;
+            if (!self->_cancel) {
+                NSString *err = nil;
+                NSArray<NSString *> *a = DPISystemResolveAll(h, 4, 1, &err);
+                if (a.count) {
+                    NSInteger k1 = 4, k2 = 4;
+                    NSString *t1 = [self wireProbeName:h ip:a.firstObject kind:&k1];
+                    NSString *t2 = [self wireProbeName:@"www.google.com" ip:a.firstObject kind:&k2];
+                    row = [NSString stringWithFormat:@"hostwire: %@  %@  own name: %@ | www.google.com: %@",
+                           h, a.firstObject, t1, t2];
+                } else {
+                    row = [NSString stringWithFormat:@"hostwire: %@  system resolver: %@", h, err ?: @"no answer"];
+                }
+            }
+            @synchronized (lock) { if (row) rows[h] = row; }
+            dispatch_group_leave(g);
+        }];
+    }
+    dispatch_group_wait(g, DISPATCH_TIME_FOREVER);
+    for (NSString *h in keys) if (rows[h]) [log appendFormat:@"%@\n", rows[h]];
+    if (_cancel) return;
+
+    NSString *gvNode = nil;
+    for (NSString *h in hosts)
+        if ([h hasPrefix:@"rr"] && [h hasSuffix:@".googlevideo.com"]) { gvNode = h; break; }
+    NSMutableArray<NSString *> *targets = [NSMutableArray arrayWithObject:@"www.youtube.com"];
+    if (gvNode) [targets addObject:gvNode];
+    NSArray<NSString *> *donors = @[@"i.ytimg.com", @"googleapis.com"];
+
+    NSMutableDictionary<NSString *, NSString *> *addr = [NSMutableDictionary dictionary];   // name -> first address
+    for (NSString *n in [targets arrayByAddingObjectsFromArray:donors]) {
+        if (_cancel) return;
+        NSArray<NSString *> *a = DPISystemResolveAll(n, 3, 1, NULL);
+        if (a.count) addr[n] = a.firstObject;
+    }
+    [log appendFormat:@"swap: a name pinned to another host's address (SNI unchanged), direct%@\n",
+                      sPort > 0 ? [NSString stringWithFormat:@" and through %@", sLabel] : @""];
+
+    // One curl per (target, address source, mode); the modes of a row share a thread-less sequence of results.
+    NSMutableArray<NSDictionary *> *jobs = [NSMutableArray array];
+    for (NSString *tg in targets) {
+        NSMutableArray<NSString *> *srcs = [NSMutableArray arrayWithObject:tg];       // its own address first
+        [srcs addObjectsFromArray:donors];
+        for (NSString *src in srcs) {
+            NSString *ip = addr[src];
+            if (!ip) continue;
+            [jobs addObject:@{@"tg": tg, @"src": src, @"ip": ip, @"port": @0}];
+            if (sPort > 0) [jobs addObject:@{@"tg": tg, @"src": src, @"ip": ip, @"port": @(sPort)}];
+        }
+    }
+    NSMutableDictionary<NSString *, NSString *> *res = [NSMutableDictionary dictionary];
+    dispatch_group_t g2 = dispatch_group_create();
+    for (NSDictionary *j in jobs) {
+        dispatch_group_enter(g2);
+        [NSThread detachNewThreadWithBlock:^{
+            NSString *out = @"skipped";
+            if (!self->_cancel) {
+                double s = 0; int c = 0, http = 0; long long size = 0; NSString *raw = nil;
+                BOOL ok = [self curlHost:j[@"tg"] port:[j[@"port"] intValue] ips:@{j[@"tg"]: j[@"ip"]}
+                                 timeout:5 seconds:&s code:&c http:&http size:&size raw:&raw];
+                out = ok ? [NSString stringWithFormat:@"PASS %d/%lldB (%@)", http, size, raw ?: @"t=?"]
+                         : [NSString stringWithFormat:@"fail curl %d", c];
+            }
+            @synchronized (lock) {
+                res[[NSString stringWithFormat:@"%@|%@|%d", j[@"tg"], j[@"src"], [j[@"port"] intValue]]] = out;
+            }
+            dispatch_group_leave(g2);
+        }];
+    }
+    dispatch_group_wait(g2, DISPATCH_TIME_FOREVER);
+    for (NSString *tg in targets) {
+        NSMutableArray<NSString *> *srcs = [NSMutableArray arrayWithObject:tg];
+        [srcs addObjectsFromArray:donors];
+        for (NSString *src in srcs) {
+            if (!addr[src]) continue;
+            NSString *d = res[[NSString stringWithFormat:@"%@|%@|0", tg, src]] ?: @"-";
+            NSString *s = sPort > 0 ? (res[[NSString stringWithFormat:@"%@|%@|%d", tg, src, sPort]] ?: @"-") : @"-";
+            [log appendFormat:@"swap: %@ @ %@ (%@)  direct: %@  |  %@: %@\n", tg, addr[src],
+                              [src isEqualToString:tg] ? @"its own address" : [src stringByAppendingString:@"'s address"],
+                              d, sLabel, s];
+        }
+    }
 }
 
 // DoT (853) next to DoH (443) for every resolver the app can use (v0.15.4), LOG ONLY: the 2026-07-03 block of
@@ -1850,6 +2017,7 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
 
         NSMutableArray<DPIResult *> *found = [NSMutableArray array];
         NSMutableDictionary<NSString *, DPIResult *> *allTested = [NSMutableDictionary dictionary];
+        NSMutableDictionary<NSString *, NSNumber *> *keyOf = [NSMutableDictionary dictionary];   // v0.16.1: key hosts opened
         NSInteger tested = 0, best = 0;
         for (NSInteger i = 0; i < total && !self->_cancel; i++) {
             NSInteger doneN = i, bestN = best, tot = total;
@@ -1873,12 +2041,25 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
             allTested[e.raw] = r;
             [log appendFormat:@"#%@  %ld/%ld  %.2f  %@  %@\n", e.label,
                               (long)r.ok, (long)r.total, r.avgTime, r.ok == r.total ? @"-" : (diag ?: @"-"), e.raw];
+            // v0.16.1: "working" = a key host (youtube.com / youtu.be / googlevideo) opened. Opening only ytimg /
+            // googleapis / ggpht is not video, and the old rule (any host) offered such lines as found.
+            NSInteger keyN = DPIKeyCount(r.passed);
+            keyOf[e.raw] = @(keyN);
             if (r.ok > 0) {                   // v0.15.3: the evidence, not just the count
-                [log appendFormat:@"    vs no bypass: %+ld hosts\n", (long)(r.ok - dOK)];
+                [log appendFormat:@"    vs no bypass: %+ld hosts; key hosts (youtube.com, youtu.be, googlevideo): %ld\n",
+                                  (long)(r.ok - dOK), (long)keyN];
                 [log appendString:DPIPassText(r.passed)];
             }
-            if (r.ok > 0) { [found addObject:r]; if (r.ok > best) best = r.ok; }
+            if (r.ok > 0) { if (r.ok > best) best = r.ok; if (keyN > 0) [found addObject:r]; }
             usleep(400000);                   // be gentle between strategies
+        }
+        if (!self->_cancel) {                 // v0.16.1: log-only; S1's inbound is still up here
+            int sPort = 0; NSString *sLabel = @"S1";
+            for (DPIEntry *e in ents) {
+                NSNumber *pn = DPISBOptions(e.raw) ? sbPort[e.raw] : nil;
+                if (pn) { sPort = pn.intValue; sLabel = e.label; break; }
+            }
+            [self keyHostDiagnostics:log hosts:hosts sPort:sPort sLabel:sLabel];
         }
         if (sbPid > 0) {                      // stop the root sing-box; its own log explains a failure
             [self stopSB:sbPid];
@@ -1894,6 +2075,8 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
         }
 
         [found sortUsingComparator:^NSComparisonResult(DPIResult *a, DPIResult *b) {
+            NSInteger ka = [keyOf[a.strategy] integerValue], kb = [keyOf[b.strategy] integerValue];
+            if (ka != kb) return ka > kb ? NSOrderedAscending : NSOrderedDescending;   // key hosts first
             if (a.ok != b.ok) return a.ok > b.ok ? NSOrderedAscending : NSOrderedDescending;
             if (a.avgTime != b.avgTime) return a.avgTime < b.avgTime ? NSOrderedAscending : NSOrderedDescending;
             return NSOrderedSame;
@@ -1910,14 +2093,16 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
         self->_wireVerdict = wireText; self->_wireSNI = wireSNI;
         self->_tested = allTested;
         [self saveResults];
-        [log appendFormat:@"# done: %lu working of %ld tested\n", (unsigned long)found.count, (long)tested];
+        [log appendFormat:@"# done: %lu working (a key host opened) of %ld tested; best any-host count %ld\n",
+                          (unsigned long)found.count, (long)tested, (long)best];
         [log writeToFile:[self searchLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
         NSString *sum = found.count
             ? [NSString stringWithFormat:@"Найдено %lu из %ld · %@",
                (unsigned long)found.count, (long)tested, updNote]
-            : (wireSNI ? @"Рабочих не найдено: фильтр по имени, разрезание потока не помогло (журнал — в меню ▾)"
-                       : @"Рабочих не найдено · выберите вручную (▾)");
+            : (best > 0 ? @"Рабочих нет: youtube.com и googlevideo не открылись ни у одной (журнал — в меню ▾)"
+               : (wireSNI ? @"Рабочих не найдено: фильтр по имени, разрезание потока не помогло (журнал — в меню ▾)"
+                          : @"Рабочих не найдено · выберите вручную (▾)"));
         BOOL okAny = found.count > 0;
         dispatch_async(cbq, ^{ done(okAny, sum); });
     });
