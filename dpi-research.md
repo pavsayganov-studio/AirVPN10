@@ -315,3 +315,59 @@ a measurement.
   open them without any trick). Gate: the `hostwire:` and `swap:` rows of the next full log. Fails everywhere -> path B.
 - **Do not (added):** offer a candidate as "working" when only non-key hosts opened; read `0.00s` as a result in either
   direction; conclude anything about S1-S6 or the controls from a log tail.
+
+
+## 12. Update 2026-10-28 (v0.16.1 full log; v0.16.2)
+
+- **[measured] The full log (head included this time).** `wire verdict: SNI filter` - all 4 system addresses of
+  www.youtube.com complete TLS for SNI www.google.com and stall (TCP up, no ServerHello) for SNI
+  www.youtube.com. `wire6 verdict:` the same over the host's only IPv6 address - filtered identically, not an
+  IPv4-only effect. `hostwire:` direct, per key host: youtu.be, youtube.com, signaler-pa.youtube.com and
+  manifest.googlevideo.com all stall on their own name and complete for www.google.com at the SAME address;
+  two googlevideo rr-nodes got `curl 60` (cert mismatch) for the www.google.com probe - a probe artefact, not
+  a finding - but still stall on their own name.
+- **[measured] `swap:` - the decisive experiment.** www.youtube.com, SNI unchanged, pinned to its own address,
+  to i.ytimg.com's address and to googleapis.com's address - **fails everywhere, direct AND through S1**
+  (curl exit 28 in all six cells). Same for a googlevideo node. **The block does not move with the address.**
+  Combined with `hostwire:`, this closes the "maybe it's the address" branch of section 11's open question for
+  www.youtube.com specifically: it is blocked by its SNI content, full stop, at every address tried, under the
+  one fake (google.com) the swap test used.
+- **[measured] Fake identity changes the outcome.** Of the 19 hosts, S1/S7/S8 (fake=www.google.com,
+  wrong-sequence+frag) opened 8/7/8 total hosts but **0 key hosts** every time (only ytimg/googleapis/
+  googleusercontent/ggpht/youtubei - error pages, not youtube.com/youtu.be/googlevideo). S6 (fake=max.ru)
+  opened 1 key host (one googlevideo rr-node). **S5 (fake=ya.ru) opened 4 key hosts** - all googlevideo
+  CDN nodes (rr1---sn-4axm-n8vs, rr1---sn-ug5onuxaxjvh-n8v6, rr1---sn-ug5onuxaxjvh-p3ul,
+  rr10---sn-gvnuxaxjvh-304z) - **still never youtube.com, youtu.be, signaler-pa.youtube.com or
+  manifest.googlevideo.com**, under any of the three fakes tried. First time any key host opened at all.
+- **[source] Flowseal/zapret-discord-youtube, re-read 2026-10-28 (HEAD `176f56d`, 2026-10-20 commits).**
+  `bin/` now ships `tls_clienthello_www_sferum_ru.bin`; the google-hostlist catalogue (same 21-rule shape as
+  section 2) uses it in **73** of the TCP/443 google-list rules versus **62** for `www_google_com.bin` - the
+  2026-10-20 commit message is literally "replaced onetrust fake". A `www.sferum.ru`/`max.ru`/`ya.ru`-shaped
+  fake (a short, domestically-reachable Russian site) is now the community's majority choice over
+  www.google.com for this exact hostlist. This is independent of our own S5 > S6 > S1 ordering but points the
+  same way. [source] `nfqws` docs (bol-van/zapret `readme.en.md`): `rndsni`/`sni=<sni>` fake mods exist
+  precisely because a fixed, well-known fake identity can itself become a detection signature over time -
+  consistent with google.com fading as the community's default.
+- **[inferred, open] Why S2-S4 (wrong-checksum/md5/ack) show `probe fail 28x2` - every host, not a partial
+  result.** Two explanations stayed open after the 2026-10-27 tail; the full log does not settle it either,
+  because every S line but the ip=4/ip=6 pair shared the generic "direct" outbound and sing-box's own
+  connection-error log names only the outbound tag (`route/conn.go: "... using outbound/" + type + "[" + tag +
+  "]"`), never the inbound - an ERROR line could not be attributed to a candidate. zapret's own docs (section
+  "Fakes" of readme.en.md) document a closely analogous failure for `badsum`: dropped by any NAT/firewall that
+  validates checksums (`net.netfilter.nf_conntrack_checksum`), which would explain wrong-checksum but not
+  wrong-md5/wrong-ack by the same mechanism - a single environmental explanation for all three is not yet
+  justified. v0.16.2 gives every candidate its own outbound tag so the next log carries the actual ERROR line.
+- **What v0.16.2 does** (handoff.md section 26): S10 = fake www.sferum.ru (same wrong-sequence+frag
+  combination); every S candidate gets its own outbound (attributable errors); `sb candidate errors:` block
+  for any S line whose probe failed on every host; `keyHostDiagnostics:`/`swap:` now run through the
+  highest-scoring candidate of the run (S5 on 2026-10-28) instead of always S1.
+- **Gate for the next step:** the `sb candidate errors:` lines (why S2-S4 die); S10's key-host count against
+  S5's 4; the new `swap:` rows (now through S5-or-better) for www.youtube.com and a googlevideo node - if
+  youtube.com still fails at every address through the best fake found, every identity tried (google.com,
+  ya.ru, max.ru, sferum.ru) is beaten by name for that specific domain, and the open directions become
+  `hostfakesplit`-style host segment faking (needs packet interception, unavailable on macOS - sections 2, 8)
+  or path B (needs the person's OK).
+- **Do not (added):** assume wrong-checksum/md5/ack fail for the same reason as each other without the error
+  line; run `keyHostDiagnostics`/`swap` through a fixed candidate again now that the best one is picked live;
+  treat S1's 0-key-host result as representative of "fakes don't work" - S5 already disproves that for
+  googlevideo nodes.

@@ -1045,3 +1045,36 @@ It adds roughly 15-25 s to a search.
 = the address was the problem (pin an address in the YouTube mode); only through S1 = S1 plus an address; fails
 everywhere = blocked by name beyond our tricks -> path B (needs the person's OK). `hostwire:` says per key host whether
 it dies at TCP (both names) or only for its own name. **Not verified on a Mac** (off-device: lint, diffcheck, test_patch).
+
+
+## 26. v0.16.2: why S2-S4 die completely, a new fake (S10), a smarter swap target
+
+**The 2026-10-28 full log (person's own test), read against sing-box/zapret/SpoofDPI sources.**
+(1) `wire:`/`hostwire:`/`swap:` together: all 4 youtube.com addresses complete TLS for www.google.com and
+stall for www.youtube.com; www.youtube.com pinned to i.ytimg.com's or googleapis.com's own address still
+fails, direct and through S1. A pure SNI filter, address-independent - confirmed, not hypothesis.
+(2) The fake's identity changes what opens: google.com (S1/S7/S8) 0 key hosts; max.ru (S6) 1; ya.ru (S5) 4
+(all googlevideo CDN nodes - youtube.com itself never opened under any of the three). Flowseal/zapret-
+discord-youtube's own catalogue, re-read 2026-10-20 (HEAD `176f56d`): `www.sferum.ru` is now the most-used
+fake for the google hostlist (73 rules, "replaced onetrust fake") and `www.google.com` dropped to 62 -
+independent evidence a google.com fake may be losing ground. (3) S2-S4 (wrong-checksum/md5/ack) are not
+"didn't help" - "probe fail" on literally every host, every run, same as the no-bypass control. Could not
+say why: every S line but the ip=4/ip=6 pair shared the plain "direct" outbound, and sing-box's connection
+error only logs the outbound's tag (`route/conn.go`), never the inbound - so an ERROR line could not be
+attributed to a candidate.
+
+**Changes (DPIEngine.m; no routing, no VLESS, no new strategy family, nothing left running).**
+`DPISpoofLines()`: S10 = S1 with `spoof=www.sferum.ru`. `startSBSearchFor:`: every candidate now gets its own
+`direct` outbound (`d<i>`, `action: route`) instead of only the ip=4/ip=6 pair - one more outbound entry in a
+config built per search, zero runtime cost. New `sbCandidateErrors:sbPort:diag:` reads the search's own
+`dpi_sb_search.log` once after the per-candidate loop and prints, for each S candidate whose probe failed on
+every host, the one ERROR line naming its outbound tag - the log now says *why* S2-S4 die instead of leaving
+it to guess (permission error / bad config / dropped locally are all now distinguishable). `keyHostDiagnostics:`
+is now called through whichever S candidate opened the most key hosts this run, not always S1 (0.16.1's bug) -
+the swap test finally asks the useful question: does www.youtube.com open at ANY address through a fake that
+already works on something.
+**Gate for the next step:** the new `sb candidate errors:` block (why S2-S4 fail); whether S10 (sferum.ru)
+opens youtube.com/youtu.be or more googlevideo nodes than S5 did; the `swap:` rows now routed through the
+run's best candidate - if even that fails everywhere for youtube.com, every fake identity tried so far is
+beaten by name for that specific domain and the open question becomes `hostfakesplit`-style host-splitting
+(unavailable on macOS, dpi-research sections 2 and 8) or path B. **Not verified on a Mac.**

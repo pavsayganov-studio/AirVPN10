@@ -731,6 +731,11 @@ static NSArray<NSString *> *DPICuratedLines(void) {
 //   S1 fake google.com, badseq + TCP fragments      (measured 6/19)
 //   S2 the same, bad checksum     S3 the same, md5sig option     S4 the same, bad ack
 //   S5 fake name ya.ru            S6 fake name max.ru (the name the zapret lists use for non-Google rules)
+// v0.16.2: S10 fake name www.sferum.ru - Flowseal/zapret-discord-youtube's own catalogue (re-read 2026-10-20,
+//   HEAD 176f56d) just made this fake the MOST common one for the google hostlist (73 rules, up from 0;
+//   www.google.com dropped to 62): "replaced onetrust fake". The 2026-10-28 log already shows fake identity
+//   changing the outcome (ya.ru opened 4 key hosts, max.ru 1, google.com 0) - this is the community's own
+//   newest choice, not a guess.
 //   S7 S1 with the pause between fragments 40 ms instead of sing-box's 500 ms [inferred]: on macOS
 //      sing-box waits for the ACK of each piece (SO_NWRITE) and uses the fixed pause only when the ACK
 //      came within 20 ms - a near cache or a transparent proxy [source: common/tlsfragment/wait_darwin.go]
@@ -748,7 +753,8 @@ static NSArray<NSString *> *DPISpoofLines(void) {
              @"sb:spoof=max.ru;method=wrong-sequence;frag=1",
              @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;delay=40",
              @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;ip=4",
-             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;ip=6"];
+             @"sb:spoof=www.google.com;method=wrong-sequence;frag=1;ip=6",
+             @"sb:spoof=www.sferum.ru;method=wrong-sequence;frag=1"];
 }
 
 // The route-options fields for an "sb:" line; nil when the line is not a valid one.
@@ -1370,15 +1376,17 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
         NSString *tag = [NSString stringWithFormat:@"s%ld", (long)i];
         [inb addObject:@{@"type": @"socks", @"tag": tag, @"listen": @"127.0.0.1",
                          @"listen_port": @(kDPISBBase + i)}];
-        NSMutableDictionary *r = [@{@"inbound": @[tag], @"action": @"route-options"} mutableCopy];
+        // v0.16.2: EVERY candidate gets its own "direct" outbound (tag d<i>), not just ip=4/ip=6. sing-box's
+        // connection-error log line names the outbound tag, never the inbound (route/conn.go) - when every S
+        // line shared the plain "direct" outbound there was no way to tell, from the log, which candidate an
+        // ERROR line belonged to. One extra same-behaviour "direct" outbound per candidate costs nothing at
+        // runtime (no timer, no polling) and makes every candidate's own errors readable.
+        NSString *otag = [NSString stringWithFormat:@"d%ld", (long)i];
         NSString *ipst = DPISBIPStrategy(e.raw);
-        if (ipst) {                      // v0.15.4: the family is a property of the dial -> its own outbound
-            NSString *otag = [NSString stringWithFormat:@"d%ld", (long)i];
-            [outs addObject:@{@"type": @"direct", @"tag": otag,
-                              @"domain_resolver": @{@"server": @"local", @"strategy": ipst}}];
-            r[@"action"] = @"route"; r[@"outbound"] = otag;
-            needDNS = YES;
-        }
+        NSMutableDictionary *outDef = [@{@"type": @"direct", @"tag": otag} mutableCopy];
+        if (ipst) { outDef[@"domain_resolver"] = @{@"server": @"local", @"strategy": ipst}; needDNS = YES; }
+        [outs addObject:outDef];
+        NSMutableDictionary *r = [@{@"inbound": @[tag], @"action": @"route", @"outbound": otag} mutableCopy];
         [r addEntriesFromDictionary:o];
         [rules addObject:r];
         ports[e.raw] = @(kDPISBBase + i);
@@ -1456,6 +1464,35 @@ static NSString *DPIPassText(NSArray<NSString *> *p) {
         if (++n >= 12) { [out appendString:@"  ...\n"]; break; }
     }
     if (!n) [out appendString:@"  (no spoof/error lines)\n"];
+    return out;
+}
+
+// v0.16.2: for every S candidate whose probe fully failed ("probe fail ..." - every host, not just some),
+// the ONE ERROR line from this search's own sing-box log that names that candidate's outbound (tag "d<i>",
+// unique per candidate since the outbound split above) - so "probe fail" has a reason attached instead of
+// being indistinguishable from "the filter won.  The log file is read once; nothing here is kept running.
+- (NSString *)sbCandidateErrors:(NSArray<DPIEntry *> *)ents sbPort:(NSDictionary<NSString *, NSNumber *> *)sbPort
+                            diag:(NSDictionary<NSString *, NSString *> *)diagOf {
+    NSMutableString *out = [NSMutableString string];
+    NSMutableArray<DPIEntry *> *dead = [NSMutableArray array];
+    for (DPIEntry *e in ents) {
+        if (!DPISBOptions(e.raw) || !sbPort[e.raw]) continue;
+        NSString *d = diagOf[e.raw];
+        if ([d hasPrefix:@"probe fail"]) [dead addObject:e];
+    }
+    if (!dead.count) return out;
+    NSString *txt = [NSString stringWithContentsOfFile:[_supDir stringByAppendingPathComponent:@"dpi_sb_search.log"]
+                                               encoding:NSUTF8StringEncoding error:nil];
+    [out appendString:@"sb candidate errors (S lines whose probe failed on every host):\n"];
+    for (DPIEntry *e in dead) {
+        NSString *otag = [NSString stringWithFormat:@"[d%ld]", (long)(sbPort[e.raw].intValue - kDPISBBase)];
+        NSString *hit = nil;
+        for (NSString *raw in [txt ?: @"" componentsSeparatedByString:@"\n"]) {
+            if ([raw containsString:@"ERROR"] && [raw containsString:otag]) { hit = raw; break; }
+        }
+        [out appendFormat:@"  %@: %@\n", e.label,
+                          hit ? (hit.length > 220 ? [hit substringToIndex:220] : hit) : @"(no matching sing-box log line)"];
+    }
     return out;
 }
 
@@ -2018,6 +2055,7 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
         NSMutableArray<DPIResult *> *found = [NSMutableArray array];
         NSMutableDictionary<NSString *, DPIResult *> *allTested = [NSMutableDictionary dictionary];
         NSMutableDictionary<NSString *, NSNumber *> *keyOf = [NSMutableDictionary dictionary];   // v0.16.1: key hosts opened
+        NSMutableDictionary<NSString *, NSString *> *diagOf = [NSMutableDictionary dictionary];     // v0.16.2: for sbCandidateErrors:
         NSInteger tested = 0, best = 0;
         for (NSInteger i = 0; i < total && !self->_cancel; i++) {
             NSInteger doneN = i, bestN = best, tot = total;
@@ -2045,6 +2083,7 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
             // googleapis / ggpht is not video, and the old rule (any host) offered such lines as found.
             NSInteger keyN = DPIKeyCount(r.passed);
             keyOf[e.raw] = @(keyN);
+            if (diag) diagOf[e.raw] = diag;
             if (r.ok > 0) {                   // v0.15.3: the evidence, not just the count
                 [log appendFormat:@"    vs no bypass: %+ld hosts; key hosts (youtube.com, youtu.be, googlevideo): %ld\n",
                                   (long)(r.ok - dOK), (long)keyN];
@@ -2053,12 +2092,20 @@ static NSString *DPIWireVerdict(NSArray<NSDictionary *> *rows, BOOL *sni, NSMuta
             if (r.ok > 0) { if (r.ok > best) best = r.ok; if (keyN > 0) [found addObject:r]; }
             usleep(400000);                   // be gentle between strategies
         }
-        if (!self->_cancel) {                 // v0.16.1: log-only; S1's inbound is still up here
-            int sPort = 0; NSString *sLabel = @"S1";
+        if (!self->_cancel && sbPort.count) [log appendString:[self sbCandidateErrors:ents sbPort:sbPort diag:diagOf]];
+        if (!self->_cancel) {
+            // v0.16.2: the swap test goes through whichever S candidate actually opened the most key hosts
+            // this run (0.16.1 always used the first S line, S1 - its weakest fake, measured 0 key hosts on
+            // 2026-10-27/28). This is the one experiment that answers whether www.youtube.com opens at ANY
+            // address once routed through a fake that already works on something.
+            int sPort = 0; NSString *sLabel = nil; NSInteger bestKey = -1;
             for (DPIEntry *e in ents) {
                 NSNumber *pn = DPISBOptions(e.raw) ? sbPort[e.raw] : nil;
-                if (pn) { sPort = pn.intValue; sLabel = e.label; break; }
+                if (!pn) continue;
+                NSInteger k = [keyOf[e.raw] integerValue];
+                if (!sLabel || k > bestKey) { sPort = pn.intValue; sLabel = e.label; bestKey = k; }
             }
+            if (!sLabel) sLabel = @"S1";
             [self keyHostDiagnostics:log hosts:hosts sPort:sPort sLabel:sLabel];
         }
         if (sbPid > 0) {                      // stop the root sing-box; its own log explains a failure
