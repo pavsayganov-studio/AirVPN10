@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.18.0
+**Current version:** v0.18.1
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -196,7 +196,7 @@ Raketa.xcodeproj-less repo (compiled directly via clang in CI)
 ├── ViewController.m / .h           — ALL UI + VPN logic lives here (~1300 lines)
 ├── CoreUpdater.m / .h              — in-app sing-box core updater (v0.14.0, Foundation only)
 ├── RURouting.m / .h                — the «RU» routing profile: route + dns of the VPN config (v0.17.0, Foundation only)
-├── RKNet.m / .h                    — random local ports, the «Авто» urltest group, `sing-box check` preflight (v0.18.0, Foundation only)
+├── RKNet.m / .h                    — random local ports, `sing-box check` preflight (RU only since v0.18.1) (v0.18.0, Foundation only)
 ├── RKSubscription.m / .h           — subscription request headers (UA, HWID), Userinfo, error texts (v0.14.0)
 ├── DPIEngine.m / .h                — YouTube DPI engine: ciadpi process, strategy list,
 │                                     search/ranking, YouTube-only sing-box config (v0.12.0)
@@ -1141,13 +1141,9 @@ Russian apps look for them is not established here.
    **Breaking once:** Telegram's proxy must be added again from the Telegram panel (it shows the live ports).
    Back to the old ports: `defaults write com.samurai.raketa RaketaFixedPorts -bool YES`; new random ones:
    `defaults delete com.samurai.raketa RaketaLocalPorts`. The ports of the DPI search (10820, 10830+) are unchanged.
-2. **«Авто»** tick: one `urltest` group (`raketa-auto`) over up to 6 servers of the subscription, the chosen one first
-   (it carries the first connections until the first delay test), `interval` 5 m, `idle_timeout` 30 m, `tolerance` 50 ms,
-   `interrupt_exist_connections`. The list selection is ignored while it is on; the exit country can change. Fewer than
-   two usable servers: it says so and runs the single one. Works with RU (the DoH `detour` and `final` are the group).
-3. **Preflight.** For the RU and «Авто» profiles the generated config goes through `sing-box check` (as the user, before the
-   root prompt). Refused «Авто» -> the single server, with the reason in the status line; refused RU -> no launch,
-   the reason shown. The plain profile is not checked (it is what has always run).
+2. **«Авто»** tick - REMOVED in v0.18.1 (section 29): it did not help.
+3. **Preflight.** For the RU profile the generated config goes through `sing-box check` (as the user, before the
+   root prompt); refused -> no launch, the reason shown. The plain profile is not checked (it is what has always run).
    Verified with sing-box 1.14.3: `check` catches a missing `default_domain_resolver`, a bad Reality key, etc.
 
 **Looked at and not applied**
@@ -1164,3 +1160,24 @@ the `sing-box` process name (the helper, `killall` and the core updater rely on 
 VPN server's IP and traffic pattern (server side). Only a TUN removes the first, and that is out of scope.
 
 **Not verified on a Mac:** the new checkbox row, the port switch, `+initialize` order, the NSTask preflight on 10.13.
+
+
+## 29. v0.18.1: «Авто» removed
+
+**Asked:** remove the «Авто» tick and everything that belongs to it ("it doesn't help"); look at
+2dust/v2rayN and igareck/vpn-configs-for-russia for anything useful (read: dpi-research.md section 13).
+
+**Removed:** the tick, its key `RaketaAutoServer` (a value left in an old install's defaults is never read),
+`autoBox` / `autoActive` / `autoOn` / `autoToggled:`, `RKNet` `autoGroupTag` / `autoOutboundsFromServers:` /
+`RKServerUsable`, the "two servers at least" check, the fall-back-to-one-server pass and its status note. The
+connected status shows the chosen server again.
+
+**Kept:** random local ports; the `sing-box check` preflight, now for RU only (it stops a launch that would fail
+after the password; it was never specific to «Авто»). `prepareConfig:` is a straight line again. The plain profile
+is written exactly as before.
+
+**Not changed (asked about, needs the person's OK):** nothing in routing, VLESS or Reality. The one idea from the
+research that touches them is recorded in dpi-research.md section 13 (chain the VLESS dial through a local hop that
+applies `tls_spoof` + `tls_fragment`); it is untested.
+
+**Not verified on a Mac:** the shorter profile row (RU + Яндекс DNS), the status line, the build.

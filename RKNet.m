@@ -57,19 +57,6 @@ static NSArray<NSNumber *> *RKPorts(void) {
     return ports;
 }
 
-// A server entry sing-box can dial: a real protocol, a host and a port. (The same test startVPN applies to the
-// chosen server; here it keeps one broken entry of a big subscription out of the group.)
-static BOOL RKServerUsable(NSDictionary *o) {
-    id type = [o objectForKey:@"type"], tag = [o objectForKey:@"tag"];
-    id srv = [o objectForKey:@"server"], prt = [o objectForKey:@"server_port"];
-    if (![type isKindOfClass:[NSString class]] || ![tag isKindOfClass:[NSString class]] || ![(NSString *)tag length]) return NO;
-    if ([@[@"selector", @"urltest", @"direct", @"block", @"dns"] containsObject:type]) return NO;
-    if (![srv isKindOfClass:[NSString class]] || ![(NSString *)srv length]) return NO;
-    if (![prt isKindOfClass:[NSNumber class]] && ![prt isKindOfClass:[NSString class]]) return NO;
-    NSInteger port = [prt integerValue];
-    return port >= 1 && port <= 65535;
-}
-
 @implementation RKNet
 
 + (void)loadPortsSocks:(NSInteger *)socks mixed:(NSInteger *)mixed tg:(NSInteger *)tg {
@@ -80,42 +67,6 @@ static BOOL RKServerUsable(NSDictionary *o) {
 }
 
 + (int)dpiPort { return [[RKPorts() objectAtIndex:3] intValue]; }
-
-+ (NSString *)autoGroupTag { return @"raketa-auto"; }
-
-+ (NSArray *)autoOutboundsFromServers:(NSArray<NSDictionary *> *)servers
-                          selectedTag:(NSString *)selectedTag
-                                limit:(NSUInteger)limit {
-    NSString *groupTag = [self autoGroupTag];
-    NSMutableArray<NSDictionary *> *picked = [NSMutableArray array];
-    NSMutableSet<NSString *> *tags = [NSMutableSet setWithObjects:@"direct", groupTag, nil];
-
-    // The chosen server first, then the others in subscription order.
-    NSMutableArray<NSDictionary *> *order = [NSMutableArray array];
-    for (NSDictionary *o in servers)
-        if ([[o objectForKey:@"tag"] isEqual:selectedTag]) { [order addObject:o]; break; }
-    [order addObjectsFromArray:servers];
-
-    for (NSDictionary *o in order) {
-        if (picked.count >= limit) break;
-        if (!RKServerUsable(o) || [tags containsObject:[o objectForKey:@"tag"]]) continue;
-        [tags addObject:[o objectForKey:@"tag"]];
-        [picked addObject:o];
-    }
-    if (picked.count < 2) return nil;
-
-    NSMutableArray *names = [NSMutableArray arrayWithCapacity:picked.count];
-    for (NSDictionary *o in picked) [names addObject:[o objectForKey:@"tag"]];
-    NSMutableArray *out = [NSMutableArray arrayWithArray:picked];
-    // interval 5 min and idle_timeout 30 min: every test is a connection to every listed server, which is
-    // traffic a watcher can count and CPU the app is to spare; tolerance 50 ms: no hopping between near-equal
-    // servers; interrupt_exist_connections: when the group does switch, old connections die and are re-made at once.
-    [out addObject:@{@"type": @"urltest", @"tag": groupTag, @"outbounds": names,
-                     @"interval": @"5m", @"idle_timeout": @"30m", @"tolerance": @50,
-                     @"interrupt_exist_connections": [NSNumber numberWithBool:YES]}];
-    [out addObject:@{@"type": @"direct", @"tag": @"direct"}];
-    return out;
-}
 
 + (NSString *)preflightConfigAtPath:(NSString *)path core:(NSString *)corePath {
     if (![[NSFileManager defaultManager] isExecutableFileAtPath:corePath]) return nil;
