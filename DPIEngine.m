@@ -58,6 +58,7 @@
 //     passed. The controls and every candidate that opens anything now log "passed: host http/bytes/secs".
 // The S list is rebuilt around the one combination that worked (see DPISpoofLines).
 #import "DPIEngine.h"
+#import "RKNet.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <libproc.h>
 #import <signal.h>
@@ -67,7 +68,9 @@
 #import <arpa/inet.h>
 #import <netdb.h>
 
-static const int kDPIPort     = 10811;   // runtime ciadpi (system proxy -> sing-box -> here)
+// runtime ciadpi (system proxy -> sing-box -> here). v0.18.0: a port picked at random once per install (RKNet.h),
+// 10811 only while the ports are pinned; a SOCKS listener on a fixed port is what a local scan looks for.
+#define kDPIPort ((int)[RKNet dpiPort])
 static const int kDPITestPort = 10820;   // throw-away ciadpi used by the search
 static const NSUInteger kDPIWireMax = 4;   // v0.15.3: addresses of one name the wire probe asks
 static const int kDPISBBase   = 10830;   // search: first SOCKS inbound of the root sing-box (one per "S" candidate)

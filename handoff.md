@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.17.0
+**Current version:** v0.18.0
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -196,6 +196,7 @@ Raketa.xcodeproj-less repo (compiled directly via clang in CI)
 ├── ViewController.m / .h           — ALL UI + VPN logic lives here (~1300 lines)
 ├── CoreUpdater.m / .h              — in-app sing-box core updater (v0.14.0, Foundation only)
 ├── RURouting.m / .h                — the «RU» routing profile: route + dns of the VPN config (v0.17.0, Foundation only)
+├── RKNet.m / .h                    — random local ports, the «Авто» urltest group, `sing-box check` preflight (v0.18.0, Foundation only)
 ├── RKSubscription.m / .h           — subscription request headers (UA, HWID), Userinfo, error texts (v0.14.0)
 ├── DPIEngine.m / .h                — YouTube DPI engine: ciadpi process, strategy list,
 │                                     search/ranking, YouTube-only sing-box config (v0.12.0)
@@ -1124,3 +1125,42 @@ riot, escapefromtarkov, steam, twitch, pinterest, faceit + 50 hand-written suffi
 10.13 core behaves like the Linux one for `resolve` (same option code); real RU-site behaviour through a live VPN server.
 **Open (not changed):** the local ports 10808-10810 and the system-proxy setting are visible to any app; whether
 Russian apps look for them is not established here.
+
+
+## 28. v0.18.0: smaller footprint, failover, preflight (what Hiddify has that fits Raketa)
+
+**Asked:** look at hiddify-app, take what raises stability and hides the VPN from DPI.
+**Read:** hiddify-core `v2/config/` (HEAD 4e5a9a3, 2026-11-19: options, `builder.go`, `outbound.go`) and sing-box v1.14.3 `common/tls`.
+
+**Applied**
+1. **Random local ports** (`RKNet`). SOCKS / mixed / Telegram / ciadpi get ports in 20000-48999, picked once per install,
+   stored in `NSUserDefaults` (`RaketaLocalPorts`), free at the time they are picked. The old 10808-10811 are what a
+   check of well-known proxy ports looks for. [summary] Russian regulators' VPN-detection guidance names local proxy ports
+   (Habr 1023352, zapret-wiki "VLESS-SOCKS5-vulnerability", securitylab 2026-04-08; all about Android, nothing macOS-specific
+   found). A sweep of all ports still finds a listener; this only beats a check of known ports.
+   **Breaking once:** Telegram's proxy must be added again from the Telegram panel (it shows the live ports).
+   Back to the old ports: `defaults write com.samurai.raketa RaketaFixedPorts -bool YES`; new random ones:
+   `defaults delete com.samurai.raketa RaketaLocalPorts`. The ports of the DPI search (10820, 10830+) are unchanged.
+2. **«Авто»** tick: one `urltest` group (`raketa-auto`) over up to 6 servers of the subscription, the chosen one first
+   (it carries the first connections until the first delay test), `interval` 5 m, `idle_timeout` 30 m, `tolerance` 50 ms,
+   `interrupt_exist_connections`. The list selection is ignored while it is on; the exit country can change. Fewer than
+   two usable servers: it says so and runs the single one. Works with RU (the DoH `detour` and `final` are the group).
+3. **Preflight.** For the RU and «Авто» profiles the generated config goes through `sing-box check` (as the user, before the
+   root prompt). Refused «Авто» -> the single server, with the reason in the status line; refused RU -> no launch,
+   the reason shown. The plain profile is not checked (it is what has always run).
+   Verified with sing-box 1.14.3: `check` catches a missing `default_domain_resolver`, a bad Reality key, etc.
+
+**Looked at and not applied**
+- **TLS fragment / mixed SNI case / padding** (Hiddify's DPI tricks): its core is a fork that fragments at the dialer
+  level. In stock sing-box `tls.fragment` is implemented in the std and uTLS clients only; `reality_client.go` has no
+  fragment code, so the option does nothing for VLESS+Reality (source read; not run against a DPI).
+- **Mux:** no evidence it hides anything; `check` accepts it with `flow`, behaviour with Vision was not tested.
+- **NTP, Clash API, TUN, WARP, block-QUIC, keep-top:** no use in a system-proxy client on a desktop clock, or no evidence of need.
+- **Auth on the local proxy** (Hiddify has `LocalProxyAuth`, off by default): a system proxy cannot send a password
+  and browsers cannot either, so it would break the system-proxy mode. Not done.
+
+**Cannot be hidden by this architecture (stated, not fixed):** the system-proxy setting itself (any app can read it),
+the `sing-box` process name (the helper, `killall` and the core updater rely on it), the app in /Applications, the
+VPN server's IP and traffic pattern (server side). Only a TUN removes the first, and that is out of scope.
+
+**Not verified on a Mac:** the new checkbox row, the port switch, `+initialize` order, the NSTask preflight on 10.13.

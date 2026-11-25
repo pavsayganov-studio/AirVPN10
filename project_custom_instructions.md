@@ -52,7 +52,7 @@ Established deliberately across many iterations. Do not revisit unless asked:
 
 ## Known, by design (not regressions)
 
-- Telegram needs its in-app proxy (`127.0.0.1:10808` SOCKS5 or `:10810`) — it never read the system
+- Telegram needs its in-app proxy (the SOCKS5 or Telegram port shown in the Telegram panel; random per install since v0.18.0, 10808 / 10810 only with `RaketaFixedPorts`) — it never read the system
   proxy (handoff §5 item 4, §17). The VPN proxy path is textually unchanged since v0.11.3.
 
 ## Working style that has earned trust

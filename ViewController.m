@@ -6,17 +6,21 @@
 #import "RKRoot.h"
 #import "MaintenanceEngine.h"
 #import "RURouting.h"
+#import "RKNet.h"
 
 // ── Ports ─────────────────────────────────────────────────────────────────────
-static const NSInteger kSOCKSPort = 10808;
-static const NSInteger kMixedPort = 10809;
-static const NSInteger kTGPort    = 10810;
+// v0.18.0: not constants any more. +initialize replaces these with ports picked at random once per install
+// (RKNet.h says why); the numbers here are what a build sees only if that fails.
+static NSInteger kSOCKSPort = 10808;
+static NSInteger kMixedPort = 10809;
+static NSInteger kTGPort    = 10810;
 static NSString *const kTGSecret  = @"dd000000000000000000000000000000";
 static NSString *const kSubKey    = @"RaketaSubscriptionURL";
 static NSString *const kSubFile   = @"subscription.json";
 // «RU» routing profile (v0.17.0): two ticks under the connect button, remembered between launches
 static NSString *const kRUKey     = @"RaketaRUProfile";
 static NSString *const kYandexKey = @"RaketaYandexDNS";
+static NSString *const kAutoKey   = @"RaketaAutoServer";   // v0.18.0
 static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 100 ГБ · до 01.12.2026"
 
 // ── Layout (v0.11.0 GUI refresh) ───────────────────────────────────────────────
@@ -45,7 +49,7 @@ static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 
 // 188  –202   gap (14pt)
 // 202  –238   connect button (36pt, corner radius 18)
 // 238  –248   gap (10pt)
-// 248  –266   [☐ RU] [☐ Яндекс DNS]  h=18 (v0.17.0; the second is live only while the first is ticked)
+// 248  –266   [☐ RU] [☐ Яндекс DNS] [☐ Авто]  h=18 (v0.17.0; the second is live only while the first is ticked)
 // 266  –280   gap (14pt)
 // 280  –308   [✦ Ускориться] full width, h=28 (v0.15.0; no label, like the connect button)
 // 308  –322   gap (14pt)
@@ -296,6 +300,8 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 // ── «RU» routing profile (v0.17.0) ──
 @property (strong) NSButton          *ruBox;      // ☐ RU
 @property (strong) NSButton          *ydnsBox;    // ☐ Яндекс DNS (only meaningful with RU)
+@property (strong) NSButton          *autoBox;    // ☐ Авто (v0.18.0)
+@property (assign) BOOL               autoActive; // the running config uses the «Авто» group
 // ── Cores & subscription (v0.14.0) ──
 @property (strong) CoreUpdater    *cores;          // which sing-box to run, and the in-app updater
 @property (strong) NSButton       *coresBtn;       // «Ядра» — updater menu
@@ -311,6 +317,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     rkSetPalette(rkSystemIsDark());       // v0.13.0: light or dark, per the system
     rkHair = rkHairFor([NSScreen mainScreen]);
     sTaskQ    = dispatch_queue_create("com.samurai.raketa.tasks", DISPATCH_QUEUE_SERIAL);
+    [RKNet loadPortsSocks:&kSOCKSPort mixed:&kMixedPort tg:&kTGPort];   // v0.18.0, before any view uses them
 }
 
 - (NSRect)rx:(CGFloat)x top:(CGFloat)t w:(CGFloat)w h:(CGFloat)h {
@@ -919,18 +926,15 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         }
     };
 
-    // v0.17.0: the RU profile replaces the routing and adds the DNS block. Inbounds, outbounds, ports and the
-    // log level above are the same as for the plain profile.
-    if (ruProfile) {
-        NSMutableDictionary *m = [cfg mutableCopy];
-        m[@"route"] = [RURouting routeForProxyTag:tag rulesDirectory:ruDir];
-        m[@"dns"]   = [RURouting dnsForProxyTag:tag yandex:[self yandexDNSOn]];
-        cfg = m;
+    // v0.17.0 / v0.18.0: the RU profile and «Авто» change the routing, the outbounds and the DNS block; the config
+    // is written and checked by sing-box itself before root is asked for. Inbounds, ports and the log level above
+    // are the same for every profile.
+    NSString *note = nil, *bad = nil;
+    if (![self prepareConfig:cfg tag:tag core:singBoxBin ru:ruProfile ruDir:ruDir note:&note error:&bad]) {
+        [self setStatus:[NSString stringWithFormat:@"⚠  Конфиг не прошёл проверку: %@", bad ?: @"ошибка"] color:rkRed];
+        return;
     }
-
-    NSData *cfgData = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
-    if (!cfgData) { [self setStatus:@"Ошибка конфига" color:rkRed]; return; }
-    [cfgData writeToFile:self.configPath atomically:YES];
+    if (note.length) [self setStatus:[@"Запуск... · " stringByAppendingString:note] color:rkOrange];
 
     // FIX (roadmap.md #2.3): config.json holds the VLESS UUID and Reality
     // key material for every saved server. writeToFile:atomically: creates
@@ -1215,6 +1219,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 // server change does (the root helper keeps the password for the session, so there is no new prompt).
 - (BOOL)ruOn       { return [[NSUserDefaults standardUserDefaults] boolForKey:kRUKey]; }
 - (BOOL)yandexDNSOn{ return [[NSUserDefaults standardUserDefaults] boolForKey:kYandexKey]; }
+- (BOOL)autoOn     { return [[NSUserDefaults standardUserDefaults] boolForKey:kAutoKey]; }
 
 - (NSButton *)profileBox:(NSString *)title on:(BOOL)on frame:(NSRect)f action:(SEL)a tip:(NSString *)tip {
     NSButton *b = [[NSButton alloc] initWithFrame:f];
@@ -1231,19 +1236,25 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 }
 
 - (void)buildProfileRow:(NSView *)root {
-    CGFloat half = (kW - kPAD*2) / 2.0;
     self.ruBox = [self profileBox:@"RU" on:[self ruOn]
-                            frame:[self rx:kPAD top:RKTopChk w:half - RKGapX h:RKChkH]
+                            frame:[self rx:kPAD top:RKTopChk w:56 h:RKChkH]
                            action:@selector(ruToggled:)
                               tip:@"Российские банки и сервисы — напрямую, остальное — через VPN. "
                                   @"Реклама и торренты блокируются. Списки RoscomVPN встроены в приложение."];
     [root addSubview:self.ruBox];
     self.ydnsBox = [self profileBox:@"Яндекс DNS" on:[self yandexDNSOn]
-                              frame:[self rx:kPAD + half top:RKTopChk w:half h:RKChkH]
+                              frame:[self rx:kPAD + 56 top:RKTopChk w:112 h:RKChkH]
                              action:@selector(ydnsToggled:)
                                 tip:@"Российские адреса и сам VPN-сервер ищет Яндекс DNS (DoH, напрямую). "
                                     @"Без галочки — системный DNS. Только вместе с «RU»."];
     [root addSubview:self.ydnsBox];
+    self.autoBox = [self profileBox:@"Авто" on:[self autoOn]
+                              frame:[self rx:kPAD + 168 top:RKTopChk w:82 h:RKChkH]
+                             action:@selector(autoToggled:)
+                                tip:@"Самый быстрый сервер из подписки и переключение при сбое (до 6 серверов, "
+                                    @"проверка раз в 5 минут). Выбор в списке тогда не действует, "
+                                    @"страна выхода может меняться."];
+    [root addSubview:self.autoBox];
     [self profileUIRender];
 }
 - (void)profileUIRender {
@@ -1265,6 +1276,17 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [[NSUserDefaults standardUserDefaults] synchronize];
     [self profileChanged:on ? @"Яндекс DNS включён" : @"Яндекс DNS выключен"];
 }
+- (void)autoToggled:(id)sender {
+    BOOL on = self.autoBox.state == NSOnState;
+    if (on && self.proxyOutbounds.count < 2) {
+        self.autoBox.state = NSOffState;
+        [self setStatus:@"Для «Авто» нужно минимум два сервера" color:rkOrange];
+        return;
+    }
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:kAutoKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [self profileChanged:on ? @"Авто: самый быстрый сервер подписки" : @"Авто выключено"];
+}
 // Disconnected: only say what changed (the next connect uses it). Connected: reconnect, like serverChanged.
 // Yandex DNS without RU changes nothing, so it does not reconnect.
 - (void)profileChanged:(NSString *)msg {
@@ -1273,6 +1295,44 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     if ([self stopVPN])
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4*NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [self startVPN]; });
+}
+
+// Builds this connect's config from the plain one: «Авто» (one urltest group over up to 6 servers of the
+// subscription, the chosen one first), the RU profile (route + dns), then writes it and has sing-box check it.
+// The plain profile is what has always run, so it is not checked; the new ones are, and a refused «Авто» falls
+// back to the single chosen server (note says why) instead of a launch that was going to fail after the password.
+- (BOOL)prepareConfig:(NSDictionary *)cfg tag:(NSString *)tag core:(NSString *)core ru:(BOOL)ru ruDir:(NSString *)ruDir
+                 note:(NSString **)note error:(NSString **)err {
+    BOOL tryAuto = [self autoOn];
+    for (int pass = 0; pass < 2; pass++) {
+        NSMutableDictionary *m = [cfg mutableCopy];
+        NSString *proxyTag = tag;
+        BOOL autoNow = NO;
+        if (tryAuto) {
+            NSArray *outs = [RKNet autoOutboundsFromServers:self.proxyOutbounds selectedTag:tag limit:6];
+            if (outs) { m[@"outbounds"] = outs; proxyTag = [RKNet autoGroupTag]; autoNow = YES; }
+            else *note = @"Авто выключено: нужно минимум два рабочих сервера";
+        }
+        if (ru) {
+            m[@"route"] = [RURouting routeForProxyTag:proxyTag rulesDirectory:ruDir];
+            m[@"dns"]   = [RURouting dnsForProxyTag:proxyTag yandex:[self yandexDNSOn]];
+        } else if (autoNow) {
+            NSMutableDictionary *r = [m[@"route"] mutableCopy];
+            r[@"final"] = proxyTag;
+            m[@"route"] = r;
+        }
+        NSData *data = [NSJSONSerialization dataWithJSONObject:m options:0 error:nil];
+        if (!data) { *err = @"не удалось собрать конфиг"; return NO; }
+        [data writeToFile:self.configPath atomically:YES];
+
+        NSString *refused = (ru || autoNow) ? [RKNet preflightConfigAtPath:self.configPath core:core] : nil;
+        if (!refused) { self.autoActive = autoNow; return YES; }
+        if (autoNow) { tryAuto = NO; *note = [NSString stringWithFormat:@"Авто выключено: %@", refused]; continue; }
+        *err = refused;
+        return NO;
+    }
+    *err = @"неизвестная ошибка";
+    return NO;
 }
 
 // =============================================================================
@@ -1977,7 +2037,7 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 - (void)uiConnected:(BOOL)on {
     self.connected = on;
     NSString *lbl = on ? [NSString stringWithFormat:@"Подключено · %@%@",
-                           self.dropdown.titleOfSelectedItem ?: @"", [self ruOn] ? @" · RU" : @""]
+                           self.autoActive ? @"Авто" : (self.dropdown.titleOfSelectedItem ?: @""), [self ruOn] ? @" · RU" : @""]
                        : @"Готов к работе";
     [self setStatus:lbl color:on ? rkGreen : rkSub];
     [self renderConnectButton];
