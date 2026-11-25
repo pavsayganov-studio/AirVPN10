@@ -29,6 +29,10 @@ env:
   SING_BOX_VERSION: v1.14.3
   SING_BOX_SHA256: 5deb29edfa07ff7a9db7be084ef90f661cc483136e797daa2c14d4479995d112
   BYEDPI_SHA: ba532298de7b28cfe854aea83d061369d13ca290
+  # RU routing profile (v0.17.0): the sing-box rule sets of the RoscomVPN projects, pinned by commit like the
+  # core and ciadpi. To refresh the lists, bump both SHAs (HEAD of each repo) and release.
+  RU_GEOSITE_SHA: 300324058785ffab06df8725e18969f835d73618
+  RU_GEOIP_SHA: 242734ebb9927706d21ac1bf7fc5b60d6c427193
 
 defaults:
   run:
@@ -121,6 +125,31 @@ jobs:
           cp ciadpi ../ciadpi
           file ../ciadpi
 
+      # ── RU routing profile: rule sets (.srs) of roscomvpn-geosite / roscomvpn-geoip, pinned by commit ───
+      # Twenty files: 19 geosite categories + the geoip `direct` list. geosite `private` is NOT used: the
+      # published .srs holds plain words ("lan", "test") as substring keywords (RURouting.m says why).
+      - name: Fetch RU rule sets
+        run: |
+          set -euo pipefail
+          fetch() {  # REPO SHA
+            git init -q "$1"
+            git -C "$1" remote add origin "https://github.com/hydraponique/$1.git"
+            git -C "$1" fetch -q --depth 1 origin "$2"
+            git -C "$1" checkout -q FETCH_HEAD
+            test "$(git -C "$1" rev-parse HEAD)" = "$2"
+          }
+          fetch roscomvpn-geosite "$RU_GEOSITE_SHA"
+          fetch roscomvpn-geoip   "$RU_GEOIP_SHA"
+          mkdir ru-rules
+          for n in category-ads win-spy torrent google-play github twitch-ads youtube telegram \
+                   category-ru whitelist microsoft apple epicgames riot escapefromtarkov steam twitch pinterest faceit; do
+            cp "roscomvpn-geosite/release/sing-box/$n.srs" "ru-rules/geosite-$n.srs"
+          done
+          cp roscomvpn-geoip/release/sing-box/direct.srs ru-rules/geoip-direct.srs
+          # a missing or damaged file fails the build, not the person's connection
+          for f in ru-rules/*.srs; do test -s "$f"; test "$(head -c 3 "$f")" = "SRS"; done
+          test "$(ls ru-rules | wc -l | tr -d ' ')" = "20"
+
       - name: Generate AppIcon.icns from SVG
         run: |
           # --break-system-packages: required on macOS runners (PEP 668)
@@ -154,13 +183,15 @@ jobs:
           cp dpi/youtube.sites dpi/googlevideo.sites \
              Raketa.app/Contents/Resources/dpi/
           cp rkhelper.sh Raketa.app/Contents/Resources/rkhelper.sh
+          mkdir -p Raketa.app/Contents/Resources/ru
+          cp ru-rules/*.srs Raketa.app/Contents/Resources/ru/
           clang -fobjc-arc \
             -framework Cocoa \
             -framework SystemConfiguration \
             -arch x86_64 -mmacosx-version-min=10.13 \
             -o Raketa.app/Contents/MacOS/Raketa \
             main.m AppDelegate.m ViewController.m DPIEngine.m CoreUpdater.m RKSubscription.m \
-            RKRoot.m MaintenanceEngine.m
+            RKRoot.m MaintenanceEngine.m RURouting.m
           codesign --force --deep -s - Raketa.app
 
       # Fail the build, not the user's Mac: the whole point of this project is
@@ -172,6 +203,7 @@ jobs:
           otool -l "$EXE" | grep -A3 -E "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION" | tee min-os.txt
           grep -Eq "(version|minos) 10\.13" min-os.txt
           codesign --verify --deep --strict Raketa.app
+          test "$(ls Raketa.app/Contents/Resources/ru | wc -l | tr -d ' ')" = "20"
           # The core too: a Go core built for a newer macOS passes `lipo` and dies on 10.13.
           CORE=Raketa.app/Contents/Resources/sing-box
           test "$(lipo -archs "$CORE")" = "x86_64"

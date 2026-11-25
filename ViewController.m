@@ -5,6 +5,7 @@
 #import "RKSubscription.h"
 #import "RKRoot.h"
 #import "MaintenanceEngine.h"
+#import "RURouting.h"
 
 // ── Ports ─────────────────────────────────────────────────────────────────────
 static const NSInteger kSOCKSPort = 10808;
@@ -13,6 +14,9 @@ static const NSInteger kTGPort    = 10810;
 static NSString *const kTGSecret  = @"dd000000000000000000000000000000";
 static NSString *const kSubKey    = @"RaketaSubscriptionURL";
 static NSString *const kSubFile   = @"subscription.json";
+// «RU» routing profile (v0.17.0): two ticks under the connect button, remembered between launches
+static NSString *const kRUKey     = @"RaketaRUProfile";
+static NSString *const kYandexKey = @"RaketaYandexDNS";
 static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 100 ГБ · до 01.12.2026"
 
 // ── Layout (v0.11.0 GUI refresh) ───────────────────────────────────────────────
@@ -40,14 +44,16 @@ static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 
 // 174  –188   status row (dot + text, 14pt)
 // 188  –202   gap (14pt)
 // 202  –238   connect button (36pt, corner radius 18)
-// 238  –252   gap (14pt)
-// 252  –280   [✦ Ускориться] full width, h=28 (v0.15.0; no label, like the connect button)
-// 280  –294   gap (14pt)
-// 294  –307   YOUTUBE label (13pt) + strategy caption on the right (v0.12.0)
-// 307  –315   gap (8pt)
-// 315  –343   [🔍 (28pt)] [▶ Смотреть YouTube (188pt)] [▾ (28pt)]  h=28
-// 343  –359   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
-// 359  –419   bottom dock (v0.14.1): a rounded card 280×52, 10pt side / 8pt bottom margin;
+// 238  –248   gap (10pt)
+// 248  –266   [☐ RU] [☐ Яндекс DNS]  h=18 (v0.17.0; the second is live only while the first is ticked)
+// 266  –280   gap (14pt)
+// 280  –308   [✦ Ускориться] full width, h=28 (v0.15.0; no label, like the connect button)
+// 308  –322   gap (14pt)
+// 322  –335   YOUTUBE label (13pt) + strategy caption on the right (v0.12.0)
+// 335  –343   gap (8pt)
+// 343  –371   [🔍 (28pt)] [▶ Смотреть YouTube (188pt)] [▾ (28pt)]  h=28
+// 371  –387   gap (16pt) — was 1pt in v0.10.3; this was the reported bug
+// 387  –447   bottom dock (v0.14.1): a rounded card 280×52, 10pt side / 8pt bottom margin;
 //             inside, bar-relative: buttons y=23..44 (21pt), credit y=4..18
 //             Логи | Ядра | credit | ✈ | Выход
 // ── Layout metrics (v0.15.3) ────────────────────────────────────────────────────────────────
@@ -55,13 +61,15 @@ static NSString *const kSubInfoKey = @"RaketaSubscriptionInfo";   // "12 ГБ / 
 // reflows the column and kH follows. Before this, kH (419) and the tops (46, 67, 113, ...) were typed
 // numbers that had to be kept equal to each other by hand. They are ENUM constants on purpose: a
 // `static const CGFloat` is not a compile-time constant in C, so it cannot initialise another one.
-// The values reproduce the v0.15.2 layout exactly (46 67 113 134 174 202 252 294 315 359 419).
+// v0.17.0 added one row (RKTopChk) under the connect button, so the tops below it moved down by 28:
+// 46 67 113 134 174 202 | 248 280 322 343 387 | 447. Above the new row nothing moved.
 enum {
     RKWidth = 300, RKPadX = 20, RKGapX = 8, RKRefW = 28, RKHTG = 170,
     RKUnit = 14,                                  // the rhythm: the gap between rows
     RKHdrH = 32, RKLblH = 13, RKLblGap = 8,       // header band; section label line; label -> its control
     RKCtlH = 28, RKFieldH = 26, RKStatH = 14, RKConnH = 36,
     RKSecGap = 18,                                // gap before the "Сервер" label (room for the add button)
+    RKChkH = 18, RKChkGap = 10,                   // v0.17.0: the «RU» / «Яндекс DNS» tick row under the connect button
     RKDockH = 52, RKDockGap = 16, RKDockSide = 10, RKDockBot = 8,
     RKTopSub    = RKHdrH + RKUnit,                        //  46  "Подписка" label
     RKTopSubRow = RKTopSub + RKLblH + RKLblGap,           //  67
@@ -69,11 +77,12 @@ enum {
     RKTopSrvRow = RKTopSrv + RKLblH + RKLblGap,           // 134
     RKTopStat   = RKTopSrvRow + RKFieldH + RKUnit,        // 174
     RKTopConn   = RKTopStat + RKStatH + RKUnit,           // 202
-    RKTopSpeed  = RKTopConn + RKConnH + RKUnit,           // 252
-    RKTopYT     = RKTopSpeed + RKCtlH + RKUnit,           // 294
-    RKTopYTRow  = RKTopYT + RKLblH + RKLblGap,            // 315
-    RKTopDock   = RKTopYTRow + RKCtlH + RKDockGap,        // 359
-    RKHeight    = RKTopDock + RKDockH + RKDockBot,        // 419
+    RKTopChk    = RKTopConn + RKConnH + RKChkGap,         // 248  (v0.17.0)
+    RKTopSpeed  = RKTopChk + RKChkH + RKUnit,             // 280  (was 252)
+    RKTopYT     = RKTopSpeed + RKCtlH + RKUnit,           // 322
+    RKTopYTRow  = RKTopYT + RKLblH + RKLblGap,            // 343
+    RKTopDock   = RKTopYTRow + RKCtlH + RKDockGap,        // 387
+    RKHeight    = RKTopDock + RKDockH + RKDockBot,        // 447
     // small parts
     RKSubInfoW = 190, RKYTCapW = 160, RKSecLblW = 200,    // right-aligned captions; section label width
     RKDot = 7, RKDotGap = 6,                              // status dot and its gap to the text
@@ -284,6 +293,9 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 @property (strong) MaintenanceEngine *tune;       // created on first use (see -tuner)
 @property (strong) NSButton          *speedBtn;   // ✦ Ускориться
 @property (assign) BOOL               speedBusy;
+// ── «RU» routing profile (v0.17.0) ──
+@property (strong) NSButton          *ruBox;      // ☐ RU
+@property (strong) NSButton          *ydnsBox;    // ☐ Яндекс DNS (only meaningful with RU)
 // ── Cores & subscription (v0.14.0) ──
 @property (strong) CoreUpdater    *cores;          // which sing-box to run, and the in-app updater
 @property (strong) NSButton       *coresBtn;       // «Ядра» — updater menu
@@ -463,10 +475,11 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
     [root addSubview:self.connectBtn];
 
     // ── YouTube / DPI row (252–301) — v0.12.0 ────────────────────────────────
+    [self buildProfileRow:root];
     [self buildSpeedRow:root];
     [self buildYouTubeRow:root];
 
-    // ── Bottom dock (359–419) — v0.14.1: a rounded card, 280×52 at (10, 8): Логи | Ядра | credit | ✈ | Выход ──
+    // ── Bottom dock (387–447) — v0.14.1: a rounded card, 280×52 at (10, 8): Логи | Ядра | credit | ✈ | Выход ──
     // Child frames are dock-relative; x = absolute x - 10, so the buttons keep their old absolute x.
     NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(RKDockSide, RKDockBot, kW-RKDockSide*2, RKDockH)];
     bar.wantsLayer = YES;
@@ -870,6 +883,15 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
         return;
     }
 
+    // v0.17.0: the RU profile reads its rule sets from the app bundle (build.yml puts them in Resources/ru).
+    // A build without them must say so, not start a VPN that cannot route.
+    BOOL ruProfile = [self ruOn];
+    NSString *ruDir = [RURouting bundledRulesDirectory];
+    if (ruProfile && [RURouting missingRuleFileInDirectory:ruDir]) {
+        [self setStatus:@"⚠  Правила RU не найдены в приложении — снимите галочку RU" color:rkRed];
+        return;
+    }
+
     [self setStatus:@"Запуск..." color:rkSub];
 
     NSDictionary *cfg = @{
@@ -896,6 +918,15 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
             @"final": tag
         }
     };
+
+    // v0.17.0: the RU profile replaces the routing and adds the DNS block. Inbounds, outbounds, ports and the
+    // log level above are the same as for the plain profile.
+    if (ruProfile) {
+        NSMutableDictionary *m = [cfg mutableCopy];
+        m[@"route"] = [RURouting routeForProxyTag:tag rulesDirectory:ruDir];
+        m[@"dns"]   = [RURouting dnsForProxyTag:tag yandex:[self yandexDNSOn]];
+        cfg = m;
+    }
 
     NSData *cfgData = [NSJSONSerialization dataWithJSONObject:cfg options:0 error:nil];
     if (!cfgData) { [self setStatus:@"Ошибка конфига" color:rkRed]; return; }
@@ -1173,6 +1204,75 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 }
 - (void)quickQuit {
     if (self.isViewLoaded) [self quit]; else [NSApp terminate:nil];
+}
+
+// =============================================================================
+#pragma mark - «RU» routing profile (v0.17.0)
+// =============================================================================
+// Two ticks under the connect button. «RU» swaps the VPN's routing and DNS (RURouting.m builds both);
+// «Яндекс DNS» picks who resolves the names that go direct and is live only while «RU» is ticked.
+// Both are read at connect time (startVPN), so a change while the VPN is on reconnects it the same way a
+// server change does (the root helper keeps the password for the session, so there is no new prompt).
+- (BOOL)ruOn       { return [[NSUserDefaults standardUserDefaults] boolForKey:kRUKey]; }
+- (BOOL)yandexDNSOn{ return [[NSUserDefaults standardUserDefaults] boolForKey:kYandexKey]; }
+
+- (NSButton *)profileBox:(NSString *)title on:(BOOL)on frame:(NSRect)f action:(SEL)a tip:(NSString *)tip {
+    NSButton *b = [[NSButton alloc] initWithFrame:f];
+    [b setButtonType:NSButtonTypeSwitch];
+    // gotcha #8: a title colour on 10.13 is only reliable through attributedTitle (rkRecolor: remaps it on a theme change)
+    b.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
+        NSFontAttributeName:            [NSFont systemFontOfSize:12 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: rkText }];
+    b.state   = on ? NSOnState : NSOffState;
+    b.target  = self;
+    b.action  = a;
+    b.toolTip = tip;
+    return b;
+}
+
+- (void)buildProfileRow:(NSView *)root {
+    CGFloat half = (kW - kPAD*2) / 2.0;
+    self.ruBox = [self profileBox:@"RU" on:[self ruOn]
+                            frame:[self rx:kPAD top:RKTopChk w:half - RKGapX h:RKChkH]
+                           action:@selector(ruToggled:)
+                              tip:@"Российские банки и сервисы — напрямую, остальное — через VPN. "
+                                  @"Реклама и торренты блокируются. Списки RoscomVPN встроены в приложение."];
+    [root addSubview:self.ruBox];
+    self.ydnsBox = [self profileBox:@"Яндекс DNS" on:[self yandexDNSOn]
+                              frame:[self rx:kPAD + half top:RKTopChk w:half h:RKChkH]
+                             action:@selector(ydnsToggled:)
+                                tip:@"Российские адреса и сам VPN-сервер ищет Яндекс DNS (DoH, напрямую). "
+                                    @"Без галочки — системный DNS. Только вместе с «RU»."];
+    [root addSubview:self.ydnsBox];
+    [self profileUIRender];
+}
+- (void)profileUIRender {
+    if (!self.ydnsBox) return;
+    BOOL ru = self.ruBox.state == NSOnState;
+    self.ydnsBox.enabled    = ru;
+    self.ydnsBox.alphaValue = ru ? 1.0 : 0.45;
+}
+- (void)ruToggled:(id)sender {
+    BOOL on = self.ruBox.state == NSOnState;
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:kRUKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [self profileUIRender];
+    [self profileChanged:on ? @"Профиль RU включён" : @"Профиль RU выключен"];
+}
+- (void)ydnsToggled:(id)sender {
+    BOOL on = self.ydnsBox.state == NSOnState;
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:kYandexKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [self profileChanged:on ? @"Яндекс DNS включён" : @"Яндекс DNS выключен"];
+}
+// Disconnected: only say what changed (the next connect uses it). Connected: reconnect, like serverChanged.
+// Yandex DNS without RU changes nothing, so it does not reconnect.
+- (void)profileChanged:(NSString *)msg {
+    if (!self.connected) { [self setStatus:msg color:rkSub]; return; }
+    if (self.ruBox.state != NSOnState && [msg hasPrefix:@"Яндекс"]) return;
+    if ([self stopVPN])
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4*NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self startVPN]; });
 }
 
 // =============================================================================
@@ -1876,8 +1976,8 @@ static NSAttributedString *rkRemapAttr(NSAttributedString *src, BOOL *changed) {
 }
 - (void)uiConnected:(BOOL)on {
     self.connected = on;
-    NSString *lbl = on ? [NSString stringWithFormat:@"Подключено · %@",
-                           self.dropdown.titleOfSelectedItem ?: @""]
+    NSString *lbl = on ? [NSString stringWithFormat:@"Подключено · %@%@",
+                           self.dropdown.titleOfSelectedItem ?: @"", [self ruOn] ? @" · RU" : @""]
                        : @"Готов к работе";
     [self setStatus:lbl color:on ? rkGreen : rkSub];
     [self renderConnectButton];

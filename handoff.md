@@ -1,6 +1,6 @@
 # Raketa — Technical Handoff
 
-**Current version:** v0.15.4
+**Current version:** v0.17.0
 **Platform:** macOS 10.13 (High Sierra) through macOS 12.x (Monterey), Intel x86_64
 **Status:** Production. Fully working, actively used by the owner (Pablo).
 
@@ -195,6 +195,7 @@ Raketa.xcodeproj-less repo (compiled directly via clang in CI)
 ├── AppDelegate.m / .h              — NSStatusItem + NSPopover host
 ├── ViewController.m / .h           — ALL UI + VPN logic lives here (~1300 lines)
 ├── CoreUpdater.m / .h              — in-app sing-box core updater (v0.14.0, Foundation only)
+├── RURouting.m / .h                — the «RU» routing profile: route + dns of the VPN config (v0.17.0, Foundation only)
 ├── RKSubscription.m / .h           — subscription request headers (UA, HWID), Userinfo, error texts (v0.14.0)
 ├── DPIEngine.m / .h                — YouTube DPI engine: ciadpi process, strategy list,
 │                                     search/ranking, YouTube-only sing-box config (v0.12.0)
@@ -1078,3 +1079,48 @@ opens youtube.com/youtu.be or more googlevideo nodes than S5 did; the `swap:` ro
 run's best candidate - if even that fails everywhere for youtube.com, every fake identity tried so far is
 beaten by name for that specific domain and the open question becomes `hostfakesplit`-style host-splitting
 (unavailable on macOS, dpi-research sections 2 and 8) or path B. **Not verified on a Mac.**
+
+
+## 27. v0.17.0: the «RU» routing profile
+
+**What the person asked:** the RoscomVPN "DEFAULT" routing (Russian banks and big services direct, everything else
+through the tunnel, DoH, optional Yandex DNS) behind a tick on the main screen. Goal: stay unnoticed by Roskomnadzor.
+
+**UI.** One new row under the connect button (`RKTopChk`, 248-266; everything below moved down 28, `kH` 419 -> 447):
+`☐ RU` and `☐ Яндекс DNS`. Stored in `NSUserDefaults` (`RaketaRUProfile`, `RaketaYandexDNS`). Yandex DNS is live only
+while RU is ticked. A change while the VPN is on reconnects it (the `serverChanged` recipe; no new password).
+The status line says `Подключено · <server> · RU`. Quick connect from the menu-bar item uses the same `startVPN`.
+
+**Code.** `RURouting.m` (Foundation only) builds `route` and `dns`; `startVPN` swaps them in when RU is ticked and
+leaves inbounds, outbounds, ports and the log level alone. The plain profile (RU unticked) is byte-for-byte what it was.
+A build without `Resources/ru` refuses to start with RU ticked (status line, no password prompt wasted).
+
+**Rule sets.** sing-box 1.12+ cannot read `geoip.dat` / `geosite.dat` (the Xray format the Happ profile points to). The
+RoscomVPN projects publish the same lists as sing-box `.srs` (`release/sing-box/<name>.srs`). `build.yml` ("Fetch RU rule
+sets") fetches 19 geosite files + geoip `direct` at pinned commits (`RU_GEOSITE_SHA`, `RU_GEOIP_SHA`), checks the `SRS`
+magic and the count of 20, and copies them to `Resources/ru`. Local files: connecting needs no download, nothing is
+blocked at startup. **To refresh the lists bump both SHAs.**
+
+**Routing order** (RoscomVPN `block-proxy-direct`): reject (category-ads, win-spy, torrent) -> proxy (google-play, github,
+twitch-ads, youtube, telegram) -> direct by name (private suffixes, category-ru, whitelist, microsoft, apple, epicgames,
+riot, escapefromtarkov, steam, twitch, pinterest, faceit + 50 hand-written suffixes incl. apple.com/icloud.com) ->
+`resolve` through the tunnel (`prefer_ipv4`) -> private CIDRs direct -> geoip `direct` -> final = the VPN outbound.
+
+**Findings that shaped it (checked with a real sing-box 1.14.3, off-device):**
+- `geosite private.srs` is broken upstream: plain words (`lan`, `test`, `local`, `internal`, `example`) were compiled
+  as `domain_keyword`, i.e. substrings; `planet.com`, `speedtest.net` would go direct. Not used; own suffix rule instead.
+- The geosite lists were de-duplicated against the IP ranges, so `sberbank.ru`, `tbank.ru`, `mvideo.ru` are NOT in them.
+  The `resolve` + geoip `direct` step is what sends them direct; the hand-written suffix list shortcuts the main ones.
+- A lookup that names its server (`resolve` action, `domain_resolver`) skips `dns.rules`, so the profile has none.
+  `default_domain_resolver` is set (1.14 has no implicit resolver for the `direct` outbound and for the VPN server's name).
+- Dropped from the draft: `DnsHosts` (two pinned nalog.ru addresses go stale silently; nalog.ru is in the lists).
+- Remote DNS = DoH 8.8.8.8 with `detour` = the VPN outbound: the query is inside the tunnel, so the provider's
+  block of 8.8.8.8 (dpi-research section 4) does not touch it. Yandex DNS = DoH 77.88.8.8, certificate name
+  `common.dot.dns.yandex.net` (yandex.ru/support/dns; DoT 77.88.8.8:853 also exists, not used: port 853 is the easy one to block).
+- `sing-box check` 1.14.3 rejects unknown fields and bad values (the config was checked with both DNS variants).
+  Route decisions were observed in the debug log of a running sing-box with a dummy VLESS outbound.
+
+**Not verified on a Mac / on a real network:** that Yandex DoH answers from the person's network; that the legacy
+10.13 core behaves like the Linux one for `resolve` (same option code); real RU-site behaviour through a live VPN server.
+**Open (not changed):** the local ports 10808-10810 and the system-proxy setting are visible to any app; whether
+Russian apps look for them is not established here.
